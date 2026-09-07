@@ -1,0 +1,52 @@
+<Project Sdk="WixToolset.Sdk/4.0.6">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <Platform>x64</Platform>
+    <Cultures>en-US</Cultures>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- WIX1075 recommends a cross-version UpgradeCode, which this current-only MSI forbids. -->
+    <SuppressSpecificWarnings>1075</SuppressSpecificWarnings>
+    <!-- ICE74 repeats the same cross-version recommendation during MSI validation. -->
+    <SuppressIces>ICE74</SuppressIces>
+
+    <!-- Callers must provide x64 executables for this exact package version. -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.9.3</ProductVersion>
+    <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe</ClientExe>
+    <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe</MaintenanceExe>
+    <TrayExe Condition="'$(TrayExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe</TrayExe>
+    <OutputName>host-monitor-$(ProductVersion)-x64</OutputName>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe);TrayExe=$(TrayExe)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.6" />
+  </ItemGroup>
+
+  <Target Name="ValidateInputs" BeforeTargets="BeforeBuild">
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) != true"
+      Text="ProductVersion must contain exactly three numeric fields (for example 0.9.3)." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Major) &gt; 255"
+      Text="The ProductVersion major field must be between 0 and 255." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Minor) &gt; 255"
+      Text="The ProductVersion minor field must be between 0 and 255." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Build) &gt; 65535"
+      Text="The ProductVersion build field must be between 0 and 65535." />
+    <Error Condition="!Exists('$(ClientExe)')" Text="ClientExe does not exist: $(ClientExe)" />
+    <Error Condition="!Exists('$(MaintenanceExe)')" Text="MaintenanceExe does not exist: $(MaintenanceExe)" />
+    <Error Condition="!Exists('$(TrayExe)')" Text="TrayExe does not exist: $(TrayExe)" />
+    <Exec
+      Command="&quot;$(ClientExe)&quot; --version"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="DetectedClientVersion" />
+    </Exec>
+    <Error
+      Condition="'$(DetectedClientVersion)' != 'host-monitor $(ProductVersion)'"
+      Text="ProductVersion $(ProductVersion) does not match ClientExe version '$(DetectedClientVersion)'. Build all payloads from the current package before creating the MSI." />
+  </Target>
+</Project>

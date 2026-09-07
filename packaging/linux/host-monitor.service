@@ -1,0 +1,48 @@
+[Unit]
+Description=Host Monitoring read-only host telemetry client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30s
+User=host-monitor
+Group=host-monitor
+ExecStart=/usr/bin/host-monitor run --config /etc/host-monitor/config.json
+Restart=on-failure
+RestartSec=10s
+
+# StateDirectory 存放当前配对状态、per-host token 与 spool，必须 0700。
+# 不显式声明时 systemd 用 0755，且每次启动都会重设。Client 只接受安全的现有
+# 私有目录，不会在运行时 chmod 修复权限。与 host-monitoring-server.service 保持一致。
+StateDirectory=host-monitor
+StateDirectoryMode=0700
+ConfigurationDirectory=host-monitor
+ConfigurationDirectoryMode=0750
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# 与 host-monitoring-server.service 对齐。AF_NETLINK 是 sysinfo 枚举网络接口所需，去掉会让网卡指标消失。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/host-monitor
+
+[Install]
+WantedBy=multi-user.target

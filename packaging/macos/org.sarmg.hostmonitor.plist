@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.sarmg.hostmonitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/libexec/host-monitor</string>
+    <string>run</string>
+    <string>--config</string>
+    <string>/Library/Application Support/host-monitor/config.json</string>
+  </array>
+  <key>UserName</key><string>_hostmonitor</string>
+  <key>GroupName</key><string>_hostmonitor</string>
+  <key>Umask</key><integer>63</integer>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/var/log/host-monitor.log</string>
+  <key>StandardErrorPath</key><string>/var/log/host-monitor.log</string>
+</dict>
+</plist>

@@ -1,0 +1,1372 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+user="_hostmonitor"
+group="_hostmonitor"
+state="/Library/Application Support/host-monitor"
+state_parent="${state%/*}"
+config="$state/config.json"
+log="/var/log/host-monitor.log"
+log_dir="${log%/*}"
+client_binary="/usr/local/libexec/host-monitor"
+client_command="/usr/local/bin/host-monitor"
+logrotate_helper="/usr/local/libexec/host-monitor-logrotate"
+client_plist="/Library/LaunchDaemons/org.sarmg.hostmonitor.plist"
+logrotate_plist="/Library/LaunchDaemons/org.sarmg.hostmonitor.logrotate.plist"
+ownership_dir="/var/db/host-monitor"
+ownership_marker="$ownership_dir/account-ownership"
+libexec_dir="${client_binary%/*}"
+command_dir="${client_command%/*}"
+local_prefix="${libexec_dir%/*}"
+system_usr="${local_prefix%/*}"
+share_parent="$local_prefix/share"
+share_dir="$share_parent/host-monitor"
+package_config="$share_dir/host-monitor.json.example"
+newsyslog_config="$share_dir/newsyslog.conf"
+uninstall_helper="$share_dir/uninstall.sh"
+launch_daemon_dir="${client_plist%/*}"
+library_root="${launch_daemon_dir%/*}"
+package_version="@HOST_MONITOR_PACKAGE_VERSION@"
+user_created=0
+group_created=0
+ownership_marker_present=0
+created_user_uid="-"
+created_user_primary_gid="-"
+created_group_gid="-"
+group_record_pending=0
+group_record_gid="-"
+user_record_pending=0
+user_record_uid="-"
+user_record_primary_gid="-"
+previous_user_created=0
+previous_user_uid="-"
+previous_user_primary_gid="-"
+previous_client_loaded=0
+previous_logrotate_loaded=0
+previous_client_stopped=0
+previous_logrotate_stopped=0
+state_preexisting=0
+initial_state_uid="-"
+initial_state_gid="-"
+initial_state_mode="-"
+state_restore_pending=0
+state_locked=0
+state_contents_safe=0
+restart_state_safe=1
+launchd_disable_transaction_started=0
+config_temporary="$state/.config.json.$$"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "host-monitor postinstall must run as root" >&2
+  exit 1
+fi
+
+read_path_metadata() {
+  metadata_path="$1"
+  path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path")" || {
+    echo "Could not inspect ownership and permissions for $metadata_path" >&2
+    return 1
+  }
+  path_uid="${path_metadata%%:*}"
+  path_metadata_remainder="${path_metadata#*:}"
+  path_gid="${path_metadata_remainder%%:*}"
+  path_metadata_remainder="${path_metadata_remainder#*:}"
+  path_special_mode="${path_metadata_remainder%%:*}"
+  path_mode="${path_metadata_remainder#*:}"
+  case "$path_uid:$path_gid:$path_special_mode:$path_mode" in
+    *[!0-9:]*)
+      echo "Invalid ownership or permission metadata for $metadata_path" >&2
+      return 1
+      ;;
+    :*|*::*|*:)
+      echo "Incomplete ownership or permission metadata for $metadata_path" >&2
+      return 1
+      ;;
+  esac
+  [ "$path_special_mode" = 0 ] || {
+    echo "Unexpected set-id or sticky permission bits on $metadata_path" >&2
+    return 1
+  }
+}
+
+path_has_no_extended_acl() {
+  acl_path="$1"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || return 1
+  acl_first_line=""
+  acl_has_additional_lines=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+    else
+      acl_has_additional_lines=1
+    fi
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] && [ "$acl_has_additional_lines" -eq 0 ] || return 1
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    ''|*+) return 1 ;;
+  esac
+}
+
+require_no_extended_acl() {
+  acl_path="$1"
+  acl_description="$2"
+  path_has_no_extended_acl "$acl_path" || {
+    echo "host-monitor $acl_description must not have an extended ACL" >&2
+    return 1
+  }
+}
+
+path_has_no_permissive_acl() {
+  acl_path="$1"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || return 1
+  acl_first_line=""
+  acl_entry_count=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+      continue
+    fi
+    case "$acl_line" in
+      *" allow "*) return 1 ;;
+      [[:space:]]*[0-9]*:*" deny "*) acl_entry_count=$((acl_entry_count + 1)) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] || return 1
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    *+) [ "$acl_entry_count" -gt 0 ] ;;
+    '') return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+require_no_permissive_acl() {
+  acl_path="$1"
+  acl_description="$2"
+  path_has_no_permissive_acl "$acl_path" || {
+    echo "host-monitor $acl_description must not have a permissive extended ACL" >&2
+    return 1
+  }
+}
+
+require_secure_shared_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe or missing host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid:$path_gid" = "0:0" ] || {
+    echo "host-monitor $directory_description must be owned by root:wheel" >&2
+    exit 1
+  }
+  case "$path_mode" in
+    7[0145][15]) ;;
+    *)
+      echo "host-monitor $directory_description must be root-writable, service-traversable, and not group/other-writable" >&2
+      exit 1
+      ;;
+  esac
+  require_no_extended_acl "$directory_path" "$directory_description" || exit 1
+}
+
+require_root_controlled_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe or missing host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid" = 0 ] || {
+    echo "host-monitor $directory_description must be owned by root" >&2
+    exit 1
+  }
+  case "$path_mode" in
+    7[0145][15]) ;;
+    *)
+      echo "host-monitor $directory_description must be root-writable, service-traversable, and not group/other-writable" >&2
+      exit 1
+      ;;
+  esac
+  require_no_permissive_acl "$directory_path" "$directory_description" || exit 1
+}
+
+require_exact_root_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  directory_mode="$3"
+  directory_acl_policy="${4:-none}"
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe or missing host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid:$path_gid:$path_mode" = "0:0:$directory_mode" ] || {
+    echo "host-monitor $directory_description must be root:wheel with permissions 0$directory_mode" >&2
+    exit 1
+  }
+  if [ "$directory_acl_policy" = deny-only ]; then
+    require_no_permissive_acl "$directory_path" "$directory_description" || exit 1
+  else
+    require_no_extended_acl "$directory_path" "$directory_description" || exit 1
+  fi
+}
+
+require_regular_payload() {
+  payload_path="$1"
+  payload_description="$2"
+  payload_mode="$3"
+  [ -f "$payload_path" ] && [ ! -L "$payload_path" ] || {
+    echo "Unsafe or missing host-monitor $payload_description: $payload_path" >&2
+    exit 1
+  }
+  read_path_metadata "$payload_path"
+  [ "$path_uid:$path_gid:$path_mode" = "0:0:$payload_mode" ] || {
+    echo "host-monitor $payload_description must be root:wheel with permissions 0$payload_mode" >&2
+    exit 1
+  }
+  require_no_extended_acl "$payload_path" "$payload_description" || exit 1
+}
+
+validate_privileged_roots() {
+  # Every replaceable ancestor below /usr must be root-only: validating a file is not enough
+  # when an ACL or writable parent would let another account rename it after validation.
+  require_exact_root_directory "$system_usr" "system /usr directory" 755 deny-only
+  require_secure_shared_directory "$local_prefix" "local installation prefix"
+  require_secure_shared_directory "$libexec_dir" "executable directory"
+  require_secure_shared_directory "$command_dir" "command directory"
+  require_secure_shared_directory "$share_parent" "shared-data directory"
+  require_exact_root_directory "$share_dir" "package shared-data directory" 755
+  require_exact_root_directory "$library_root" "system Library directory" 755 deny-only
+  require_root_controlled_directory "$state_parent" "Application Support directory"
+  require_exact_root_directory "$launch_daemon_dir" "LaunchDaemon directory" 755
+  require_exact_root_directory "$log_dir" "log directory" 755
+}
+
+validate_launch_payload() {
+  # Installer has already replaced these paths when postinstall runs. Validate
+  # the complete start-critical payload before stopping an existing process;
+  # the rollback path can only re-register this validated, same-version payload.
+  require_regular_payload "$client_binary" "executable" 755
+  [ -x "$client_binary" ] || {
+    echo "host-monitor executable is not executable" >&2
+    exit 1
+  }
+  installed_client_version="$("$client_binary" --version)" || {
+    echo "Could not read the installed host-monitor executable version" >&2
+    exit 1
+  }
+  [ "$installed_client_version" = "host-monitor $package_version" ] || {
+    echo "Installed Client version '$installed_client_version' does not match package $package_version" >&2
+    exit 1
+  }
+
+  require_regular_payload "$logrotate_helper" "log-rotation helper" 755
+  [ -x "$logrotate_helper" ] || {
+    echo "host-monitor log-rotation helper is not executable" >&2
+    exit 1
+  }
+  sh -n "$logrotate_helper" || {
+    echo "host-monitor log-rotation helper has invalid shell syntax" >&2
+    exit 1
+  }
+
+  require_regular_payload "$client_plist" "LaunchDaemon plist" 644
+  require_regular_payload "$logrotate_plist" "log-rotation LaunchDaemon plist" 644
+  require_regular_payload "$newsyslog_config" "newsyslog configuration" 644
+  require_regular_payload "$package_config" "package config" 644
+  require_current_config "$package_config"
+  require_regular_payload "$uninstall_helper" "uninstall helper" 755
+  sh -n "$uninstall_helper" || {
+    echo "host-monitor uninstall helper has invalid shell syntax" >&2
+    exit 1
+  }
+  plutil -lint "$client_plist" >/dev/null || {
+    echo "host-monitor LaunchDaemon plist is invalid" >&2
+    exit 1
+  }
+  plutil -lint "$logrotate_plist" >/dev/null || {
+    echo "host-monitor log-rotation LaunchDaemon plist is invalid" >&2
+    exit 1
+  }
+
+  [ -L "$client_command" ] || {
+    echo "Unsafe or missing host-monitor command link: $client_command" >&2
+    exit 1
+  }
+  client_command_target="$(readlink "$client_command")" || {
+    echo "Could not inspect the host-monitor command link" >&2
+    exit 1
+  }
+  [ "$client_command_target" = "../libexec/host-monitor" ] || {
+    echo "host-monitor command link has an unexpected target" >&2
+    exit 1
+  }
+  read_path_metadata "$client_command"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:755 ] || {
+    echo "host-monitor command link must be root:wheel with permissions 0755" >&2
+    exit 1
+  }
+  require_no_extended_acl "$client_command" "command link" || exit 1
+}
+
+current_config_has_package_version() {
+  current_config_path="$1"
+  config_version_marker="$(
+    awk -v expected="$package_version" '
+      {
+        remaining = $0
+        while (match(remaining, /"application_version"[[:space:]]*:/)) {
+          seen += 1
+          remaining = substr(remaining, RSTART + RLENGTH)
+          if (match(remaining, /^[[:space:]]*"[^"]*"/)) {
+            value = substr(remaining, RSTART, RLENGTH)
+            sub(/^[[:space:]]*"/, "", value)
+            sub(/"$/, "", value)
+            if (value == expected) valid += 1
+          }
+        }
+      }
+      END { printf "%d:%d", seen, valid }
+    ' "$current_config_path"
+  )" || return 1
+  [ "$config_version_marker" = 1:1 ]
+}
+
+is_reserved_service_id() {
+  case "$1" in
+    2[0-9][0-9]|3[0-9][0-9]|4[0-4][0-9]|450) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_current_config() {
+  current_config_path="$1"
+  current_config_has_package_version "$current_config_path" || {
+    echo "$current_config_path is not the current $package_version package config" >&2
+    exit 1
+  }
+}
+
+reregister_stopped_jobs() {
+  reregister_failed=0
+  if [ "$previous_client_stopped" -eq 1 ]; then
+    if inspect_launchd_job system/org.sarmg.hostmonitor; then
+      stopped_client_state=0
+    else
+      stopped_client_state=$?
+    fi
+    case "$stopped_client_state" in
+      0) ;;
+      1)
+        if [ -f "$client_plist" ] && [ ! -L "$client_plist" ]; then
+          launchctl bootstrap system "$client_plist" >/dev/null 2>&1 || reregister_failed=1
+        else
+          reregister_failed=1
+        fi
+        ;;
+      *) reregister_failed=1 ;;
+    esac
+  fi
+  if [ "$previous_logrotate_stopped" -eq 1 ]; then
+    if inspect_launchd_job system/org.sarmg.hostmonitor.logrotate; then
+      stopped_logrotate_state=0
+    else
+      stopped_logrotate_state=$?
+    fi
+    case "$stopped_logrotate_state" in
+      0) ;;
+      1)
+        if [ -f "$logrotate_plist" ] && [ ! -L "$logrotate_plist" ]; then
+          launchctl bootstrap system "$logrotate_plist" >/dev/null 2>&1 || reregister_failed=1
+        else
+          reregister_failed=1
+        fi
+        ;;
+      *) reregister_failed=1 ;;
+    esac
+  fi
+  [ "$reregister_failed" -eq 0 ]
+}
+
+validate_privileged_roots
+validate_launch_payload
+
+if { [ -e "$state" ] || [ -L "$state" ]; } &&
+  [ ! -e "$ownership_dir" ] && [ ! -L "$ownership_dir" ]; then
+  echo "Pre-existing host-monitor state has no package ownership proof" >&2
+  exit 1
+fi
+
+# The bookkeeping root is security-sensitive because it binds package-created
+# accounts to their exact numeric identities. Never let install(1) normalize a
+# foreign or redirected path.
+if [ -e "$ownership_dir" ] || [ -L "$ownership_dir" ]; then
+  [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+    echo "Unsafe host-monitor ownership directory" >&2
+    exit 1
+  }
+  read_path_metadata "$ownership_dir"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] || {
+    echo "host-monitor ownership directory must be root:wheel with permissions 0700" >&2
+    exit 1
+  }
+  require_no_extended_acl "$ownership_dir" "ownership directory" || exit 1
+else
+  install -d -m 0700 -o root -g wheel "$ownership_dir"
+  [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+    echo "host-monitor ownership directory was not created safely" >&2
+    exit 1
+  }
+  chmod -N "$ownership_dir" || {
+    echo "Could not remove inherited ACLs from the host-monitor ownership directory" >&2
+    exit 1
+  }
+fi
+[ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+  echo "host-monitor ownership directory was not created safely" >&2
+  exit 1
+}
+read_path_metadata "$ownership_dir"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] || {
+  echo "host-monitor ownership directory was not secured as root:wheel 0700" >&2
+  exit 1
+}
+require_no_extended_acl "$ownership_dir" "ownership directory" || exit 1
+
+# Validate mutable paths before account mutation. These checks deliberately do
+# not open retained config contents while the old service can still change its
+# directory. The complete check is repeated after launchd is stopped and the
+# state directory has been transferred temporarily to root.
+if [ -e "$state" ] || [ -L "$state" ]; then
+  state_preexisting=1
+  [ -d "$state" ] && [ ! -L "$state" ] || {
+    echo "Unsafe host-monitor state directory" >&2
+    exit 1
+  }
+fi
+[ -d "$log_dir" ] && [ ! -L "$log_dir" ] || {
+  echo "Unsafe host-monitor log directory" >&2
+  exit 1
+}
+read_path_metadata "$log_dir"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:755 ] || {
+  echo "host-monitor log directory must be root:wheel with permissions 0755" >&2
+  exit 1
+}
+if [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
+  ownership_marker_present=1
+  [ -f "$ownership_marker" ] && [ ! -L "$ownership_marker" ] || {
+    echo "Unsafe host-monitor account ownership marker" >&2
+    exit 1
+  }
+  read_path_metadata "$ownership_marker"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] || {
+    echo "host-monitor account ownership marker is not root:wheel with permissions 0600" >&2
+    exit 1
+  }
+  require_no_extended_acl "$ownership_marker" "account ownership marker" || exit 1
+  seen_user=0
+  seen_group=0
+  seen_format=0
+  seen_user_uid=0
+  seen_user_primary_gid=0
+  seen_group_gid=0
+  while IFS= read -r marker_line; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$seen_format" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        seen_format=1
+        ;;
+      user_created=0|user_created=1)
+        [ "$seen_user" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        user_created="${marker_line#user_created=}"
+        seen_user=1
+        ;;
+      group_created=0|group_created=1)
+        [ "$seen_group" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        group_created="${marker_line#group_created=}"
+        seen_group=1
+        ;;
+      user_uid=*)
+        [ "$seen_user_uid" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        created_user_uid="${marker_line#user_uid=}"
+        seen_user_uid=1
+        ;;
+      user_primary_gid=*)
+        [ "$seen_user_primary_gid" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        created_user_primary_gid="${marker_line#user_primary_gid=}"
+        seen_user_primary_gid=1
+        ;;
+      group_gid=*)
+        [ "$seen_group_gid" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        created_group_gid="${marker_line#group_gid=}"
+        seen_group_gid=1
+        ;;
+      *)
+        echo "Invalid host-monitor account ownership marker" >&2
+        exit 1
+        ;;
+    esac
+  done < "$ownership_marker"
+  [ "$seen_format" -eq 1 ] && [ "$seen_user" -eq 1 ] && [ "$seen_group" -eq 1 ] && [ "$seen_user_uid" -eq 1 ] &&
+    [ "$seen_user_primary_gid" -eq 1 ] && [ "$seen_group_gid" -eq 1 ] || {
+    echo "Incomplete host-monitor account ownership marker" >&2
+    exit 1
+  }
+  if [ "$user_created" -eq 1 ]; then
+    is_reserved_service_id "$created_user_uid" &&
+      is_reserved_service_id "$created_user_primary_gid" || {
+      echo "Invalid or out-of-range host-monitor user IDs in account ownership marker" >&2
+      exit 1
+    }
+  elif [ "$created_user_uid" != "-" ] || [ "$created_user_primary_gid" != "-" ]; then
+    echo "Invalid host-monitor user IDs in account ownership marker" >&2
+    exit 1
+  fi
+  if [ "$group_created" -eq 1 ]; then
+    is_reserved_service_id "$created_group_gid" || {
+      echo "Invalid or out-of-range host-monitor group ID in account ownership marker" >&2
+      exit 1
+    }
+  elif [ "$created_group_gid" != "-" ]; then
+    echo "Invalid host-monitor group ID in account ownership marker" >&2
+    exit 1
+  fi
+  if [ "$user_created" -eq 1 ] && [ "$group_created" -eq 1 ] &&
+    [ "$created_user_primary_gid" != "$created_group_gid" ]; then
+    echo "host-monitor ownership marker has inconsistent user/group identity binding" >&2
+    exit 1
+  fi
+fi
+ownership_marker_preexisting="$ownership_marker_present"
+
+# A missing state directory is the only fresh-install case because Installer
+# never extracts there. Any pre-existing tree, including a root-owned recovery
+# tree, must already be bound by this package's exact ownership proof.
+if [ "$state_preexisting" -eq 1 ]; then
+  [ "$ownership_marker_present" -eq 1 ] && [ "$user_created" -eq 1 ] &&
+    [ "$group_created" -eq 1 ] || {
+    echo "Pre-existing host-monitor state is not bound by the package ownership proof" >&2
+    exit 1
+  }
+  read_path_metadata "$state"
+  initial_state_uid="$path_uid"
+  initial_state_gid="$path_gid"
+  initial_state_mode="$path_mode"
+  case "$initial_state_uid:$initial_state_gid:$initial_state_mode" in
+    0:0:700|0:0:755) ;;
+    "$created_user_uid:$created_group_gid:700")
+      ;;
+    *)
+      echo "host-monitor state directory has foreign ownership or permissions" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+write_ownership_marker() {
+  marker_temporary="$ownership_dir/.account-ownership.$$"
+  if [ -e "$marker_temporary" ] || [ -L "$marker_temporary" ]; then
+    echo "Unsafe host-monitor ownership marker temporary path" >&2
+    return 1
+  fi
+  if ! (
+    umask 077
+    set -C
+    printf 'format=%s\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
+      "$package_version" "$user_created" "$created_user_uid" \
+      "$created_user_primary_gid" "$group_created" "$created_group_gid" \
+      > "$marker_temporary"
+  ); then
+    rm -f "$marker_temporary"
+    return 1
+  fi
+  chown root:wheel "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod -N "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod 0600 "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  [ -f "$marker_temporary" ] && [ ! -L "$marker_temporary" ] || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  if ! read_path_metadata "$marker_temporary" ||
+    [ "$path_uid:$path_gid:$path_special_mode:$path_mode" != 0:0:0:600 ] ||
+    ! path_has_no_extended_acl "$marker_temporary"; then
+    echo "host-monitor ownership marker temporary file was not secured" >&2
+    rm -f "$marker_temporary"
+    return 1
+  fi
+  mv -f "$marker_temporary" "$ownership_marker" || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  # This same-directory rename preserves the already-verified inode metadata. It is the final
+  # commit point: no later fallible check may trigger rollback after the new proof is published.
+}
+
+dscl_value() {
+  record="$1"
+  field="$2"
+  dscl_record="$(dscl . -read "$record" "$field" 2>/dev/null)" || return 1
+  printf '%s\n' "$dscl_record" | sed -n "s/^$field: //p"
+}
+
+rollback_created_group() {
+  record="/Groups/$group"
+  if ! dscl . -read "$record" >/dev/null 2>&1; then
+    return 0
+  fi
+  actual_gid="$(dscl_value "$record" PrimaryGroupID || true)"
+  if [ -n "$actual_gid" ] && [ "$actual_gid" != "$group_record_gid" ]; then
+    echo "Refusing to roll back $record: its numeric identity changed during installation" >&2
+    return 1
+  fi
+  if ! dscl . -delete "$record"; then
+    echo "Could not roll back the incomplete $record record" >&2
+    return 1
+  fi
+}
+
+rollback_created_user() {
+  record="/Users/$user"
+  if ! dscl . -read "$record" >/dev/null 2>&1; then
+    return 0
+  fi
+  actual_uid="$(dscl_value "$record" UniqueID || true)"
+  actual_gid="$(dscl_value "$record" PrimaryGroupID || true)"
+  if { [ -n "$actual_uid" ] && [ "$actual_uid" != "$user_record_uid" ]; } ||
+    { [ -n "$actual_gid" ] && [ "$actual_gid" != "$user_record_primary_gid" ]; }; then
+    echo "Refusing to roll back $record: its numeric identity changed during installation" >&2
+    return 1
+  fi
+  if ! dscl . -delete "$record"; then
+    echo "Could not roll back the incomplete $record record" >&2
+    return 1
+  fi
+}
+
+release_verified_state_to_service() {
+  [ "$state_contents_safe" -eq 1 ] || return 1
+  [ -d "$state_parent" ] && [ ! -L "$state_parent" ] || return 1
+  read_path_metadata "$state_parent" || return 1
+  [ "$path_uid" = 0 ] || return 1
+  case "$path_mode" in 7[0145][15]) ;; *) return 1 ;; esac
+  path_has_no_permissive_acl "$state_parent" || return 1
+
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  read_path_metadata "$state" || return 1
+  case "$path_uid:$path_gid:$path_mode" in
+    0:0:700|"$uid:$gid:700") ;;
+    *) return 1 ;;
+  esac
+  path_has_no_extended_acl "$state" || return 1
+
+  [ -f "$config" ] && [ ! -L "$config" ] || return 1
+  read_path_metadata "$config" || return 1
+  [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || return 1
+  path_has_no_extended_acl "$config" || return 1
+  current_config_has_package_version "$config" || return 1
+
+  [ -f "$log" ] && [ ! -L "$log" ] || return 1
+  read_path_metadata "$log" || return 1
+  [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || return 1
+  path_has_no_extended_acl "$log" || return 1
+
+  chown "$uid:$gid" "$state" || return 1
+  read_path_metadata "$state" || return 1
+  [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:700" ] || return 1
+  path_has_no_extended_acl "$state" || return 1
+  state_restore_pending=0
+  state_locked=0
+  restart_state_safe=1
+}
+
+disable_launchd_jobs_for_failed_cutover() {
+  disable_failed=0
+  launchctl disable system/org.sarmg.hostmonitor.logrotate >/dev/null 2>&1 || disable_failed=1
+  launchctl disable system/org.sarmg.hostmonitor >/dev/null 2>&1 || disable_failed=1
+  [ "$disable_failed" -eq 0 ]
+}
+
+inspect_launchd_job() {
+  inspected_job_target="$1"
+  if launchd_inspection_output="$(LC_ALL=C launchctl print "$inspected_job_target" 2>&1)"; then
+    launchd_inspection_status=0
+  else
+    launchd_inspection_status=$?
+  fi
+  case "$launchd_inspection_status" in
+    0) return 0 ;;
+    3|113)
+      case "$launchd_inspection_output" in
+        *'Could not find service "'*' in domain for '*|*'Could not find specified service'*)
+          return 1
+          ;;
+      esac
+      ;;
+  esac
+  echo "Could not inspect $inspected_job_target (launchctl status $launchd_inspection_status)" >&2
+  return 2
+}
+
+require_launchd_job_absent() {
+  absent_job_target="$1"
+  absent_job_description="$2"
+  if inspect_launchd_job "$absent_job_target"; then
+    absent_job_state=0
+  else
+    absent_job_state=$?
+  fi
+  case "$absent_job_state" in
+    1) return 0 ;;
+    0) echo "$absent_job_description is still loaded" >&2 ;;
+  esac
+  return 1
+}
+
+stop_failed_bootstrap_job() {
+  failed_job_target="$1"
+  failed_job_description="$2"
+  inspect_launchd_job "$failed_job_target"
+  failed_job_state=$?
+  case "$failed_job_state" in
+    0) ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
+
+  launchctl bootout "$failed_job_target" >/dev/null 2>&1 || true
+  inspect_launchd_job "$failed_job_target"
+  failed_job_state=$?
+  case "$failed_job_state" in
+    1) return 0 ;;
+    2) return 1 ;;
+  esac
+
+  # A failed bootout may leave a KeepAlive process running. SIGKILL cannot
+  # run an EXIT trap, and a second bootout removes the still-loaded label.
+  launchctl kill SIGKILL "$failed_job_target" >/dev/null 2>&1 || true
+  launchctl bootout "$failed_job_target" >/dev/null 2>&1 || true
+  inspect_launchd_job "$failed_job_target"
+  failed_job_state=$?
+  case "$failed_job_state" in
+    1) return 0 ;;
+    0) echo "Could not remove $failed_job_description after postinstall failed" >&2 ;;
+  esac
+  return 1
+}
+
+stop_failed_client_processes() {
+  is_reserved_service_id "$uid" && is_reserved_service_id "$gid" || {
+    echo "Refusing to signal processes for an out-of-range service identity" >&2
+    return 1
+  }
+  stop_attempt=0
+  while :; do
+    service_process_found=0
+    service_process_inspection_failed=0
+    for pgrep_selector in -u -U; do
+      if pgrep "$pgrep_selector" "$uid" . >/dev/null 2>&1; then
+        service_process_found=1
+      else
+        pgrep_status=$?
+        [ "$pgrep_status" -eq 1 ] || service_process_inspection_failed=1
+      fi
+    done
+    [ "$service_process_inspection_failed" -eq 0 ] || {
+      echo "Could not verify service-account processes during postinstall rollback" >&2
+      return 1
+    }
+    [ "$service_process_found" -eq 1 ] || return 0
+    [ "$stop_attempt" -lt 3 ] || {
+      echo "A service-account process survived postinstall rollback" >&2
+      return 1
+    }
+
+    pkill_failed=0
+    for pkill_selector in -u -U; do
+      pkill -KILL "$pkill_selector" "$uid" . >/dev/null 2>&1
+      pkill_status=$?
+      case "$pkill_status" in
+        0|1) ;;
+        *) pkill_failed=1 ;;
+      esac
+    done
+    [ "$pkill_failed" -eq 0 ] || {
+      echo "Could not kill service-account processes during postinstall rollback" >&2
+      return 1
+    }
+    stop_attempt=$((stop_attempt + 1))
+    sleep 1
+  done
+}
+
+rollback_postinstall() {
+  rollback_status=$?
+  trap - EXIT
+  if [ "$rollback_status" -eq 0 ]; then
+    exit 0
+  fi
+
+  # Cleanup is best effort, but the original package-script failure remains the
+  # exit status. Persistently disable KeepAlive before stopping the helper and
+  # Client so neither launchd nor the helper's EXIT trap can restore the Client.
+  set +e
+  rollback_cleanup_incomplete=0
+  client_job_cleanup_incomplete=0
+  if [ "$launchd_disable_transaction_started" -eq 1 ] &&
+    [ "$restart_state_safe" -eq 0 ]; then
+    disable_launchd_jobs_for_failed_cutover || rollback_cleanup_incomplete=1
+    # Once the disable transaction starts, clean both labels even when the
+    # failure involved an old/reappearing job rather than a new bootstrap.
+    stop_failed_bootstrap_job system/org.sarmg.hostmonitor.logrotate \
+      "the log-rotation helper" || rollback_cleanup_incomplete=1
+    stop_failed_bootstrap_job system/org.sarmg.hostmonitor \
+      "the Client" || {
+      client_job_cleanup_incomplete=1
+      rollback_cleanup_incomplete=1
+    }
+    # This also covers a detached old Client found by the main pre-lock pgrep.
+    stop_failed_client_processes || rollback_cleanup_incomplete=1
+    # Killing a detached service-account process can unblock a bootout that
+    # failed twice. Retry once, then require the label to be absent.
+    if [ "$client_job_cleanup_incomplete" -eq 1 ]; then
+      stop_failed_bootstrap_job system/org.sarmg.hostmonitor \
+        "the Client after killing residual processes" || rollback_cleanup_incomplete=1
+    fi
+  fi
+  if [ "$rollback_cleanup_incomplete" -eq 1 ]; then
+    restart_state_safe=0
+  fi
+
+  if [ "$user_record_pending" -eq 1 ]; then
+    if rollback_created_user; then
+      user_created="$previous_user_created"
+      created_user_uid="$previous_user_uid"
+      created_user_primary_gid="$previous_user_primary_gid"
+      if [ -e "$ownership_marker" ]; then
+        write_ownership_marker ||
+          echo "Could not restore the Client ownership marker after user rollback" >&2
+      fi
+    fi
+  fi
+  if [ "$group_record_pending" -eq 1 ] && rollback_created_group; then
+    if [ "$ownership_marker_preexisting" -eq 0 ]; then
+      rm -f "$ownership_marker"
+    fi
+  fi
+  rm -f "$ownership_dir/.account-ownership.$$"
+  if [ "$state_restore_pending" -eq 1 ]; then
+    if [ "$state_locked" -eq 1 ] && [ -f "$config_temporary" ] &&
+      [ ! -L "$config_temporary" ]; then
+      rm -f "$config_temporary"
+    fi
+    if ! release_verified_state_to_service; then
+      restart_state_safe=0
+      echo "host-monitor mutable state could not be restored safely; stopped jobs will remain stopped" >&2
+    fi
+  fi
+  # A successful state release must not erase an earlier launchd/process
+  # cleanup failure. Only a completely verified rollback may restart jobs.
+  if [ "$rollback_cleanup_incomplete" -eq 1 ]; then
+    restart_state_safe=0
+  fi
+  if [ "$launchd_disable_transaction_started" -eq 1 ]; then
+    if [ "$restart_state_safe" -eq 1 ]; then
+      launchd_enable_failed=0
+      launchctl enable system/org.sarmg.hostmonitor >/dev/null 2>&1 || launchd_enable_failed=1
+      launchctl enable system/org.sarmg.hostmonitor.logrotate >/dev/null 2>&1 || launchd_enable_failed=1
+      if [ "$launchd_enable_failed" -eq 1 ]; then
+        restart_state_safe=0
+        echo "Could not restore the host-monitor launchd enablement state" >&2
+      fi
+    fi
+    if [ "$restart_state_safe" -eq 0 ]; then
+      if ! disable_launchd_jobs_for_failed_cutover; then
+        rollback_cleanup_incomplete=1
+        echo "Could not persistently disable all host-monitor launchd jobs" >&2
+      fi
+    fi
+  fi
+  if [ "$restart_state_safe" -eq 1 ]; then
+    reregister_stopped_jobs ||
+      echo "Could not re-register all launchd jobs stopped during postinstall" >&2
+  elif [ "$previous_client_stopped" -eq 1 ] || [ "$previous_logrotate_stopped" -eq 1 ]; then
+    echo "host-monitor launchd jobs were not restarted because mutable state is not trusted" >&2
+  fi
+  if [ "$rollback_cleanup_incomplete" -eq 1 ]; then
+    echo "host-monitor rollback cleanup is incomplete; verify launchd and service-account processes manually" >&2
+  fi
+  exit "$rollback_status"
+}
+
+# Account records and launchd registrations live outside the package payload,
+# so Installer cannot roll them back for us when a later command fails.
+trap rollback_postinstall EXIT
+
+listing_contains_id() {
+  account_listing="$1"
+  sought_id="$2"
+  while read -r _record_name listed_id _remaining; do
+    if [ "$listed_id" = "$sought_id" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+listing_contains_name() {
+  account_listing="$1"
+  sought_name="$2"
+  while read -r listed_name _remaining; do
+    if [ "$listed_name" = "$sought_name" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+existing_group_matches_marker() {
+  actual_gid="$1"
+  is_reserved_service_id "$actual_gid" || return 1
+  # RealName is display metadata, not an account identity or authorization
+  # boundary. Bind the already-enumerated record name to its exact numeric ID
+  # and root-only package marker instead.
+  [ "$ownership_marker_present" -eq 1 ] &&
+    [ "$group_created" -eq 1 ] &&
+    [ "$actual_gid" = "$created_group_gid" ]
+}
+
+existing_user_matches_marker() {
+  actual_uid="$1"
+  actual_primary_gid="$2"
+  actual_shell="$3"
+  actual_home="$4"
+  service_group_gid="$5"
+  for numeric_id in "$actual_uid" "$actual_primary_gid" "$service_group_gid"; do
+    is_reserved_service_id "$numeric_id" || return 1
+  done
+  [ "$actual_shell" = "/usr/bin/false" ] &&
+    [ "$actual_home" = "/var/empty" ] &&
+    [ "$actual_primary_gid" = "$service_group_gid" ] || return 1
+  [ "$ownership_marker_present" -eq 1 ] &&
+    [ "$user_created" -eq 1 ] &&
+    [ "$actual_uid" = "$created_user_uid" ] &&
+    [ "$actual_primary_gid" = "$created_user_primary_gid" ]
+}
+
+next_free_id() {
+  record_type="$1"
+  field="$2"
+  candidate=450
+  record_listing="$(dscl . -list "$record_type" "$field")" || {
+    echo "Could not enumerate $record_type $field while allocating an Client account ID" >&2
+    exit 1
+  }
+  user_group_listing=""
+  if [ "$record_type" = "/Groups" ]; then
+    user_group_listing="$(dscl . -list /Users PrimaryGroupID)" || {
+      echo "Could not enumerate local user group IDs while allocating the Client group" >&2
+      exit 1
+    }
+  fi
+  while :; do
+    id_in_use=0
+    if listing_contains_id "$record_listing" "$candidate"; then
+      id_in_use=1
+    fi
+    # A primary GID can still be referenced even if its group record was removed. Never create
+    # the service group with a numeric ID already attached to another local account.
+    if [ "$record_type" = "/Groups" ] &&
+      listing_contains_id "$user_group_listing" "$candidate"; then
+      id_in_use=1
+    fi
+    [ "$id_in_use" -eq 1 ] || break
+    candidate=$((candidate - 1))
+    if [ "$candidate" -lt 200 ]; then
+      echo "No free local account ID in the reserved host-monitor range (200-450)" >&2
+      exit 1
+    fi
+  done
+  printf '%s\n' "$candidate"
+}
+
+local_group_names="$(dscl . -list /Groups)" || {
+  echo "Could not enumerate local groups; refusing to create or adopt $group" >&2
+  exit 1
+}
+if ! listing_contains_name "$local_group_names" "$group"; then
+  gid="$(next_free_id /Groups PrimaryGroupID)"
+  group_record_pending=1
+  group_record_gid="$gid"
+  dscl . -create "/Groups/$group"
+  dscl . -create "/Groups/$group" RealName "host-monitor"
+  dscl . -create "/Groups/$group" PrimaryGroupID "$gid"
+  dscl . -create "/Groups/$group" Password '*'
+  verified_gid="$(dscl_value "/Groups/$group" PrimaryGroupID)" || {
+    echo "Could not verify the newly created $group group" >&2
+    exit 1
+  }
+  [ "$verified_gid" = "$gid" ] || {
+    echo "New $group group has an unexpected PrimaryGroupID" >&2
+    exit 1
+  }
+  group_created=1
+  created_group_gid="$gid"
+  write_ownership_marker
+  group_record_pending=0
+else
+  gid="$(dscl_value "/Groups/$group" PrimaryGroupID)"
+  if ! existing_group_matches_marker "$gid"; then
+    echo "Existing $group group does not match the installer ownership binding" >&2
+    exit 1
+  fi
+fi
+
+local_user_names="$(dscl . -list /Users)" || {
+  echo "Could not enumerate local users; refusing to create or adopt $user" >&2
+  exit 1
+}
+if ! listing_contains_name "$local_user_names" "$user"; then
+  uid="$(next_free_id /Users UniqueID)"
+  user_record_pending=1
+  user_record_uid="$uid"
+  user_record_primary_gid="$gid"
+  previous_user_created="$user_created"
+  previous_user_uid="$created_user_uid"
+  previous_user_primary_gid="$created_user_primary_gid"
+  dscl . -create "/Users/$user"
+  dscl . -create "/Users/$user" RealName "host-monitor"
+  dscl . -create "/Users/$user" UniqueID "$uid"
+  dscl . -create "/Users/$user" PrimaryGroupID "$gid"
+  dscl . -create "/Users/$user" UserShell /usr/bin/false
+  dscl . -create "/Users/$user" NFSHomeDirectory /var/empty
+  dscl . -create "/Users/$user" IsHidden 1
+  dscl . -create "/Users/$user" Password '*'
+  verified_uid="$(dscl_value "/Users/$user" UniqueID)" || {
+    echo "Could not verify the newly created $user account" >&2
+    exit 1
+  }
+  verified_primary_gid="$(dscl_value "/Users/$user" PrimaryGroupID)" || {
+    echo "Could not verify the newly created $user primary group" >&2
+    exit 1
+  }
+  [ "$verified_uid" = "$uid" ] && [ "$verified_primary_gid" = "$gid" ] || {
+    echo "New $user account has unexpected numeric identity attributes" >&2
+    exit 1
+  }
+  user_created=1
+  created_user_uid="$uid"
+  created_user_primary_gid="$gid"
+  write_ownership_marker
+  user_record_pending=0
+else
+  existing_uid="$(dscl_value "/Users/$user" UniqueID)"
+  existing_gid="$(dscl_value "/Users/$user" PrimaryGroupID)"
+  existing_shell="$(dscl_value "/Users/$user" UserShell || true)"
+  existing_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
+  if ! existing_user_matches_marker "$existing_uid" "$existing_gid" \
+    "$existing_shell" "$existing_home" "$gid"; then
+    echo "Existing $user account does not match the installer ownership binding" >&2
+    printf '%s\n' \
+      "actual uid=$existing_uid primary_gid=$existing_gid shell=$existing_shell home=$existing_home" \
+      "expected uid=$created_user_uid primary_gid=$created_user_primary_gid group_gid=$gid shell=/usr/bin/false home=/var/empty" >&2
+    exit 1
+  fi
+  uid="$existing_uid"
+fi
+write_ownership_marker
+
+# 安装与授权刻意分离。未配对时 Client 只低频记录 awaiting_authorization；用户随后执行
+# `host-monitor pair --server https://...`，常驻进程会接续同一个浏览器配对请求。
+# Keep the previous jobs alive through immutable-payload and identity checks.
+# Mutable service-owned paths can only be trusted after both jobs are stopped,
+# no service-UID process remains, and the state directory is locked to root.
+if inspect_launchd_job system/org.sarmg.hostmonitor; then
+  previous_client_loaded=1
+else
+  initial_client_state=$?
+  [ "$initial_client_state" -eq 1 ] || exit 1
+fi
+if inspect_launchd_job system/org.sarmg.hostmonitor.logrotate; then
+  previous_logrotate_loaded=1
+else
+  initial_logrotate_state=$?
+  [ "$initial_logrotate_state" -eq 1 ] || exit 1
+fi
+if [ "$previous_logrotate_loaded" -eq 1 ]; then
+  previous_logrotate_stopped=1
+  launchctl bootout system/org.sarmg.hostmonitor.logrotate
+fi
+
+# The rotation helper may have stopped the Client temporarily and restores it
+# from its exit trap. Its bootout must complete before deciding whether the
+# Client label needs a second bootout.
+if inspect_launchd_job system/org.sarmg.hostmonitor; then
+  previous_client_loaded=1
+  previous_client_stopped=1
+  launchctl bootout system/org.sarmg.hostmonitor
+else
+  post_helper_client_state=$?
+  case "$post_helper_client_state" in
+    1) [ "$previous_client_loaded" -eq 0 ] || previous_client_stopped=1 ;;
+    *) exit 1 ;;
+  esac
+fi
+if inspect_launchd_job system/org.sarmg.hostmonitor; then
+  previous_client_loaded=1
+  previous_client_stopped=1
+  launchctl bootout system/org.sarmg.hostmonitor
+else
+  second_client_state=$?
+  [ "$second_client_state" -eq 1 ] || exit 1
+fi
+if ! require_launchd_job_absent system/org.sarmg.hostmonitor.logrotate \
+  "host-monitor log-rotation helper" ||
+  ! require_launchd_job_absent system/org.sarmg.hostmonitor "host-monitor"; then
+  echo "host-monitor launchd jobs did not remain stopped" >&2
+  exit 1
+fi
+
+launchd_disable_transaction_started=1
+launchctl disable system/org.sarmg.hostmonitor.logrotate
+launchctl disable system/org.sarmg.hostmonitor
+restart_state_safe=0
+for pgrep_selector in -u -U; do
+  if pgrep "$pgrep_selector" "$uid" . >/dev/null 2>&1; then
+    echo "A process is still running with the host-monitor service identity" >&2
+    exit 1
+  else
+    pgrep_status=$?
+    [ "$pgrep_status" -eq 1 ] || {
+      echo "Could not verify that the host-monitor service account is idle" >&2
+      exit 1
+    }
+  fi
+done
+if ! require_launchd_job_absent system/org.sarmg.hostmonitor.logrotate \
+  "host-monitor log-rotation helper" ||
+  ! require_launchd_job_absent system/org.sarmg.hostmonitor "host-monitor"; then
+  echo "A host-monitor launchd job reappeared before the state lock" >&2
+  exit 1
+fi
+
+# The parent protects the state directory entry itself from replacement while
+# root takes temporary ownership. Recheck it after stopping the service so the
+# lock and every later pathname operation share the same trust boundary.
+require_root_controlled_directory "$state_parent" "Application Support directory"
+if [ "$state_preexisting" -eq 1 ]; then
+  [ -d "$state" ] && [ ! -L "$state" ] || {
+    echo "host-monitor state directory changed before it could be locked" >&2
+    exit 1
+  }
+  read_path_metadata "$state"
+  [ "$path_uid:$path_gid:$path_mode" = "$initial_state_uid:$initial_state_gid:$initial_state_mode" ] || {
+    echo "host-monitor state directory metadata changed before it could be locked" >&2
+    exit 1
+  }
+  require_no_extended_acl "$state" "state directory" || exit 1
+  state_restore_pending=1
+else
+  if [ -e "$state" ] || [ -L "$state" ]; then
+    echo "host-monitor state path appeared during installation" >&2
+    exit 1
+  fi
+  state_restore_pending=1
+  install -d -m 0700 -o root -g wheel "$state"
+fi
+
+chown 0:0 "$state"
+chmod -N "$state" || {
+  echo "Could not remove ACLs while locking the host-monitor state directory" >&2
+  exit 1
+}
+chmod 0700 "$state"
+[ -d "$state" ] && [ ! -L "$state" ] || {
+  echo "host-monitor state directory was redirected while being locked" >&2
+  exit 1
+}
+read_path_metadata "$state"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] || {
+  echo "host-monitor state directory could not be locked to root" >&2
+  exit 1
+}
+require_no_extended_acl "$state" "locked state directory" || exit 1
+state_locked=1
+
+# Revalidate retained configuration only inside the root-owned directory. A
+# service-owned state tree that has lost config is treated as tampered; only a
+# fresh or interrupted root-owned installation may initialize it from payload.
+if [ -e "$config" ] || [ -L "$config" ]; then
+  [ -f "$config" ] && [ ! -L "$config" ] || {
+    echo "Unsafe host-monitor retained config after state lock" >&2
+    exit 1
+  }
+  read_path_metadata "$config"
+  if [ "$initial_state_uid" = 0 ] || [ "$state_preexisting" -eq 0 ]; then
+    case "$path_uid:$path_gid:$path_mode" in
+      0:0:600|"$uid:$gid:600") ;;
+      *) echo "host-monitor retained config has foreign ownership or permissions" >&2; exit 1 ;;
+    esac
+  else
+    [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+      echo "host-monitor retained config no longer matches the service identity" >&2
+      exit 1
+    }
+  fi
+  require_no_extended_acl "$config" "retained config" || exit 1
+  require_current_config "$config"
+  chmod -N "$config" || {
+    echo "Could not remove ACLs from the host-monitor config" >&2
+    exit 1
+  }
+  chown "$uid:$gid" "$config"
+  chmod 0600 "$config"
+else
+  if [ "$state_preexisting" -eq 1 ] && [ "$initial_state_uid" != 0 ]; then
+    echo "Existing host-monitor service state is missing config.json" >&2
+    exit 1
+  fi
+  if [ -e "$config_temporary" ] || [ -L "$config_temporary" ]; then
+    echo "Unsafe host-monitor temporary config path" >&2
+    exit 1
+  fi
+  if ! (
+    umask 077
+    set -C
+    : > "$config_temporary"
+  ); then
+    echo "Could not create the host-monitor temporary config exclusively" >&2
+    exit 1
+  fi
+  cp "$package_config" "$config_temporary"
+  chmod -N "$config_temporary" || {
+    echo "Could not remove ACLs from the host-monitor temporary config" >&2
+    exit 1
+  }
+  chown "$uid:$gid" "$config_temporary"
+  chmod 0600 "$config_temporary"
+  [ -f "$config_temporary" ] && [ ! -L "$config_temporary" ] || {
+    echo "host-monitor temporary config was redirected" >&2
+    exit 1
+  }
+  read_path_metadata "$config_temporary"
+  [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+    echo "host-monitor temporary config was not secured" >&2
+    exit 1
+  }
+  require_no_extended_acl "$config_temporary" "temporary config" || exit 1
+  require_current_config "$config_temporary"
+  ln "$config_temporary" "$config" || {
+    echo "Could not publish the host-monitor config without replacing an existing path" >&2
+    exit 1
+  }
+  rm -f "$config_temporary"
+fi
+
+[ -f "$config" ] && [ ! -L "$config" ] || {
+  echo "host-monitor config path was redirected during postinstall" >&2
+  exit 1
+}
+read_path_metadata "$config"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+  echo "host-monitor config could not be secured for the service identity" >&2
+  exit 1
+}
+require_no_extended_acl "$config" "config" || exit 1
+require_current_config "$config"
+
+if [ -e "$log" ] || [ -L "$log" ]; then
+  [ -f "$log" ] && [ ! -L "$log" ] || {
+    echo "Unsafe host-monitor log file after launchd stop" >&2
+    exit 1
+  }
+  read_path_metadata "$log"
+  case "$path_uid:$path_gid:$path_mode" in
+    0:0:600|"$uid:$gid:600") ;;
+    *) echo "host-monitor log has foreign ownership or permissions" >&2; exit 1 ;;
+  esac
+  require_no_extended_acl "$log" "log file" || exit 1
+else
+  touch "$log"
+fi
+[ -f "$log" ] && [ ! -L "$log" ] || {
+  echo "host-monitor log path was redirected during postinstall" >&2
+  exit 1
+}
+chmod -N "$log" || {
+  echo "Could not remove ACLs from the host-monitor log" >&2
+  exit 1
+}
+chown "$uid:$gid" "$log"
+chmod 0600 "$log"
+read_path_metadata "$log"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+  echo "host-monitor log could not be secured for the service identity" >&2
+  exit 1
+}
+require_no_extended_acl "$log" "log file" || exit 1
+
+state_contents_safe=1
+release_verified_state_to_service || {
+  echo "host-monitor state directory could not be returned safely to the service identity" >&2
+  exit 1
+}
+
+launchctl enable system/org.sarmg.hostmonitor
+launchctl enable system/org.sarmg.hostmonitor.logrotate
+restart_state_safe=0
+launchctl bootstrap system "$client_plist"
+launchctl bootstrap system "$logrotate_plist"
+
+cat <<'EOF'
+
+host-monitor's LaunchDaemon is started, but this new installation is not paired yet and is not
+sending authorized telemetry.
+
+Create an instance and one-time activation code in the Host Monitoring Web console, then run this
+command locally. It deliberately runs as the service account so the daemon owns and can read
+the generated credential files:
+
+  sudo -u _hostmonitor /usr/local/bin/host-monitor pair \
+    --config '/Library/Application Support/host-monitor/config.json' \
+    --server https://host-monitoring.example.com
+
+Replace the example URL with your Host Monitoring console origin. The package does not contain a
+deployment token, and pairing does not expose the long-lived Client secret to the browser.
+
+After pairing, inspect local state and run the read-only doctor as the same service account:
+
+  sudo -u _hostmonitor /usr/local/bin/host-monitor status --output human \
+    --config '/Library/Application Support/host-monitor/config.json'
+  sudo -u _hostmonitor /usr/local/bin/host-monitor doctor --output human \
+    --config '/Library/Application Support/host-monitor/config.json'
+
+Inspect the LaunchDaemon and its private log:
+
+  sudo launchctl print system/org.sarmg.hostmonitor
+  sudo tail -n 100 /var/log/host-monitor.log
+
+Uninstall helper:
+
+  sudo /usr/local/share/host-monitor/uninstall.sh
+
+EOF
+
+restart_state_safe=1
+exit 0

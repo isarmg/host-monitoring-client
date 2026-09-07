@@ -1,0 +1,190 @@
+name: Host Monitoring CI
+
+on:
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUSTUP_TOOLCHAIN: 1.98.0
+
+jobs:
+  host-monitor:
+    name: Desktop host-monitor (${{ matrix.os }})
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal --component clippy
+      - name: Resolve Windows MSI version from Cargo metadata
+        if: runner.os == 'Windows'
+        id: host_monitor_version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
+          $clientPackage = @($metadata.packages | Where-Object name -eq "host-monitor")
+          if ($clientPackage.Count -ne 1) {
+              throw "cargo metadata did not contain exactly one host-monitor package."
+          }
+          $version = $clientPackage[0].version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Windows MSI requires a strict MAJOR.MINOR.PATCH Cargo version; found '$version'."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Clippy
+        run: cargo clippy --locked -p host-monitor --all-targets -- -D warnings
+      - name: Check Linux TLS fixture tools
+        if: runner.os == 'Linux'
+        run: |
+          openssl version
+          python3 -c 'import ssl; assert ssl.HAS_TLSv1_3; print(ssl.OPENSSL_VERSION)'
+      - name: Test
+        # Linux tests generate ephemeral keys and run a loopback Python TLS peer.
+        run: cargo test --locked -p host-monitor
+      - name: Check without optional features
+        run: cargo check --locked -p host-monitor --no-default-features --all-targets
+      - name: Check OTLP only
+        run: cargo check --locked -p host-monitor --no-default-features --features otlp --all-targets
+      - name: Check NVIDIA only
+        run: cargo check --locked -p host-monitor --no-default-features --features nvidia --all-targets
+      - name: Validate Linux packaging lifecycle
+        if: runner.os == 'Linux'
+        run: sh packaging/linux/tests/test-lifecycle.sh
+      - name: Validate Linux package builder
+        if: runner.os == 'Linux'
+        run: sh packaging/linux/tests/test-build-packages.sh
+      - name: Build native Windows service, tray companion, and maintenance helper
+        if: runner.os == 'Windows'
+        run: >-
+          cargo build --locked --release -p host-monitor --target x86_64-pc-windows-msvc
+          --bin host-monitor --bin host-monitor-maintenance --bin host-monitor-tray
+      - name: Verify native Windows PE subsystems
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\tests\Test-PeSubsystems.ps1
+      - name: Validate WiX MSI authoring
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\tests\Test-WixAuthoring.ps1
+      - name: Build WiX 4 MSI
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          HOST_MONITOR_VERSION: ${{ steps.host_monitor_version.outputs.version }}
+        run: >-
+          packaging\windows\wix\build-msi.cmd %HOST_MONITOR_VERSION%
+          target\x86_64-pc-windows-msvc\release\host-monitor.exe
+          target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe
+          target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe
+      - name: Validate macOS packaging lifecycle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sh packaging/macos/tests/validate-packaging.sh
+
+  android-host-monitor-library:
+    name: Mobile host-monitor library (Android / ${{ matrix.target }})
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain and Android target
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add --toolchain 1.98.0 ${{ matrix.target }}
+      - name: Check host-driven library boundary
+        run: >-
+          cargo check --locked -p host-monitor --target ${{ matrix.target }}
+          --lib --no-default-features
+
+  apple-mobile-host-monitor-library:
+    name: Mobile host-monitor library (${{ matrix.scope }} / ${{ matrix.target }})
+    permissions:
+      contents: read
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scope: iOS/iPadOS device
+            target: aarch64-apple-ios
+          - scope: iOS/iPadOS simulator
+            target: aarch64-apple-ios-sim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain and Apple target
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add --toolchain 1.98.0 ${{ matrix.target }}
+      - name: Check host-driven library boundary
+        run: >-
+          cargo check --locked -p host-monitor --target ${{ matrix.target }}
+          --lib --no-default-features
+
+  otlp:
+    name: host-monitor OTLP end-to-end
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      collector:
+        image: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+        ports:
+          - 4318:4318
+    env:
+      HOST_MONITOR_TEST_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
+      HOST_MONITOR_TEST_REQUIRE_OTLP: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Wait for Collector
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null -w '%{http_code}' \
+                 -X POST http://127.0.0.1:4318/v1/metrics \
+                 -H 'content-type: application/x-protobuf' --data-binary '' | grep -qE '^(200|400|415)$'; then
+              echo "collector is accepting connections"; exit 0
+            fi
+            sleep 2
+          done
+          echo "collector did not become ready" >&2; exit 1
+      - name: Validate OTLP protobuf encoding
+        run: >-
+          cargo test --locked -p host-monitor --no-default-features --features otlp
+          --test otlp_encoding
+      - name: OTLP end-to-end
+        run: >-
+          cargo test --locked -p host-monitor --no-default-features --features otlp
+          --test otlp_live

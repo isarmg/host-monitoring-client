@@ -1,0 +1,64 @@
+name: host-monitor
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: sarmg <isarmg@163.com>
+description: Read-only cross-platform host telemetry client for Host Monitoring
+license: Apache-2.0
+overrides:
+  deb:
+    # useradd/groupadd/userdel/groupdel are provided by passwd on Debian-family
+    # systems; systemctl and the unit runtime come from systemd.
+    depends:
+      - passwd
+      - systemd
+      - util-linux
+  rpm:
+    # The same account tools use the shadow-utils package name on RPM-family
+    # systems.
+    depends:
+      - shadow-utils
+      - systemd
+      - util-linux
+# ⚠ 必须从**工作区根**执行：
+#   cargo build --release -p host-monitor
+#   NFPM_ARCH=amd64 packaging/linux/build-packages.sh
+# build-packages.sh 从 Cargo 读取唯一当前版本，并在调用 nFPM 前静态核对下面这个
+# 固定 payload 的 ELF 架构、专用版本段与 host-monitor.json.example；不要执行交叉架构
+# payload，也不要用 CLIENT_BINARY/任意 VERSION 把校验对象和实际入包对象拆开。
+# 合并为 Cargo workspace 后产物在根 target/，路径因此全部根相对。
+#
+# ⚠⚠ 不要在 `contents[].src` 里写 `${VAR}`——nfpm 不对该字段做环境变量展开。
+# 产物路径必须是已经静态校验的固定 workspace-relative 路径。
+#
+# 交叉编译的产物请先落到 target/release/ 再打包，例如：
+#   cargo build --release -p host-monitor --target aarch64-unknown-linux-gnu
+#   install -Dm755 target/aarch64-unknown-linux-gnu/release/host-monitor target/release/host-monitor
+contents:
+  - src: ./target/release/host-monitor
+    dst: /usr/bin/host-monitor
+    file_info:
+      mode: 0755
+  - src: ./config/host-monitor.json.example
+    dst: /etc/host-monitor/config.json
+    type: config|noreplace
+    file_info:
+      mode: 0600
+  - src: ./packaging/linux/host-monitor.service
+    dst: /usr/lib/systemd/system/host-monitor.service
+  # GPU drop-in：默认构建启用 nvidia feature，但 unit 里 PrivateDevices=yes 会挡住
+  # NVML 需要的 /dev/nvidia*，装了包却读不到 GPU。该文件必须**随包分发**——只留在
+  # 源码树里的话，装 deb/rpm 的用户根本拿不到，表现为"GPU 采集静默不可用"。
+  # 启用方式在 postinstall 中说明。
+  - src: ./packaging/linux/host-monitor-gpu.conf
+    dst: /usr/share/host-monitor/host-monitor-gpu.conf
+  - src: ./packaging/linux/purge-local-state.sh
+    dst: /usr/sbin/host-monitor-purge
+    file_info:
+      mode: 0755
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh
+  preremove: ./packaging/linux/preremove.sh
+  postremove: ./packaging/linux/postremove.sh

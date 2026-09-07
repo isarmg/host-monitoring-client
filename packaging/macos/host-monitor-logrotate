@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+log="/var/log/host-monitor.log"
+config="/usr/local/share/host-monitor/newsyslog.conf"
+client_plist="/Library/LaunchDaemons/org.sarmg.hostmonitor.plist"
+client_target="system/org.sarmg.hostmonitor"
+max_bytes=10485760
+client_was_loaded=0
+
+report_error() {
+  logger -p daemon.err -t host-monitor-logrotate "$*" >/dev/null 2>&1 || true
+  echo "host-monitor-logrotate: $*" >&2
+}
+
+restart_client() {
+  if [ "$client_was_loaded" -eq 1 ]; then
+    if launchctl bootstrap system "$client_plist"; then
+      client_was_loaded=0
+    else
+      report_error "failed to restart org.sarmg.hostmonitor after log rotation"
+      return 1
+    fi
+  fi
+}
+
+handle_signal() {
+  trap - HUP INT TERM EXIT
+  restart_client || true
+  exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || {
+  report_error "must run as root"
+  exit 1
+}
+[ -f "$log" ] || exit 0
+[ -r "$config" ] || {
+  report_error "missing rotation configuration: $config"
+  exit 1
+}
+
+size="$(stat -f '%z' "$log")"
+case "$size" in
+  ''|*[!0-9]*)
+    report_error "could not determine log size"
+    exit 1
+    ;;
+esac
+[ "$size" -ge "$max_bytes" ] || exit 0
+
+# launchd maps the Client's stderr directly to the log file, so renaming a live log would
+# leave the process writing to the archived inode. Stop by service label, rotate, then
+# bootstrap the exact same job definition. The EXIT trap also restores it after failures.
+if launchctl print "$client_target" >/dev/null 2>&1; then
+  launchctl bootout "$client_target"
+  client_was_loaded=1
+fi
+trap restart_client EXIT
+trap handle_signal HUP INT TERM
+
+newsyslog -s -R host-monitor -f "$config" "$log"
+restart_client
+trap - HUP INT TERM EXIT
+
+exit 0

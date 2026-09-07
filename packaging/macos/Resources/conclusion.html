@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style>body{font:13px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.45}h1{font-size:22px}code{font-family:ui-monospace,Menlo,monospace}</style>
+<h1>Installed — pairing is still required</h1>
+<p>The LaunchDaemon has started, but it will not send authorized telemetry until it is paired.</p>
+<p>Create a one-time activation key in Host Monitoring, then run in Terminal:</p>
+<p><code>sudo -u _hostmonitor /usr/local/bin/host-monitor pair --config '/Library/Application Support/host-monitor/config.json' --server https://host-monitoring.example.com --output human</code></p>
+<p>Replace the example URL with your console origin. To inspect the service later, use
+<code>sudo launchctl print system/org.sarmg.hostmonitor</code>.</p>
+</html>

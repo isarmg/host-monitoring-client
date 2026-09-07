@@ -1,0 +1,288 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+package_version="@HOST_MONITOR_PACKAGE_VERSION@"
+state_parent="/Library/Application Support"
+client_binary="/usr/local/libexec/host-monitor"
+client_command="/usr/local/bin/host-monitor"
+logrotate_helper="/usr/local/libexec/host-monitor-logrotate"
+client_plist="/Library/LaunchDaemons/org.sarmg.hostmonitor.plist"
+logrotate_plist="/Library/LaunchDaemons/org.sarmg.hostmonitor.logrotate.plist"
+log_dir="/var/log"
+libexec_dir="${client_binary%/*}"
+command_dir="${client_command%/*}"
+local_prefix="${libexec_dir%/*}"
+system_usr="${local_prefix%/*}"
+share_parent="$local_prefix/share"
+share_dir="$share_parent/host-monitor"
+package_config="$share_dir/host-monitor.json.example"
+newsyslog_config="$share_dir/newsyslog.conf"
+uninstall_helper="$share_dir/uninstall.sh"
+launch_daemon_dir="${client_plist%/*}"
+library_root="${launch_daemon_dir%/*}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "host-monitor preinstall must run as root" >&2
+  exit 1
+fi
+
+read_path_metadata() {
+  metadata_path="$1"
+  path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path")" || {
+    echo "Could not inspect ownership and permissions for $metadata_path" >&2
+    return 1
+  }
+  path_uid="${path_metadata%%:*}"
+  path_metadata_remainder="${path_metadata#*:}"
+  path_gid="${path_metadata_remainder%%:*}"
+  path_metadata_remainder="${path_metadata_remainder#*:}"
+  path_special_mode="${path_metadata_remainder%%:*}"
+  path_mode="${path_metadata_remainder#*:}"
+  case "$path_uid:$path_gid:$path_special_mode:$path_mode" in
+    *[!0-9:]*)
+      echo "Invalid ownership or permission metadata for $metadata_path" >&2
+      return 1
+      ;;
+    :*|*::*|*:)
+      echo "Incomplete ownership or permission metadata for $metadata_path" >&2
+      return 1
+      ;;
+  esac
+  [ "$path_special_mode" = 0 ] || {
+    echo "Unexpected set-id or sticky permission bits on $metadata_path" >&2
+    return 1
+  }
+}
+
+require_no_extended_acl() {
+  acl_path="$1"
+  acl_description="$2"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || {
+    echo "Could not inspect the ACL on host-monitor $acl_description" >&2
+    exit 1
+  }
+  acl_first_line=""
+  acl_has_additional_lines=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+    else
+      acl_has_additional_lines=1
+    fi
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] && [ "$acl_has_additional_lines" -eq 0 ] || {
+    echo "host-monitor $acl_description must not have an extended ACL" >&2
+    exit 1
+  }
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    ''|*+)
+      echo "host-monitor $acl_description must not have an extended ACL" >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_no_permissive_acl() {
+  acl_path="$1"
+  acl_description="$2"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || {
+    echo "Could not inspect the ACL on host-monitor $acl_description" >&2
+    exit 1
+  }
+  acl_first_line=""
+  acl_entry_count=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+      continue
+    fi
+    case "$acl_line" in
+      *" allow "*)
+        echo "host-monitor $acl_description must not have a permissive extended ACL" >&2
+        exit 1
+        ;;
+      [[:space:]]*[0-9]*:*" deny "*) acl_entry_count=$((acl_entry_count + 1)) ;;
+      *)
+        echo "host-monitor $acl_description must not have a permissive extended ACL" >&2
+        exit 1
+        ;;
+    esac
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] || {
+    echo "host-monitor $acl_description ACL listing was incomplete" >&2
+    exit 1
+  }
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    *+)
+      [ "$acl_entry_count" -gt 0 ] || {
+        echo "host-monitor $acl_description ACL listing was incomplete" >&2
+        exit 1
+      }
+      ;;
+    '')
+      echo "host-monitor $acl_description ACL listing was incomplete" >&2
+      exit 1
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_existing_shared_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  if [ ! -e "$directory_path" ] && [ ! -L "$directory_path" ]; then
+    return 0
+  fi
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid:$path_gid" = 0:0 ] || {
+    echo "host-monitor $directory_description must be owned by root:wheel" >&2
+    exit 1
+  }
+  case "$path_mode" in
+    7[0145][15]) ;;
+    *)
+      echo "host-monitor $directory_description must be root-writable, service-traversable, and not group/other-writable" >&2
+      exit 1
+      ;;
+  esac
+  require_no_extended_acl "$directory_path" "$directory_description"
+}
+
+validate_existing_exact_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  directory_mode="$3"
+  directory_acl_policy="${4:-none}"
+  if [ ! -e "$directory_path" ] && [ ! -L "$directory_path" ]; then
+    return 0
+  fi
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid:$path_gid:$path_mode" = "0:0:$directory_mode" ] || {
+    echo "host-monitor $directory_description must be root:wheel with permissions 0$directory_mode" >&2
+    exit 1
+  }
+  if [ "$directory_acl_policy" = deny-only ]; then
+    require_no_permissive_acl "$directory_path" "$directory_description"
+  else
+    require_no_extended_acl "$directory_path" "$directory_description"
+  fi
+}
+
+validate_existing_root_controlled_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe or missing host-monitor $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid" = 0 ] || {
+    echo "host-monitor $directory_description must be owned by root" >&2
+    exit 1
+  }
+  case "$path_mode" in
+    7[0145][15]) ;;
+    *)
+      echo "host-monitor $directory_description must be root-writable, service-traversable, and not group/other-writable" >&2
+      exit 1
+      ;;
+  esac
+  require_no_permissive_acl "$directory_path" "$directory_description"
+}
+
+validate_existing_regular_payload() {
+  payload_path="$1"
+  payload_description="$2"
+  payload_mode="$3"
+  if [ ! -e "$payload_path" ] && [ ! -L "$payload_path" ]; then
+    return 0
+  fi
+  [ -f "$payload_path" ] && [ ! -L "$payload_path" ] || {
+    echo "Unsafe existing host-monitor $payload_description: $payload_path" >&2
+    exit 1
+  }
+  read_path_metadata "$payload_path"
+  [ "$path_uid:$path_gid:$path_mode" = "0:0:$payload_mode" ] || {
+    echo "Existing host-monitor $payload_description must be root:wheel with permissions 0$payload_mode" >&2
+    exit 1
+  }
+  require_no_extended_acl "$payload_path" "$payload_description"
+}
+
+validate_existing_command_link() {
+  if [ ! -e "$client_command" ] && [ ! -L "$client_command" ]; then
+    return 0
+  fi
+  [ -L "$client_command" ] || {
+    echo "Unsafe existing host-monitor command link: $client_command" >&2
+    exit 1
+  }
+  command_target="$(readlink "$client_command")" || {
+    echo "Could not inspect the existing host-monitor command link" >&2
+    exit 1
+  }
+  [ "$command_target" = "../libexec/host-monitor" ] || {
+    echo "Existing host-monitor command link has an unexpected target" >&2
+    exit 1
+  }
+  read_path_metadata "$client_command"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:755 ] || {
+    echo "Existing host-monitor command link must be root:wheel with permissions 0755" >&2
+    exit 1
+  }
+  require_no_extended_acl "$client_command" "command link"
+}
+
+if installed_receipt="$(pkgutil --pkg-info org.sarmg.hostmonitor 2>/dev/null)"; then
+  installed_version="$(printf '%s\n' "$installed_receipt" | sed -n 's/^version: //p')"
+  [ "$installed_version" = "$package_version" ] || {
+    echo "host-monitor $installed_version is installed; purge it before installing $package_version" >&2
+    exit 1
+  }
+fi
+
+# Reject an unsafe pre-existing path before Installer can replace it or apply
+# payload metadata. Missing descendants are safe to create beneath the nearest
+# already-validated ancestor and are verified again by postinstall.
+validate_existing_exact_directory "$system_usr" "system /usr directory" 755 deny-only
+validate_existing_shared_directory "$local_prefix" "local installation prefix"
+validate_existing_shared_directory "$libexec_dir" "executable directory"
+validate_existing_shared_directory "$command_dir" "command directory"
+validate_existing_shared_directory "$share_parent" "shared-data directory"
+validate_existing_exact_directory "$share_dir" "package shared-data directory" 755
+validate_existing_exact_directory "$library_root" "system Library directory" 755 deny-only
+validate_existing_root_controlled_directory "$state_parent" "Application Support directory"
+validate_existing_exact_directory "$launch_daemon_dir" "LaunchDaemon directory" 755
+validate_existing_exact_directory "$log_dir" "log directory" 755
+validate_existing_regular_payload "$client_binary" "executable" 755
+validate_existing_regular_payload "$logrotate_helper" "log-rotation helper" 755
+validate_existing_regular_payload "$client_plist" "LaunchDaemon plist" 644
+validate_existing_regular_payload "$logrotate_plist" "log-rotation LaunchDaemon plist" 644
+validate_existing_regular_payload "$newsyslog_config" "newsyslog configuration" 644
+validate_existing_regular_payload "$package_config" "package config" 644
+validate_existing_regular_payload "$uninstall_helper" "uninstall helper" 755
+validate_existing_command_link
+
+# Do not stop launchd jobs here. The payload can replace an executable that is
+# already running because the old process keeps its open vnode. postinstall
+# validates the complete replacement first, then performs the short
+# bootout/bootstrap transaction under its own failure trap. Consequently an
+# Installer failure before postinstall leaves the previous jobs running.
+
+exit 0

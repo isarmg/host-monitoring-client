@@ -1,0 +1,176 @@
+[package]
+name = "host-monitor"
+description = "Read-only cross-platform host telemetry client for Host Monitoring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autobins = false
+default-run = "host-monitor"
+
+[features]
+# The installed daemon/CLI is a desktop capability. Mobile applications embed
+# the library with `--no-default-features` and drive collection, scheduling,
+# transport, and credential storage through their native host.
+default = ["desktop", "nvidia"]
+desktop = [
+    "dep:libc",
+    "dep:rand",
+    "dep:sarmg-client-error",
+    "dep:sarmg-client-runtime",
+    "dep:sarmg-client-secret",
+    "dep:sarmg-client-fs-safety",
+    "dep:sarmg-client-secure-http",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:sysinfo",
+    "dep:tokio",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:windows",
+    "dep:windows-sys",
+]
+nvidia = ["desktop", "dep:nvml-wrapper"]
+# OTLP 导出。手写的 protobuf 子集在 `otlp.rs`，由专用测试对真实 Collector 验证。
+# flate2 也一并门控：关掉 otlp 时不应把 gzip 编码器编进二进制。
+otlp = ["desktop", "dep:prost", "dep:flate2"]
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+flate2 = { version = "1", optional = true }
+nvml-wrapper = { version = "0.12", optional = true }
+prost = { version = "0.14", optional = true }
+rand = { version = "0.9", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sarmg-client-error = { workspace = true, optional = true }
+sarmg-client-runtime = { workspace = true, optional = true }
+sarmg-client-secret = { workspace = true, optional = true }
+sarmg-client-fs-safety = { workspace = true, optional = true }
+sarmg-client-secure-http = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "network", "component"], optional = true }
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"], optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+host-protocol.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+sha1 = { version = "0.10", optional = true }
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Environment",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_IO",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_Recovery",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+tokio = { version = "1", features = ["test-util"] }
+
+[[test]]
+name = "explicit_config"
+required-features = ["desktop"]
+
+[[test]]
+name = "pairing_transport_policy"
+required-features = ["desktop"]
+
+[[test]]
+name = "status_active_binding"
+required-features = ["desktop"]
+
+[[test]]
+name = "otlp_encoding"
+required-features = ["desktop", "otlp"]
+
+[[test]]
+name = "otlp_live"
+required-features = ["desktop", "otlp"]
+
+[[bin]]
+name = "host-monitor"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "host-monitor-maintenance"
+path = "src/bin/host-monitor-maintenance.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "host-monitor-tray"
+path = "src/bin/host-monitor-tray.rs"
+required-features = ["desktop"]
+
+[workspace]
+resolver = "3"
+
+[workspace.package]
+version = "0.9.3"
+edition = "2024"
+rust-version = "1.98"
+authors = ["sarmg <isarmg@163.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/isarmg/host-monitoring-client"
+
+[workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+host-protocol = { git = "https://github.com/isarmg/host-monitoring-server.git", rev = "ca41b7cdbdd662d2a4a5b28ace7be74cd7fded6c", version = "=0.9.3" }
+sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1", version = "=0.7.0" }
+sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1", version = "=0.7.0" }
+uuid = { version = "1", features = ["serde", "v4"] }
+
+
+[workspace.dependencies.sarmg-client-error]
+git = "https://github.com/isarmg/sarmg-foundation-client.git"
+rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
+version = "=0.7.0"
+
+[workspace.dependencies.sarmg-client-fs-safety]
+git = "https://github.com/isarmg/sarmg-foundation-client.git"
+rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
+version = "=0.7.0"
+
+[workspace.dependencies.sarmg-client-secure-http]
+git = "https://github.com/isarmg/sarmg-foundation-client.git"
+rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
+version = "=0.7.0"
