@@ -1,6 +1,6 @@
 format = 1
 product_id = "host-monitoring"
-source_roots = ["src"]
+source_roots = ["."]
 
 # Development workspace identity; not an immutable release pin.
 [foundation]

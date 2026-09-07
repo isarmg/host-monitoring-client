@@ -651,11 +651,10 @@ mod tests {
                 .map(|entry| {
                     let entry = entry.unwrap();
                     let metadata = entry.metadata().unwrap();
-                    // Windows byte-range locks also exclude reads. Check the
-                    // empty coordination file's metadata while its owner lives;
-                    // continue comparing every report/quarantine byte exactly.
-                    let bytes = if entry.file_name() == "spool.instance.lock" {
-                        assert_eq!(metadata.len(), 0);
+                    // Windows byte-range locks exclude reads of empty coordination
+                    // files. Empty content is fully described by its zero length;
+                    // compare every nonempty byte without naming SDK-private files.
+                    let bytes = if metadata.len() == 0 {
                         None
                     } else {
                         Some(fs::read(entry.path()).unwrap())
