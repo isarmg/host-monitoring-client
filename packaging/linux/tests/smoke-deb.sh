@@ -9,7 +9,7 @@ fi
 shift
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-repository_root=$(cd -- "$script_dir/../../../.." && pwd)
+repository_root=$(cd -- "$script_dir/../../.." && pwd)
 package=${1:-}
 if [[ -z $package ]]; then
   packages=()
