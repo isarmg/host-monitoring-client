@@ -1,0 +1,17 @@
+{
+  "application_version": "0.9.3",
+  "endpoint": "https://host-monitoring.example.com/api/v2/host-monitor/report",
+  "pairing_endpoint": "https://host-monitoring.example.com/api/v2/host-monitor/pairing-requests",
+  "otlp_endpoint": null,
+  "otlp_token": null,
+  "interval_seconds": 10,
+  "slow_interval_seconds": 30,
+  "request_timeout_seconds": 10,
+  "jitter_percent": 10,
+  "state_dir": "/var/lib/host-monitor",
+  "spool_max_bytes": 67108864,
+  "tls_identity_pem": null,
+  "tls_identity_pkcs12": null,
+  "tls_identity_password": null,
+  "tls_ca_pem": null
+}

@@ -4,6 +4,7 @@ on:
   workflow_call:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions: {}
@@ -30,6 +31,8 @@ jobs:
           persist-credentials: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal --component clippy
+      - name: Verify release inputs
+        run: python scripts/collect-release.py --check
       - name: Resolve Windows MSI version from Cargo metadata
         if: runner.os == 'Windows'
         id: host_monitor_version
@@ -96,6 +99,35 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: sh packaging/macos/tests/validate-packaging.sh
+      - name: Build native Unix executable
+        if: runner.os != 'Windows'
+        run: cargo build --locked --release -p host-monitor --bin host-monitor
+      - name: Build Linux DEB and RPM
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          NFPM_BIN="$(go env GOPATH)/bin/nfpm" sh packaging/linux/build-packages.sh
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - name: Build unsigned native macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          BINARY="$PWD/target/release/host-monitor" VERSION="$VERSION" OUTPUT="$PWD/dist/host-monitor-$VERSION-macos-$(uname -m)-unsigned.pkg" sh packaging/macos/build-pkg.sh
+      - name: Collect source-bound native release assets
+        run: python scripts/collect-release.py
+      - name: Upload native installers and checksums
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: host-monitor-client-${{ runner.os }}
+          path: release-dist/*
+          if-no-files-found: error
 
   android-host-monitor-library:
     name: Mobile host-monitor library (Android / ${{ matrix.target }})
