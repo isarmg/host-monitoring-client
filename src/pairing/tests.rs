@@ -146,7 +146,7 @@ mod tests {
                 PAIRING_STATE_FILE,
                 MAX_PAIRING_STATE_BYTES,
                 serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"), "phase": "active", "generation": Uuid::new_v4(),
+                    "version": "0.9.4", "phase": "active", "generation": Uuid::new_v4(),
                     "request_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(),
                     "activation_url": "https://host-monitoring.example/activate", "report_endpoint": config.endpoint,
                     "completed_at": Utc::now()
@@ -160,7 +160,7 @@ mod tests {
                 ACTIVE_BINDING_FILE,
                 MAX_ACTIVE_BINDING_BYTES,
                 serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"), "generation": Uuid::new_v4(),
+                    "version": "0.9.4", "generation": Uuid::new_v4(),
                     "request_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(), "report_endpoint": config.endpoint
                 }),
                 |config| {
@@ -172,7 +172,7 @@ mod tests {
                 AUTH_STATE_FILE,
                 MAX_AUTH_STATE_BYTES,
                 serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"), "status": "authorized", "reason": "paired", "changed_at": Utc::now()
+                    "version": "0.9.4", "status": "authorized", "reason": "paired", "changed_at": Utc::now()
                 }),
                 |config| local_auth_state(config).map(|value| assert!(value.is_some())),
             ),
@@ -495,7 +495,7 @@ mod tests {
         let transaction = lock_state(&config).unwrap();
         let malformed = format!(
             r#"{{"phase":"private-secret-as-invalid-phase","version":"{}"}}"#,
-            env!("CARGO_PKG_VERSION")
+            PERSISTED_STATE_FORMAT
         );
         transaction.write(StateFile::Pairing, &malformed).unwrap();
         let error = load_state(&transaction)
@@ -611,7 +611,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<LocalAuthState>(serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": "0.9.4",
                 "status": "authorized",
                 "reason": "browser pairing completed",
                 "changed_at": Utc::now(),
@@ -625,7 +625,7 @@ mod tests {
             serde_json::json!("0.0.0"),
         ] {
             let mut state = serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": "0.9.4",
                 "status": "authorized",
                 "reason": "browser pairing completed",
                 "changed_at": Utc::now()
@@ -958,7 +958,8 @@ mod tests {
             polling_secret: polling_secret.clone(),
         };
         let mut encoded = serde_json::to_value(&state).unwrap();
-        assert_eq!(encoded["version"], env!("CARGO_PKG_VERSION"));
+        // The persistent format stays fixed when the application patch version changes.
+        assert_eq!(encoded["version"], "0.9.4");
         encoded["version"] = serde_json::json!(1);
         assert!(serde_json::from_value::<StoredPairingState>(encoded).is_err());
         persist_state(&config, &state).unwrap();

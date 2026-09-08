@@ -24,7 +24,7 @@ impl Fixture {
     }
     async fn activate(&self, endpoint: &str, token: &str) -> PairingProgress {
         self.journal(serde_json::json!({
-            "phase": "activating", "version": env!("CARGO_PKG_VERSION"),
+            "phase": "activating", "version": "0.9.4",
             "generation": Uuid::new_v4(), "request_id": Uuid::new_v4(),
             "activation_url": "http://127.0.0.1:9/activate/fixture",
             "expires_at": chrono::Utc::now() + chrono::TimeDelta::minutes(10),
@@ -36,7 +36,7 @@ impl Fixture {
     }
     fn pending(&self, origin: &str) {
         self.journal(serde_json::json!({
-            "phase": "pending", "version": env!("CARGO_PKG_VERSION"),
+            "phase": "pending", "version": "0.9.4",
             "generation": Uuid::new_v4(), "request_id": Uuid::new_v4(),
             "activation_url": format!("{origin}/activate/fixture"),
             "expires_at": chrono::Utc::now() + chrono::TimeDelta::minutes(10),

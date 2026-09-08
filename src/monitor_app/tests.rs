@@ -124,7 +124,7 @@ fn pairing_activation_loads_the_server_assigned_identity() {
     write_private_fixture(
         directory.join("auth-state.json"),
         serde_json::to_vec(&serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "status": "authorized",
             "reason": "current pairing completed",
             "changed_at": chrono::Utc::now()
@@ -136,7 +136,7 @@ fn pairing_activation_loads_the_server_assigned_identity() {
         directory.join("pairing-state.json"),
         serde_json::to_vec(&serde_json::json!({
             "phase": "active",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "generation": generation,
             "request_id": request_id,
             "activation_url": "https://host-monitoring.example/activate/test",
@@ -150,7 +150,7 @@ fn pairing_activation_loads_the_server_assigned_identity() {
     write_private_fixture(
         directory.join("active-binding.json"),
         serde_json::to_vec(&serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "generation": generation,
             "request_id": request_id,
             "instance_id": instance_id,

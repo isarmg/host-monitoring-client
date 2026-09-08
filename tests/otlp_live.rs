@@ -26,7 +26,7 @@ fn otlp_test_config(endpoint: String) -> (ClientConfig, std::path::PathBuf, Uuid
     write_private_fixture(
         state_dir.join("auth-state.json"),
         serde_json::to_vec(&serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "status": "authorized",
             "reason": "browser pairing completed",
             "changed_at": chrono::Utc::now()
@@ -38,7 +38,7 @@ fn otlp_test_config(endpoint: String) -> (ClientConfig, std::path::PathBuf, Uuid
         state_dir.join("pairing-state.json"),
         serde_json::to_vec(&serde_json::json!({
             "phase": "active",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "generation": generation,
             "request_id": request_id,
             "activation_url": format!(
@@ -54,7 +54,7 @@ fn otlp_test_config(endpoint: String) -> (ClientConfig, std::path::PathBuf, Uuid
     write_private_fixture(
         state_dir.join("active-binding.json"),
         serde_json::to_vec(&serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": "0.9.4",
             "generation": generation,
             "request_id": request_id,
             "instance_id": instance_id,

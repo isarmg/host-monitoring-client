@@ -35,7 +35,7 @@ mod tests {
         write_private(
             "auth-state.json",
             &serde_json::to_vec(&serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"), "status": "authorized",
+                "version": "0.9.4", "status": "authorized",
                 "reason": "fixture", "changed_at": chrono::Utc::now(),
             }))
             .unwrap(),
@@ -43,7 +43,7 @@ mod tests {
         write_private(
             "pairing-state.json",
             &serde_json::to_vec(&serde_json::json!({
-                "phase": "active", "version": env!("CARGO_PKG_VERSION"),
+                "phase": "active", "version": "0.9.4",
                 "generation": generation, "request_id": request_id,
                 "activation_url": format!("{origin}/activate/test"),
                 "instance_id": instance_id, "report_endpoint": endpoint,
@@ -54,7 +54,7 @@ mod tests {
         write_private(
             "active-binding.json",
             &serde_json::to_vec(&serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"), "generation": generation,
+                "version": "0.9.4", "generation": generation,
                 "request_id": request_id, "instance_id": instance_id, "report_endpoint": endpoint,
             }))
             .unwrap(),

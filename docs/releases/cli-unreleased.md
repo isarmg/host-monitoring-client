@@ -1,4 +1,4 @@
-# 纯命令行改造（v0.9.5 预发布）
+# 纯命令行改造（v0.9.6 预发布）
 
 当前支持 Windows x64、Linux x64、macOS Apple Silicon。Intel macOS 已从适配、CI 和发行范围移除；下文早期验证记录仅供追溯。
 

@@ -38,7 +38,7 @@ impl Fixture {
         write_private_fixture(
             state_dir.join("auth-state.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": "0.9.4",
                 "status": "authorized",
                 "reason": "browser pairing completed",
                 "changed_at": chrono::Utc::now(),
@@ -50,7 +50,7 @@ impl Fixture {
             state_dir.join("pairing-state.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "phase": "active",
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": "0.9.4",
                 "generation": generation,
                 "request_id": request_id,
                 "activation_url": "https://new.example/activate/test",
@@ -64,7 +64,7 @@ impl Fixture {
         write_private_fixture(
             state_dir.join("active-binding.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": "0.9.4",
                 "generation": if mismatched_binding { Uuid::new_v4() } else { generation },
                 "request_id": request_id,
                 "instance_id": instance_id,
