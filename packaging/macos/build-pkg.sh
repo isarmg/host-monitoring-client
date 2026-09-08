@@ -8,7 +8,7 @@ die() {
 }
 
 : "${BINARY:?set BINARY to the host-monitor binary}"
-: "${VERSION:?set VERSION to the current numeric package version, for example 0.9.3}"
+: "${VERSION:?set VERSION to the current numeric package version, for example 0.9.4}"
 
 script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 repository_root="$(CDPATH= cd "$script_dir/../.." && pwd)"

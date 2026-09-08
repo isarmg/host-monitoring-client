@@ -12,7 +12,9 @@ use anyhow::{Context, bail};
 use sarmg_client_secret::{SecretBytes, SecretString, SecretWriter};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-const DEFAULT_SERVER_ORIGIN: &str = "http://127.0.0.1:8081";
+// MSI persists this default before the first pairing. It must pass the same
+// HTTPS-only policy as release binaries, even while no Manager is configured.
+const DEFAULT_SERVER_ORIGIN: &str = "https://127.0.0.1:8081";
 const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 const CLIENT_VERSION_OUTPUT: &str = concat!("host-monitor ", env!("CARGO_PKG_VERSION"));
@@ -909,6 +911,17 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installer_default_is_valid_under_release_network_policy() {
+        let config = super::ClientConfig::default();
+        assert!(config.endpoint.starts_with("https://"));
+        config.validate(super::ClientCommand::Run).unwrap();
+        let serialized = serde_json::to_vec(&config).unwrap();
+        let restored: super::ClientConfig = serde_json::from_slice(&serialized).unwrap();
+        restored.validate(super::ClientCommand::Run).unwrap();
+        super::validate_pairing_endpoint(&restored.pairing_endpoint()).unwrap();
+    }
+
     use super::*;
 
     #[test]

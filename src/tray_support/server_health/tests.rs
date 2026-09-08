@@ -71,7 +71,7 @@ fn probe_raw(response: String) -> ServerConnectionStatus {
 fn health_probe_enforces_budgets_and_does_not_follow_redirects() {
     let body = format!(
         r#"{{"status":"ok","version":"{}","uptime_seconds":1}}"#,
-        env!("CARGO_PKG_VERSION")
+        super::SUPPORTED_SERVER_VERSION
     );
     let exact = format!(
         "{body}{}",
@@ -131,10 +131,10 @@ fn connection_probe_distinguishes_unconfigured_and_healthy_server() {
 
     let healthy = probe_health_body(&format!(
         r#"{{"status":"ok","version":"{}","uptime_seconds":1}}"#,
-        env!("CARGO_PKG_VERSION")
+        super::SUPPORTED_SERVER_VERSION
     ));
     assert_eq!(healthy.status, "online");
-    assert_eq!(healthy.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(healthy.version.as_deref(), Some(super::SUPPORTED_SERVER_VERSION));
     assert!(healthy.latency_ms.is_some());
 }
 
@@ -155,7 +155,7 @@ fn connection_probe_rejects_missing_or_mismatched_server_version() {
     assert!(mismatched.version.is_none());
     assert!(!format!("{mismatched:?}").contains("incompatible-test-version"));
     assert!(mismatched.message.contains("版本不匹配"));
-    assert!(mismatched.message.contains(env!("CARGO_PKG_VERSION")));
+    assert!(mismatched.message.contains(super::SUPPORTED_SERVER_VERSION));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn connection_probe_rejects_non_host_monitoring_success_response() {
 
     let current_body = format!(
         r#"{{"status":"ok","version":"{}","uptime_seconds":1}}"#,
-        env!("CARGO_PKG_VERSION")
+        super::SUPPORTED_SERVER_VERSION
     );
     let wrong_status =
         probe_health_response("204 No Content", Some("application/json"), &current_body);
@@ -188,7 +188,7 @@ fn connection_probe_rejects_non_host_monitoring_success_response() {
 fn health_dto_is_strict() {
     let health_response = format!(
         r#"{{"status":"ok","version":"{}","uptime_seconds":1}}"#,
-        env!("CARGO_PKG_VERSION")
+        super::SUPPORTED_SERVER_VERSION
     );
     assert!(serde_json::from_str::<ServerHealthResponse>(&health_response).is_ok());
     assert!(
@@ -197,7 +197,7 @@ fn health_dto_is_strict() {
     );
     let health_response_with_unknown_field = format!(
         r#"{{"status":"ok","version":"{}","uptime_seconds":1,"unknown_extension":true}}"#,
-        env!("CARGO_PKG_VERSION")
+        super::SUPPORTED_SERVER_VERSION
     );
     assert!(
         serde_json::from_str::<ServerHealthResponse>(&health_response_with_unknown_field).is_err()

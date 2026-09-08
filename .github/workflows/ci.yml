@@ -77,6 +77,9 @@ jobs:
         run: >-
           cargo build --locked --release -p host-monitor --target x86_64-pc-windows-msvc
           --bin host-monitor --bin host-monitor-maintenance --bin host-monitor-tray
+      - name: Validate installer defaults with release network policy
+        if: runner.os == 'Windows'
+        run: cargo test --locked --release -p host-monitor --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_network_policy
       - name: Verify native Windows PE subsystems
         if: runner.os == 'Windows'
         shell: powershell
@@ -95,6 +98,15 @@ jobs:
           target\x86_64-pc-windows-msvc\release\host-monitor.exe
           target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe
           target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe
+      - name: Exercise real MSI service install and rollback lifecycle
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          HOST_MONITOR_VERSION: ${{ steps.host_monitor_version.outputs.version }}
+        run: |
+          $packages = @(Get-ChildItem packaging/windows/wix/bin/x64/Release -Filter '*.msi' -Recurse)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one native MSI' }
+          .\packaging\windows\tests\Test-MsiLifecycle.ps1 -ProductVersion $env:HOST_MONITOR_VERSION -ArtifactDirectory $packages[0].DirectoryName -LogDirectory "$env:RUNNER_TEMP\host-monitor-msi-logs"
       - name: Validate macOS packaging lifecycle
         if: runner.os == 'macOS'
         shell: bash

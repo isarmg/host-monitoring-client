@@ -1,5 +1,5 @@
 {
-  "application_version": "0.9.3",
+  "application_version": "0.9.4",
   "endpoint": "https://host-monitoring.example.com/api/v2/host-monitor/report",
   "pairing_endpoint": "https://host-monitoring.example.com/api/v2/host-monitor/pairing-requests",
   "otlp_endpoint": null,

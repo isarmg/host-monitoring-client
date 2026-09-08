@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 
 const MAX_SERVER_HEALTH_BODY_BYTES: usize = 16 * 1024;
 const SERVER_HEALTH_TIMEOUT: Duration = Duration::from_secs(4);
+// The independently released Client must not mistake its own patch version for
+// the supported Server version. Keep this aligned with the pinned Server contract.
+const SUPPORTED_SERVER_VERSION: &str = "0.9.3";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -175,10 +178,10 @@ pub fn probe_server_connection(server: &str) -> ServerConnectionStatus {
             latency_ms: Some(latency_ms),
         };
     }
-    if version != env!("CARGO_PKG_VERSION") {
+    if version != SUPPORTED_SERVER_VERSION {
         return ServerConnectionStatus {
             status: "offline",
-            message: format!("Server 版本不匹配：需要 v{}", env!("CARGO_PKG_VERSION")),
+            message: format!("Server 版本不匹配：需要 v{SUPPORTED_SERVER_VERSION}"),
             version: None,
             latency_ms: Some(latency_ms),
         };

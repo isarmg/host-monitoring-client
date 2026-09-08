@@ -10,7 +10,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..\..")).Path
+if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+    throw 'Destructive MSI lifecycle tests are restricted to disposable GitHub-hosted runners.'
+}
+$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 if ([string]::IsNullOrWhiteSpace($ArtifactDirectory)) {
     $ArtifactDirectory = Join-Path $repositoryRoot "dist"
 }
@@ -63,7 +66,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Host Monitoring {
+namespace HostMonitoring {
     public static class MsiNativeMethods {
         [DllImport("msi.dll", EntryPoint = "MsiGetShortcutTargetW",
             CharSet = CharSet.Unicode, ExactSpelling = true)]
