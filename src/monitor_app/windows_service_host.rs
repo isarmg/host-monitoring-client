@@ -135,10 +135,21 @@ fn runtime_failure_code(error: &anyhow::Error) -> u32 {
             "service durable spool" => 17,
             "protected state directory" => 20,
             "protected state lock file" => 21,
+            "protected file type validation" => 22,
+            "protected file ACL validation" => 23,
             _ => code,
         };
     }
-    code
+    // Preserve bounded OS failure codes, which contain no user-controlled text.
+    let native = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+    });
+    match native {
+        Some(native @ 1..=9999) => code * 10_000 + native as u32,
+        _ => code,
+    }
 }
 
 unsafe extern "system" fn control_handler(

@@ -93,17 +93,13 @@ fn current_sid() -> Result<String, StorageError> {
     }
 }
 fn private_descriptor(inherit: bool) -> Result<Vec<u16>, StorageError> {
-    // LocalService must be able to create its own lock/state files without
-    // assigning an owner SID (Administrators) that is absent from its token.
-    let owner = if current_sid()? == "S-1-5-19" {
-        "LS"
-    } else {
-        "BA"
-    };
+    // Let Windows select the owner and primary group from the creating token.
+    // Assigning either explicitly can require privileges absent from LocalService.
+    // The resulting owner is validated on the opened handle below.
     let flags = if inherit { "OICI" } else { "" };
     let service = service_sid().unwrap_or_else(|| "LS".into());
     wide(OsStr::new(&format!(
-        "O:{owner}G:{owner}D:P(A;{flags};FA;;;SY)(A;{flags};FA;;;BA)(A;{flags};0x1301bf;;;{service})(A;{flags};RC;;;OW)"
+        "D:P(A;{flags};FA;;;SY)(A;{flags};FA;;;BA)(A;{flags};0x1301bf;;;{service})(A;{flags};RC;;;OW)"
     )))
 }
 fn trusted(sid: &str, current: &str) -> bool {
@@ -295,8 +291,8 @@ pub(crate) fn private_file(
     } else {
         options.open(path)?
     };
-    verify_kind(&file, false)?;
-    verify_private(&file)?;
+    verify_kind(&file, false).map_err(|_| io::Error::other("protected file type validation"))?;
+    verify_private(&file).map_err(|_| io::Error::other("protected file ACL validation"))?;
     Ok(file)
 }
 
