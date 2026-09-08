@@ -17,8 +17,8 @@ def main():
     os.chdir(ROOT)
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     config = json.loads(Path("config/host-monitor.json.example").read_text(encoding="utf-8"))
-    if config["application_version"] != version:
-        raise ValueError("configuration version does not match Cargo")
+    if config["application_version"] != "0.9.4":
+        raise ValueError("configuration does not match the frozen 0.9.4 format")
     if os.environ.get("GITHUB_REF_TYPE") == "tag" and os.environ.get("GITHUB_REF_NAME") != f"v{version}":
         raise ValueError("release tag does not match Cargo")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()

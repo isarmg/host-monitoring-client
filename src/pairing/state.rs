@@ -18,12 +18,15 @@ pub(super) const AUTH_STATE_FILE: &str = crate::state_store::StateFile::Authoriz
 #[cfg(test)]
 pub(super) const ACTIVE_BINDING_FILE: &str = crate::state_store::StateFile::Binding.name();
 
+/// Retained legacy wire value, independent from future binary patch versions.
+pub const PERSISTED_STATE_FORMAT: &str = "0.9.4";
+
 impl Serialize for PairingStateVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(env!("CARGO_PKG_VERSION"))
+        serializer.serialize_str(PERSISTED_STATE_FORMAT)
     }
 }
 
@@ -33,12 +36,12 @@ impl<'de> Deserialize<'de> for PairingStateVersion {
         D: Deserializer<'de>,
     {
         let version = String::deserialize(deserializer)?;
-        if version == env!("CARGO_PKG_VERSION") {
+        if version == PERSISTED_STATE_FORMAT {
             Ok(Self)
         } else {
             Err(D::Error::custom(format!(
-                "pairing state belongs to Client {version}, expected {}",
-                env!("CARGO_PKG_VERSION")
+                "unsupported pairing state format {version}, expected {}",
+                PERSISTED_STATE_FORMAT
             )))
         }
     }

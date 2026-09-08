@@ -346,74 +346,13 @@ function Assert-StateAcl {
 }
 
 function Assert-TrayIntegration {
-    if (Get-Process -Name "host-monitor-tray" -ErrorAction SilentlyContinue) {
-        throw "A quiet MSI install incorrectly launched an interactive tray process."
-    }
-    if (-not (Test-Path -LiteralPath $installedTray -PathType Leaf)) {
-        throw "The installed tray companion is missing."
-    }
-    $expectedRun = '"{0}" --startup' -f $installedTray
-    $actualRun = Get-ItemPropertyValue -LiteralPath $trayRunKey `
-        -Name $trayRunName -ErrorAction Stop
-    if ($actualRun -cne $expectedRun) {
-        throw "The tray Run registration is not the fixed installed command."
-    }
-    if (-not (Test-Path -LiteralPath $trayShortcut -PathType Leaf)) {
-        throw "The host-monitor Start menu shortcut is missing."
-    }
-
-    # Advertised MSI shortcuts store a Darwin descriptor instead of a normal shell-link
-    # target, so WScript.Shell.TargetPath is not a reliable assertion. Ask Windows
-    # Installer which installed component the actual shortcut advertises instead.
-    $productCode = New-Object System.Text.StringBuilder 39
-    $featureId = New-Object System.Text.StringBuilder 39
-    $componentCode = New-Object System.Text.StringBuilder 39
-    $shortcutResult = [HostMonitoring.MsiNativeMethods]::MsiGetShortcutTarget(
-        $trayShortcut, $productCode, $featureId, $componentCode
-    )
-    if ($shortcutResult -ne 0 -or $featureId.ToString() -cne "ClientFeature" -or
-        $componentCode.ToString() -ine "{882DF421-2758-42E4-95D4-730C2571803E}") {
-        throw "The Start menu shortcut does not advertise the tray component."
-    }
-
-    $componentPath = New-Object System.Text.StringBuilder 32768
-    [uint32]$componentPathLength = $componentPath.Capacity
-    $componentState = [HostMonitoring.MsiNativeMethods]::MsiGetComponentPath(
-        $productCode.ToString(), $componentCode.ToString(),
-        $componentPath, [ref]$componentPathLength
-    )
-    if ($componentState -ne 3 -or -not [string]::Equals(
-        [IO.Path]::GetFullPath($componentPath.ToString()),
-        [IO.Path]::GetFullPath($installedTray),
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        throw "The advertised tray component is not installed at the fixed path."
-    }
-
-    # The service/config remains isolated, but every interactive user must be able
-    # to execute the tray image from the protected Program Files tree.
-    $usersRules = @((Get-Acl -LiteralPath $installedTray).Access | Where-Object {
-        $_.AccessControlType -eq `
-            [System.Security.AccessControl.AccessControlType]::Allow -and
-        $_.IdentityReference.Translate(
-            [System.Security.Principal.SecurityIdentifier]
-        ).Value -eq "S-1-5-32-545"
-    })
-    if ($usersRules.Count -ne 1 -or
-        [int]$usersRules[0].FileSystemRights -ne 0x1200a9) {
-        throw "The tray image does not grant BUILTIN\\Users exact read/execute access."
+    if ((Test-Path -LiteralPath $installedTray) -or
+        (Test-Path -LiteralPath $trayShortcut) -or
+        (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName -ErrorAction SilentlyContinue)) {
+        throw "Removed tray integration remains installed."
     }
 }
 
-function Start-TrayForRemovalSmoke {
-    $process = Start-Process -FilePath $installedTray -ArgumentList "--startup" -PassThru
-    Start-Sleep -Seconds 2
-    $process.Refresh()
-    if ($process.HasExited) {
-        throw "The tray companion exited before the MSI shutdown smoke could run."
-    }
-    return $process
-}
 
 function Get-HostMonitorArpEntries {
     $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
@@ -565,6 +504,8 @@ if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
 }
 
 Invoke-Msi /i $currentMsi "fresh-install"
+if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
+Start-Service host-monitor
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
@@ -575,11 +516,8 @@ Set-Content -LiteralPath $marker -Value "must survive ordinary uninstall"
 $installedServiceSid = (New-Object System.Security.Principal.NTAccount(
     "NT SERVICE", "host-monitor"
 )).Translate([System.Security.Principal.SecurityIdentifier]).Value
-$trayBeforeUninstall = Start-TrayForRemovalSmoke
 Invoke-Msi /x $currentMsi "preserve-uninstall"
-if (-not $trayBeforeUninstall.WaitForExit(30000)) {
-    throw "MSI uninstall did not gracefully close the running tray before file removal."
-}
+
 if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
     throw "Client service survived ordinary uninstall."
 }
@@ -605,6 +543,7 @@ if (@(Get-HostMonitorArpEntries).Count -ne 0) {
 Assert-PreservedStateAcl $installedServiceSid
 
 Invoke-Msi /i $currentMsi "reinstall"
+Start-Service host-monitor
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration

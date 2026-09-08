@@ -3,7 +3,7 @@ name: Host Monitoring CI
 on:
   workflow_call:
   push:
-    branches: [main]
+    branches: [main, 'codex/client-cli-*']
     tags: ['v*']
   pull_request:
 
@@ -72,11 +72,11 @@ jobs:
       - name: Validate Linux package builder
         if: runner.os == 'Linux'
         run: sh packaging/linux/tests/test-build-packages.sh
-      - name: Build native Windows service, tray companion, and maintenance helper
+      - name: Build native Windows service and maintenance helper
         if: runner.os == 'Windows'
         run: >-
           cargo build --locked --release -p host-monitor --target x86_64-pc-windows-msvc
-          --bin host-monitor --bin host-monitor-maintenance --bin host-monitor-tray
+          --bin host-monitor --bin host-monitor-maintenance
       - name: Validate installer defaults with release network policy
         if: runner.os == 'Windows'
         run: cargo test --locked --release -p host-monitor --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_network_policy
@@ -97,7 +97,6 @@ jobs:
           packaging\windows\wix\build-msi.cmd %HOST_MONITOR_VERSION%
           target\x86_64-pc-windows-msvc\release\host-monitor.exe
           target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe
-          target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe
       - name: Exercise real MSI service install and rollback lifecycle
         if: runner.os == 'Windows'
         shell: powershell

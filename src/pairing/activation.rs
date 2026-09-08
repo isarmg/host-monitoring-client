@@ -66,7 +66,7 @@ pub(super) fn resolve_activation_url(
     }
     match url.scheme() {
         "https" => {}
-        "http" if crate::tray_support::is_loopback_host(url.host_str()) => {}
+        "http" if crate::pairing_input::is_loopback_host(url.host_str()) => {}
         "http" => bail!("Host Monitoring returned an insecure non-loopback activation URL"),
         scheme => bail!("Host Monitoring returned an unsupported activation URL scheme: {scheme}"),
     }

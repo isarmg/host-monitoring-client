@@ -12,11 +12,10 @@
 
     <!-- Callers must provide x64 executables for this exact package version. -->
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.9.4</ProductVersion>
-    <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe</ClientExe>
-    <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe</MaintenanceExe>
-    <TrayExe Condition="'$(TrayExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe</TrayExe>
+    <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe</ClientExe>
+    <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe</MaintenanceExe>
+    <DefineConstants>ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe)</DefineConstants>
     <OutputName>host-monitor-$(ProductVersion)-x64</OutputName>
-    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe);TrayExe=$(TrayExe)</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -38,7 +37,6 @@
       Text="The ProductVersion build field must be between 0 and 65535." />
     <Error Condition="!Exists('$(ClientExe)')" Text="ClientExe does not exist: $(ClientExe)" />
     <Error Condition="!Exists('$(MaintenanceExe)')" Text="MaintenanceExe does not exist: $(MaintenanceExe)" />
-    <Error Condition="!Exists('$(TrayExe)')" Text="TrayExe does not exist: $(TrayExe)" />
     <Exec
       Command="&quot;$(ClientExe)&quot; --version"
       ConsoleToMSBuild="true"

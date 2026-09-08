@@ -1,4 +1,3 @@
-use anyhow::bail;
 use sarmg_client_secret::{SecretKey, SecretString};
 use sarmg_client_secure_http::{StatusCode, header};
 use serde::de::DeserializeOwned;
@@ -108,13 +107,9 @@ pub(super) fn ensure_pairing_status(
     if allowed.contains(&status) {
         return Ok(());
     }
-    if status.is_success() {
-        bail!(
-            "Host Monitoring returned an unexpected HTTP {status} while attempting to {operation}"
-        );
+    let _ = operation;
+    Err(super::PairingHttpError {
+        status: status.as_u16(),
     }
-    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-        bail!("Host Monitoring refused to {operation}: HTTP {status}; start a new browser pairing");
-    }
-    bail!("Host Monitoring failed to {operation}: HTTP {status}")
+    .into())
 }

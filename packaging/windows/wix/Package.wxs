@@ -1,15 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <!--
-    This package intentionally contains no PowerShell custom actions. The small native
-    maintenance executable is embedded in the MSI Binary table and all privileged actions
-    run deferred as LocalSystem. Its commands accept no caller-controlled paths; they derive
-    the two fixed roots from Windows Known Folders and reject files/reparse points.
 
-    The interactive tray companion is a separate GUI process in each signed-in user's session.
-    It is never installed as, or launched by, the LocalService telemetry service.
-  -->
   <Package
     Name="host-monitor"
     Manufacturer="Host Monitoring"
@@ -47,7 +39,6 @@
     <Property Id="PURGE" Secure="yes" />
     <Property Id="HOST_MONITORING_MAINTENANCE_DIAGNOSTICS" Secure="yes" />
     <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
-    <Property Id="WixUnelevatedShellExecTarget" Value="[#TrayExecutable]" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="host-monitor" />
     </StandardDirectory>
@@ -68,13 +59,18 @@
           KeyPath="yes"
           Checksum="yes" />
 
+        <!-- Remove only this product's registered legacy UI entries. -->
+        <RemoveRegistryValue Id="RemoveLegacyTrayRun" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="host-monitor-tray" />
+        <RemoveFile Id="RemoveLegacyTrayFile" Name="host-monitor-tray.exe" On="install" />
+        <RemoveFile Id="RemoveLegacyTrayShortcut" Directory="ProgramMenuFolder" Name="host-monitor.lnk" On="install" />
+
         <ServiceInstall
           Id="HostMonitorServiceInstall"
           Name="host-monitor"
           DisplayName="host-monitor"
           Description="Collects and securely reports read-only host telemetry to Host Monitoring."
           Type="ownProcess"
-          Start="auto"
+          Start="demand"
           ErrorControl="normal"
           Account="NT AUTHORITY\LocalService"
           Arguments="--windows-service run --config &quot;[CommonAppDataFolder]host-monitor\config.json&quot;"
@@ -89,43 +85,9 @@
         <ServiceControl
           Id="HostMonitorServiceControl"
           Name="host-monitor"
-          Start="install"
           Stop="both"
           Remove="uninstall"
           Wait="yes" />
-      </Component>
-
-      <Component
-        Id="ClientTrayComponent"
-        Guid="{882DF421-2758-42E4-95D4-730C2571803E}"
-        Bitness="always64">
-        <File
-          Id="TrayExecutable"
-          Source="$(var.TrayExe)"
-          Name="host-monitor-tray.exe"
-          KeyPath="yes"
-          Checksum="yes">
-          <Shortcut
-            Id="ClientTrayStartMenuShortcut"
-            Directory="ProgramMenuFolder"
-            Name="host-monitor"
-            Description="Open host-monitor status and configuration"
-            WorkingDirectory="INSTALLFOLDER"
-            Arguments="--open"
-            Advertise="yes" />
-        </File>
-        <!--
-          A machine-wide Run value starts one unprivileged tray companion in every interactive
-          user session. The fixed startup-mode argument never opens a browser; the explicit
-          open mode is reserved for the user-invoked Start menu shortcut.
-          Windows keeps each user's Startup Apps preference independently of MSI repair.
-        -->
-        <RegistryValue
-          Root="HKLM"
-          Key="Software\Microsoft\Windows\CurrentVersion\Run"
-          Name="host-monitor-tray"
-          Type="string"
-          Value="&quot;[INSTALLFOLDER]host-monitor-tray.exe&quot; --startup" />
       </Component>
     </DirectoryRef>
 
@@ -158,26 +120,10 @@
       AllowAbsent="no"
       AllowAdvertise="no">
       <ComponentRef Id="ClientServiceComponent" />
-      <ComponentRef Id="ClientTrayComponent" />
       <ComponentRef Id="ClientStateDirectoryComponent" />
     </Feature>
 
-    <!--
-      Ask matching tray processes to exit before repair/uninstall replaces the image. The
-      normal and elevated passes cover windows reachable from their respective installer
-      contexts. Never force-terminate a remaining process (including one in another user
-      session): Windows Installer follows its normal reboot path instead.
-      The condition prevents a clean first install from touching an unrelated same-name process.
-    -->
-    <util:CloseApplication
-      Id="CloseClientTray"
-      Target="host-monitor-tray.exe"
-      Description="host-monitor tray companion"
-      Condition="Installed"
-      CloseMessage="yes"
-      ElevatedCloseMessage="yes"
-      Timeout="10"
-      RebootPrompt="yes" />
+
 
     <!-- The same helper is embedded once and is never left behind as another utility. -->
     <Binary Id="HostMonitorMaintenance.exe" SourceFile="$(var.MaintenanceExe)" />
@@ -268,36 +214,10 @@
       Impersonate="no"
       Return="ignore" />
 
-    <!--
-      A fresh install may start the tray through WiX's unelevated ShellExecute helper,
-      which obtains the normal Explorer token even when setup crossed UAC. Failure to provide an
-      interactive shell is non-vital because the service is already installed and HKLM Run handles
-      the next user logon. Fresh install uses this path only with interactive UI
-      and only when no in-use image replacement was deferred; repair, uninstall and silent/SYSTEM
-      deployment never request it. The helper accepts only a file target, so the tray deliberately
-      treats its no-argument entry as the same browser-silent automatic mode as startup invocation.
-    -->
-    <CustomAction
-      Id="LaunchClientTray"
-      BinaryRef="Wix4UtilCA_X64"
-      DllEntry="WixUnelevatedShellExec"
-      Execute="immediate"
-      Impersonate="yes"
-      Return="ignore" />
+
 
     <InstallExecuteSequence>
-      <!--
-        WiX Util 4.0.6 normally schedules Wix4CloseApplications_X64 immediately before
-        InstallFiles. That is early enough while installing, but too late while uninstalling:
-        the standard RemoveFiles action precedes InstallFiles and could already have encountered
-        the running tray image. Override the extension's explicitly-overridable sequence row so
-        both the user-context and elevated close passes are scheduled inside the transaction
-        before StopServices, RemoveShortcuts and RemoveFiles on repair/uninstall paths.
-      -->
-      <Custom
-        Action="Wix4CloseApplications_X64"
-        After="InstallInitialize"
-        Condition="VersionNT &gt; 400" />
+
 
       <!--
         Register rollback, then snapshot current state before Windows Installer reaches
@@ -321,10 +241,6 @@
         Action="CommitClientInstall"
         After="ApplyClientInstall"
         Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom
-        Action="LaunchClientTray"
-        After="InstallFinalize"
-        Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot; AND UILevel &gt;= 4 AND NOT ReplacedInUseFiles" />
 
       <!--
         Standard MSI service/file removal is name/path based, so it must never run until the

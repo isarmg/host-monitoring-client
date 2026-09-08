@@ -13,21 +13,18 @@ $clientRoot = Split-Path -Parent (Split-Path -Parent $packagingRoot)
 $workspaceRoot = $clientRoot
 $workspacePath = Join-Path $workspaceRoot "Cargo.toml"
 $helperPath = Join-Path $clientRoot "src\bin\host-monitor-maintenance.rs"
-$trayPath = Join-Path $clientRoot "src\bin\host-monitor-tray.rs"
-$healthPath = Join-Path $clientRoot "src\tray_support\server_health.rs"
 $mainPath = Join-Path $clientRoot "src\main.rs"
 $helperSourceRoot = Join-Path $clientRoot "src\windows\maintenance"
-$traySourceRoot = Join-Path $clientRoot "src\windows\tray"
 
 foreach ($required in @(
     $packagePath, $projectPath, $buildPath, $workspacePath,
-    $helperPath, $trayPath, $healthPath, $mainPath
+    $helperPath, $mainPath
 )) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required WiX packaging file is missing: $required"
     }
 }
-foreach ($requiredSourceRoot in @($helperSourceRoot, $traySourceRoot)) {
+foreach ($requiredSourceRoot in @($helperSourceRoot)) {
     if (-not (Test-Path -LiteralPath $requiredSourceRoot -PathType Container)) {
         throw "Required Windows Client source tree is missing: $requiredSourceRoot"
     }
@@ -60,9 +57,7 @@ $projectText = Get-Content -LiteralPath $projectPath -Raw
 $buildText = Get-Content -LiteralPath $buildPath -Raw
 $workspaceText = Get-Content -LiteralPath $workspacePath -Raw
 $helperEntryText = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
-$trayEntryText = Get-Content -LiteralPath $trayPath -Raw -Encoding UTF8
 $helperText = Get-SourceBundle -EntryPath $helperPath -SourceRoot $helperSourceRoot
-$trayText = Get-SourceBundle -EntryPath $trayPath -SourceRoot $traySourceRoot
 $mainText = Get-Content -LiteralPath $mainPath -Raw
 
 foreach ($currentVersionBinding in @(
@@ -87,12 +82,6 @@ if (-not $helperEntryText.StartsWith($guiSubsystemAttribute)) {
 if ([regex]::Matches($helperEntryText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
     throw "The MSI maintenance helper must declare the Windows GUI subsystem exactly once."
 }
-if (-not $trayEntryText.StartsWith($guiSubsystemAttribute)) {
-    throw "The user-session tray companion must use the Windows GUI subsystem."
-}
-if ([regex]::Matches($trayEntryText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
-    throw "The tray companion must declare the Windows GUI subsystem exactly once."
-}
 if ($mainText -match 'windows_subsystem') {
     throw "The interactive Client executable must not inherit the maintenance helper's GUI subsystem."
 }
@@ -106,111 +95,6 @@ function Assert-Contains {
     if (-not $Text.Contains($Expected)) {
         throw $Message
     }
-}
-
-# The local page may receive the short-lived authorization key, but it must not
-# turn that key into a reusable browser, preference-file, argv, or environment credential.
-Assert-Contains $trayText `
-    'name=activation_code type=password maxlength=256 required autocomplete=one-time-code spellcheck=false' `
-    "The local pairing form must expose a bounded one-time authorization-key field."
-Assert-Contains $trayText `
-    'placeholder=\"https://host-monitoring.example.com\"' `
-    "The local pairing form must show a secure, complete management-console origin."
-if ($trayText -match 'COMMAND_OPEN_MANAGEMENT|open_management_console|id=management|\u6253\u5f00 Host Monitoring \u7ba1\u7406\u53f0') {
-    throw "The Client tray and its local configuration page must not provide a direct management-console link."
-}
-Assert-Contains $trayText 'id=check-connection' `
-    "The local Client page must expose an explicit Server connection check."
-Assert-Contains $trayText '"/connection" => server_connection_response' `
-    "The local-control router must provide the authenticated connection-check endpoint."
-$healthText = Get-Content -LiteralPath $healthPath -Raw
-Assert-Contains $trayText 'server_health::probe_server_connection' `
-    "The tray must use the cross-platform Server health adapter."
-Assert-Contains $healthText 'client.get_client_blocking(' `
-    "The Server health probe must use the Foundation bounded execution policy."
-Assert-Contains $healthText 'max_body_bytes: MAX_SERVER_HEALTH_BODY_BYTES' `
-    "The Server health response must be bounded before JSON parsing."
-if ($healthText -match 'reqwest::|Client::builder') {
-    throw "The health adapter must not rebuild a product-local HTTP client."
-}
-if ($trayText -notmatch "(?s)codeInput\.value='';\s*void startOperation\('/pair'.*?activation_code:activationCode") {
-    throw "The local page must clear the authorization-key input before starting the asynchronous request."
-}
-$preferencesMatch = [regex]::Match(
-    $trayText,
-    '(?s)struct\s+TrayPreferences\s*\{(?<body>.*?)\}'
-)
-if (-not $preferencesMatch.Success) {
-    throw "The tray preference schema could not be located."
-}
-if ($preferencesMatch.Groups["body"].Value -match '(?i)activation|authorization|secret|token|code') {
-    throw "The one-time authorization key must never be persisted in tray preferences."
-}
-if ($trayText -match '"--(?:activation-code|authorization-key)(?:-[a-z0-9]+)?"') {
-    throw "The one-time authorization key must never be placed in process argv."
-}
-Assert-Contains $trayText '.arg("--tray-activation-stdin")' `
-    "The elevated Client child must receive the authorization key through anonymous stdin."
-Assert-Contains $trayText '.stdin(Stdio::piped())' `
-    "The elevated pairing broker must create a private stdin pipe for the Client child."
-if ($trayText -notmatch '(?s)let\s+outcome\s*=\s*ipc\.serve\(process,\s*&server_for_ipc,\s*activation_code\);\s*let\s+preferences_warning\s*=\s*outcome\.as_ref\(\)\.ok\(\)\.and_then\(\|_\|\s*\{\s*super::committed_pairing_preferences_warning\(save_preferences') {
-    throw "Tray preferences must be saved only after the elevated pairing broker succeeds."
-}
-
-# A user-selected exit is deliberately different from an installer/system close.
-# Only the former asks for confirmation, goes through UAC, and waits for SCM to
-# confirm Stopped. It must never change the service's automatic startup type.
-$exitMenuLabel = -join @(
-    [char]0x505C, [char]0x6B62, [char]0x672C, [char]0x6B21, [char]0x670D,
-    [char]0x52A1, [char]0x5E76, [char]0x9000, [char]0x51FA, [char]0x6258,
-    [char]0x76D8, [char]0xFF08, [char]0x91CD, [char]0x542F, [char]0x540E,
-    [char]0x81EA, [char]0x52A8, [char]0x8FD0, [char]0x884C, [char]0xFF09
-)
-Assert-Contains $trayText ('"' + $exitMenuLabel + '"') `
-    "The exit command must explain both the current stop and next-boot restart."
-$exitCommandBranch = [regex]::Match(
-    $trayText,
-    '(?s)COMMAND_EXIT\s*=>\s*\{(?<body>.*?)\r?\n\s*\}\s*\r?\n\s*_\s*=>\s*Ok'
-)
-if (-not $exitCommandBranch.Success) {
-    throw "The user exit command branch could not be located."
-}
-Assert-Contains $exitCommandBranch.Groups["body"].Value 'MB_OKCANCEL' `
-    "Stopping the service and exiting the tray must require explicit confirmation."
-Assert-Contains $exitCommandBranch.Groups["body"].Value 'request_stop_service_and_exit(window)' `
-    "Confirmed user exit must use the dedicated stop-and-exit workflow."
-Assert-Contains $exitCommandBranch.Groups["body"].Value 'Automatic' `
-    "The confirmation must state that the automatic startup type is preserved."
-Assert-Contains $trayText '"--elevated-stop-for-exit"' `
-    "User exit must use a fixed, non-generic elevated stop mode."
-if ($trayText -match '(?i)ChangeServiceConfig|SERVICE_DISABLED|sc(?:\.exe)?\s+config') {
-    throw "Tray exit must never disable or change the Client service startup type."
-}
-Assert-Contains $trayText 'const EXIT_SERVICE_STOPPED_MESSAGE: u32 = WM_APP + 43;' `
-    "The tray must reserve a private success message for the stop-and-exit workflow."
-$exitSuccessBranch = [regex]::Match(
-    $trayText,
-    '(?s)EXIT_SERVICE_STOPPED_MESSAGE\s*=>\s*\{(?<body>.*?)\r?\n\s*\}\s*\r?\n\s*REFRESH_TRAY_STATUS_MESSAGE\s*=>'
-)
-if (-not $exitSuccessBranch.Success) {
-    throw "The private stop-and-exit completion branch could not be located."
-}
-foreach ($required in @('EXIT_PENDING.swap(false', 'query_service_state()', 'ServiceState::Stopped', 'DestroyWindow(window)')) {
-    Assert-Contains $exitSuccessBranch.Groups["body"].Value $required `
-        "The private exit completion message must verify both pending intent and stopped SCM state."
-}
-$wmCloseBranch = [regex]::Match(
-    $trayText,
-    '(?s)WM_CLOSE\s*=>\s*\{(?<body>.*?)\r?\n\s*\}\s*\r?\n\s*WM_DESTROY\s*=>'
-)
-if (-not $wmCloseBranch.Success -or
-    [regex]::Matches($trayText, '\bWM_CLOSE\s*=>').Count -ne 1) {
-    throw "The generic WM_CLOSE branch could not be located."
-}
-Assert-Contains $wmCloseBranch.Groups["body"].Value 'DestroyWindow(window)' `
-    "Installer/system WM_CLOSE must still close the tray gracefully."
-if ($wmCloseBranch.Groups["body"].Value -match '(?i)stop_service|request_stop|launch_elevated|EXIT_SERVICE_STOPPED') {
-    throw "Installer/system WM_CLOSE must not invoke the user stop-and-exit workflow."
 }
 
 $namespace = New-Object System.Xml.XmlNamespaceManager($package.NameTable)
@@ -256,7 +140,7 @@ if (@($package.SelectNodes("/w:Wix/w:Package/w:Upgrade", $namespace)).Count -ne 
 $service = Select-One "//w:ServiceInstall[@Name='host-monitor']"
 Assert-Equal $service.DisplayName "host-monitor" "Unexpected service display name."
 Assert-Equal $service.Type "ownProcess" "The Client must be an own-process service."
-Assert-Equal $service.Start "auto" "The Client service must start automatically."
+Assert-Equal $service.Start "demand" "Service startup requires an administrator action."
 Assert-Equal $service.Account "NT AUTHORITY\LocalService" `
     "The service must run as LocalService."
 Assert-Equal $service.Arguments `
@@ -264,7 +148,7 @@ Assert-Equal $service.Arguments `
     "The SCM entrypoint and fixed config path drifted."
 
 $serviceControl = Select-One "//w:ServiceControl[@Name='host-monitor']"
-Assert-Equal $serviceControl.Start "install" "MSI must start the service on install."
+Assert-Equal $serviceControl.GetAttribute("Start") "" "Installation must not start an unpaired service."
 Assert-Equal $serviceControl.Stop "both" "MSI must stop the service transactionally."
 Assert-Equal $serviceControl.Remove "uninstall" "MSI must unregister the service on uninstall."
 Assert-Equal $serviceControl.Wait "yes" "MSI must wait for SCM operations."
@@ -280,49 +164,6 @@ foreach ($attribute in @(
 }
 Assert-Equal $failurePolicy.RestartServiceDelayInSeconds "60" `
     "Unexpected service restart delay."
-
-$trayComponent = Select-One "//w:Component[@Id='ClientTrayComponent']"
-Assert-Equal $trayComponent.Bitness "always64" "The x64 tray component bitness drifted."
-if (@($trayComponent.SelectNodes(".//w:ServiceInstall", $namespace)).Count -ne 0) {
-    throw "The user-session tray companion must never be installed as a service."
-}
-$trayFile = Select-One "//w:File[@Id='TrayExecutable']"
-Assert-Equal $trayFile.Source '$(var.TrayExe)' "The MSI tray input variable drifted."
-Assert-Equal $trayFile.Name "host-monitor-tray.exe" "Unexpected installed tray filename."
-Assert-Equal $trayFile.KeyPath "yes" "The tray executable must be its component key path."
-$null = Select-One "//w:Feature[@Id='ClientFeature']/w:ComponentRef[@Id='ClientTrayComponent']"
-
-$trayRun = Select-One `
-    "//w:Component[@Id='ClientTrayComponent']/w:RegistryValue[@Name='host-monitor-tray']"
-Assert-Equal $trayRun.Root "HKLM" "Tray login startup must be registered per machine."
-Assert-Equal $trayRun.Key "Software\Microsoft\Windows\CurrentVersion\Run" `
-    "Tray startup must use the native machine Run key."
-Assert-Equal $trayRun.Type "string" "Tray startup must use a string command."
-Assert-Equal $trayRun.Value '"[INSTALLFOLDER]host-monitor-tray.exe" --startup' `
-    "Tray startup must use only the fixed installed image and startup mode."
-
-$trayShortcut = Select-One "//w:Shortcut[@Id='ClientTrayStartMenuShortcut']"
-Assert-Equal $trayShortcut.Directory "ProgramMenuFolder" `
-    "The tray launcher must be available to every user from the per-machine Start menu."
-Assert-Equal $trayShortcut.Advertise "yes" `
-    "The common Start-menu shortcut must use MSI advertisement instead of a per-user HKCU key path."
-Assert-Equal $trayShortcut.Arguments "--open" `
-    "The user-invoked Start menu shortcut must explicitly request the configuration page."
-
-$closeTray = Select-One "//util:CloseApplication[@Id='CloseClientTray']"
-Assert-Equal $closeTray.Target "host-monitor-tray.exe" `
-    "The repair/uninstall close target drifted."
-Assert-Equal $closeTray.Condition "Installed" `
-    "A clean first install must not close unrelated same-name processes."
-Assert-Equal $closeTray.CloseMessage "yes" `
-    "The tray must receive a graceful close request in the user context."
-Assert-Equal $closeTray.ElevatedCloseMessage "yes" `
-    "The elevated installer pass must also attempt graceful tray shutdown."
-Assert-Equal $closeTray.Timeout "10" "Unexpected tray shutdown timeout."
-Assert-Equal $closeTray.RebootPrompt "yes" `
-    "A stuck tray must use MSI reboot handling instead of forced termination."
-Assert-Equal $closeTray.GetAttribute("TerminateProcess") "" `
-    "The MSI must never force-terminate the tray companion."
 
 $purgeProperty = Select-One "//w:Property[@Id='PURGE']"
 Assert-Equal $purgeProperty.Secure "yes" "PURGE must survive the client/server MSI boundary."
@@ -376,8 +217,8 @@ $nativeActions = @($actions | Where-Object {
 if ($nativeActions.Count -ne $expectedActions.Count) {
     throw "Expected exactly $($expectedActions.Count) native lifecycle custom actions; found $($nativeActions.Count)."
 }
-if ($actions.Count -ne ($expectedActions.Count + 1)) {
-    throw "Only native lifecycle actions and the fixed tray launch may be authored; found $($actions.Count)."
+if ($actions.Count -ne $expectedActions.Count) {
+    throw "Only native lifecycle actions may be authored; found $($actions.Count)."
 }
 
 foreach ($entry in $expectedActions.GetEnumerator()) {
@@ -402,25 +243,6 @@ if (@($actions | Where-Object {
 }).Count -ne 0) {
     throw "The MSI must not carry a Type 19 upgrade fault-injection action."
 }
-
-$launchTray = Select-One "//w:CustomAction[@Id='LaunchClientTray']"
-Assert-Equal $launchTray.BinaryRef "Wix4UtilCA_X64" `
-    "The post-install launch must use the pinned WiX x64 utility helper."
-Assert-Equal $launchTray.DllEntry "WixUnelevatedShellExec" `
-    "The post-install launch must explicitly obtain the normal Explorer token."
-Assert-Equal $launchTray.Execute "immediate" `
-    "The tray launch must run outside the privileged deferred lifecycle."
-Assert-Equal $launchTray.Impersonate "yes" `
-    "The tray launch must run in the invoking user's interactive context."
-Assert-Equal $launchTray.Return "ignore" `
-    "An unavailable interactive shell must not fail an already committed installation."
-foreach ($forbiddenAttribute in @("FileRef", "ExeCommand")) {
-    Assert-Equal $launchTray.GetAttribute($forbiddenAttribute) "" `
-        "The unelevated tray launch must not expose $forbiddenAttribute."
-}
-$unelevatedTarget = Select-One "//w:Property[@Id='WixUnelevatedShellExecTarget']"
-Assert-Equal $unelevatedTarget.Value '[#TrayExecutable]' `
-    "The unelevated launch target must be exactly the installed tray file."
 
 $helperCommandMatches = [regex]::Matches(
     $helperText,
@@ -458,8 +280,8 @@ $expectedSequence = [ordered]@{
     "CommitPurgedState" = @("After", "PreparePurgedState", $purgeCondition)
 }
 $sequenceActions = @($package.SelectNodes("//w:InstallExecuteSequence/w:Custom", $namespace))
-if ($sequenceActions.Count -ne ($expectedSequence.Count + 2)) {
-    throw "Every lifecycle action, CloseApplications override and tray launch must be sequenced exactly once; found $($sequenceActions.Count) sequence rows."
+if ($sequenceActions.Count -ne $expectedSequence.Count) {
+    throw "Every lifecycle action must be sequenced exactly once; found $($sequenceActions.Count) sequence rows."
 }
 foreach ($entry in $expectedSequence.GetEnumerator()) {
     $sequence = Select-One "//w:InstallExecuteSequence/w:Custom[@Action='$($entry.Key)']"
@@ -473,23 +295,6 @@ foreach ($entry in $expectedSequence.GetEnumerator()) {
         "The execution condition for $($entry.Key) drifted."
 }
 
-$trayLaunchSequence = Select-One `
-    "//w:InstallExecuteSequence/w:Custom[@Action='LaunchClientTray']"
-Assert-Equal $trayLaunchSequence.GetAttribute("After") "InstallFinalize" `
-    "The tray may launch only after the MSI transaction commits successfully."
-Assert-Equal $trayLaunchSequence.GetAttribute("Before") "" `
-    "The tray launch must use exactly one relative sequence anchor."
-Assert-Equal $trayLaunchSequence.Condition `
-    'NOT Installed AND NOT REMOVE~="ALL" AND UILevel >= 4 AND NOT ReplacedInUseFiles' `
-    "Only a fresh interactive install without deferred file replacement may launch the tray."
-$closeApplicationsSequence = Select-One `
-    "//w:InstallExecuteSequence/w:Custom[@Action='Wix4CloseApplications_X64']"
-Assert-Equal $closeApplicationsSequence.GetAttribute("After") "InstallInitialize" `
-    "WiX CloseApplications must run inside the transaction before uninstall removes files."
-Assert-Equal $closeApplicationsSequence.GetAttribute("Before") "" `
-    "The CloseApplications override must use exactly one relative sequence anchor."
-Assert-Equal $closeApplicationsSequence.Condition 'VersionNT > 400' `
-    "The CloseApplications override must retain the WiX Util platform condition."
 foreach ($removedUpgradeMechanism in @(
     'UpgradeCode=', '<Upgrade ', '<MajorUpgrade', 'RemoveExistingProducts',
     'UPGRADINGPRODUCTCODE', 'WIX_UPGRADE_DETECTED', 'HOST_MONITORING_OTHER_VERSION_FOUND',
@@ -538,9 +343,8 @@ Assert-Equal $defaultProductVersions[0].InnerText `
     $workspaceVersionMatches[0].Groups["version"].Value `
     "The default WiX ProductVersion must match the host-monitor workspace package version."
 $expectedPayloads = [ordered]@{
-    ClientExe = '$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe'
-    MaintenanceExe = '$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe'
-    TrayExe = '$(MSBuildThisFileDirectory)..\..\..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-tray.exe'
+    ClientExe = '$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe'
+    MaintenanceExe = '$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe'
 }
 foreach ($propertyName in $expectedPayloads.Keys) {
     $payloadNodes = @($project.Project.PropertyGroup.$propertyName)
@@ -565,12 +369,6 @@ Assert-Contains $projectText "'`$(DetectedClientVersion)' != 'host-monitor `$(Pr
 if ($buildText -match '(?i)powershell(?:\.exe)?|pwsh(?:\.exe)?') {
     throw "The MSI build entrypoint must not require PowerShell."
 }
-Assert-Contains $projectText '<TrayExe Condition=' `
-    "The WiX project must accept the tray executable as an explicit input."
-Assert-Contains $projectText "!Exists('`$(TrayExe)')" `
-    "The WiX build must fail when the tray executable input is missing."
-Assert-Contains $buildText 'TRAY_EXE=%~f4' `
-    "The command-line MSI build entrypoint must require the tray executable."
 Assert-Contains $buildText '"%CLIENT_EXE%" --version' `
     "The command-line MSI build entrypoint must read the Client binary version."
 Assert-Contains $buildText 'host-monitor %PRODUCT_VERSION%' `
@@ -579,4 +377,14 @@ if ($buildText.Contains('1.2.3')) {
     throw "The current-only MSI build documentation must not advertise an arbitrary version."
 }
 
-Write-Host "WiX MSI authoring passed current-only lifecycle, tray, service, rollback, and purge checks."
+if ($packageText -match 'TrayExe|ClientTrayComponent|WixUnelevatedShellExec|LaunchClientTray|<Shortcut ') {
+    throw "Removed UI payload or interactive entry remains in MSI."
+}
+$legacyRun = Select-One "//w:RemoveRegistryValue[@Id='RemoveLegacyTrayRun']"
+Assert-Equal $legacyRun.Name "host-monitor-tray" "Legacy cleanup must name only this product's Run entry."
+Assert-Equal $legacyRun.Root "HKLM" "Legacy Run cleanup must use the installed hive."
+$legacyFile = Select-One "//w:RemoveFile[@Id='RemoveLegacyTrayFile']"
+Assert-Equal $legacyFile.Name "host-monitor-tray.exe" "Legacy cleanup must not use wildcard paths."
+Assert-Equal $legacyFile.On "install" "Legacy UI cleanup belongs to installation."
+
+Write-Host "WiX MSI authoring passed current-only lifecycle, CLI, service, rollback, and purge checks."

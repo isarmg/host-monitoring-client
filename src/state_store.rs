@@ -1,5 +1,5 @@
 //! Host state names, budgets and transaction capabilities. Unix filesystem
-//! mechanics belong to Client Foundation; the Windows native backend is pending.
+//! mechanics belong to Client Foundation; Windows holds native directory handles and validates ACLs.
 #[cfg(unix)]
 use sarmg_client_fs_safety::EntryName;
 #[cfg(unix)]
@@ -47,6 +47,8 @@ pub(crate) struct StateReader {
     path: PathBuf,
     #[cfg(unix)]
     directory: PrivateDirectory,
+    #[cfg(windows)]
+    _directory: crate::maintenance::windows::DirectoryGuard,
 }
 
 impl StateReader {
@@ -56,17 +58,14 @@ impl StateReader {
         let path = std::path::absolute(path)?;
         #[cfg(unix)]
         let directory = PrivateDirectory::open_for_administration(&path).map_err(io_error)?;
-        #[cfg(not(unix))]
-        if !std::fs::metadata(&path)?.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "state path is not a directory",
-            ));
-        }
+        #[cfg(windows)]
+        let directory = crate::maintenance::windows::open_root(&path, false)?;
         Ok(Self {
             path,
             #[cfg(unix)]
             directory,
+            #[cfg(windows)]
+            _directory: directory,
         })
     }
     pub(crate) fn path(&self, file: StateFile) -> PathBuf {
@@ -108,9 +107,11 @@ impl StateTransaction {
         #[cfg(unix)]
         {
             let directory = PrivateDirectory::create_for_administration(&path).map_err(io_error)?;
-            let lock = AdvisoryLock::acquire_waiting(
+            let lock = AdvisoryLock::acquire(
                 &directory,
-                &EntryName::new(".credential-state.lock").expect("fixed lock entry"),
+                &EntryName::new(".credential-state.lock")
+                    .expect("fixed lock entry")
+                    .as_relative(),
             )
             .map_err(io_error)?;
             Ok(Self {

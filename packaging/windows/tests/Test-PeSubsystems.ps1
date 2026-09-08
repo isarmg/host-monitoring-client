@@ -59,6 +59,4 @@ Assert-PeSubsystem `
 Assert-PeSubsystem `
     -LiteralPath (Join-Path $ReleaseRoot "host-monitor-maintenance.exe") `
     -ExpectedSubsystem 2
-Assert-PeSubsystem `
-    -LiteralPath (Join-Path $ReleaseRoot "host-monitor-tray.exe") `
-    -ExpectedSubsystem 2
+if (Test-Path (Join-Path $ReleaseRoot "host-monitor-tray.exe")) { throw "Release must not contain the removed tray" }
