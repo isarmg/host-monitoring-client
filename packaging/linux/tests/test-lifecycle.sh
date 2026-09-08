@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/host-monitor-packaging-test.XXXXXX")
-package_version=0.9.4
+package_version=0.9.6
 # packaging/linux is nested below clients/host-monitor, so the workspace
 # manifest is four levels above the packaging directory.
 workspace_version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$packaging_dir/../../Cargo.toml")
@@ -349,7 +349,7 @@ write_package_config() {
   mkdir -p "$test_root/etc/host-monitor"
   {
     printf '{\n'
-    printf '  "application_version": "%s",\n' "$package_version"
+    printf '  "application_version": "%s",\n' "0.9.4"
     printf '  "server_url": null\n'
     printf '}\n'
   } >"$test_root/etc/host-monitor/config.json"
@@ -411,7 +411,7 @@ if "$test_root/preremove.sh" upgrade 0.0.0 >/dev/null 2>&1; then
 fi
 
 # RPM replacement runs pre-remove after current postinstall. A
-# positive remaining-instance count must not disable the validated 0.9.4 service.
+# positive remaining-instance count must not disable the validated current service.
 : >"$TEST_LOG"
 "$test_root/preremove.sh" 1
 [ ! -s "$TEST_LOG" ] || fail 'RPM same-version reinstall stopped the current service'
@@ -992,7 +992,7 @@ if "$test_root/postinstall.sh" >"$test_root/symlink-config.log" 2>&1; then
 fi
 
 reset_safe_reinstall_state
-sed -i "s/$package_version/0.0.0/" "$test_root/etc/host-monitor/config.json"
+sed -i 's/0.9.4/0.0.0/' "$test_root/etc/host-monitor/config.json"
 if "$test_root/postinstall.sh" >"$test_root/stale-config.log" 2>&1; then
   fail 'postinstall accepted a config from another Client version'
 fi
