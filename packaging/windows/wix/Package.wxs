@@ -18,7 +18,6 @@
       Keywords="Host Monitoring,client,telemetry,service"
       Manufacturer="Host Monitoring" />
     <MajorUpgrade DowngradeErrorMessage="A newer host-monitor version is installed." Schedule="afterInstallInitialize" />
-    <Property Id="REINSTALLMODE" Value="amus" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Launch
