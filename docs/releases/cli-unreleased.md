@@ -1,3 +1,5 @@
+> 此文件保留 0.9.6 的验收记录。当前覆盖安装与修复行为见 [0.9.7](0.9.7.md) 和 [平台指南](../platform-setup.md)。
+
 # 纯命令行改造（v0.9.6 预发布）
 
 当前支持 Windows x64、Linux x64、macOS Apple Silicon。Intel macOS 已从适配、CI 和发行范围移除；下文早期验证记录仅供追溯。
