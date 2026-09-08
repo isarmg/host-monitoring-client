@@ -134,7 +134,10 @@ fn connection_probe_distinguishes_unconfigured_and_healthy_server() {
         super::SUPPORTED_SERVER_VERSION
     ));
     assert_eq!(healthy.status, "online");
-    assert_eq!(healthy.version.as_deref(), Some(super::SUPPORTED_SERVER_VERSION));
+    assert_eq!(
+        healthy.version.as_deref(),
+        Some(super::SUPPORTED_SERVER_VERSION)
+    );
     assert!(healthy.latency_ms.is_some());
 }
 
