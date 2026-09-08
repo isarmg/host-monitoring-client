@@ -53,8 +53,8 @@ def main():
     manifest = {"version": version, "commit": commit, "os": system, "arch": platform.machine(), "sha256": files,
                 "signing": "unsigned (no Authenticode/Developer ID/notarization)",
                 "ci_run": os.environ.get("GITHUB_RUN_ID")}
-    (output / f"host-monitor-{version}-{system}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
-    (output / f"SHA256SUMS-{system}").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(files.items())), encoding="utf-8", newline="\n")
+    (output / f"host-monitor-{version}-{system}-{platform.machine()}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (output / f"SHA256SUMS-{system}-{platform.machine()}").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(files.items())), encoding="utf-8", newline="\n")
     print(json.dumps(manifest, indent=2))
 
 
