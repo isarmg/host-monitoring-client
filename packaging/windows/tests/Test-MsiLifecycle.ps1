@@ -266,7 +266,7 @@ function Assert-ServiceRunning {
     $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running,
         [TimeSpan]::FromSeconds(30))
     $definition = Get-CimInstance Win32_Service -Filter "Name='host-monitor'"
-    if ($definition.StartMode -ne "Auto" -or
+    if ($definition.StartMode -ne "Manual" -or
         $definition.StartName -ne "NT AUTHORITY\LocalService" -or
         $definition.PathName -notmatch '--windows-service run --config') {
         throw "Installed SCM service definition is not the expected host-monitor service."
@@ -583,6 +583,15 @@ $updatedText = & $client status --config $configPath --format json --non-interac
 if ($LASTEXITCODE -ne 0 -or -not ($updatedText | ConvertFrom-Json).result.runtime.available) {
     throw 'LocalService could not read administrator-committed configuration'
 }
+$enableText = & $client service enable --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or ($enableText | ConvertFrom-Json).result.startup -ne 'automatic') {
+    throw 'CLI did not enable automatic startup'
+}
+$disableText = & $client service disable --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or ($disableText | ConvertFrom-Json).result.startup -ne 'manual') {
+    throw 'CLI did not restore manual startup'
+}
+Assert-ServiceRunning
 Write-Host 'Installed CLI readonly IPC, maintenance exclusion and service-account configuration access passed.'
 $marker = Join-Path $stateRoot "release-lifecycle-marker"
 Set-Content -LiteralPath $marker -Value "must survive ordinary uninstall"
