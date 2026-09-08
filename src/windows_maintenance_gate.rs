@@ -328,13 +328,22 @@ impl Guard {
     pub(crate) fn acquire_named(path: &Path, name: &str) -> anyhow::Result<Self> {
         use anyhow::Context;
         let directory = open_root(path, true).context("protected state directory")?;
-        let file = private_file(&directory.path.join(name), true, true).context(
+        let file = private_file(&directory.path.join(name), true, false).context(
             if name == "maintenance.lock" {
                 "protected maintenance lock file"
             } else {
                 "protected state lock file"
             },
         )?;
+        // Keep the name pinned (no FILE_SHARE_DELETE), but let installer
+        // preflight inspect metadata/ACLs while the service is running. The OS
+        // byte-range lock still excludes every Client maintenance writer.
+        file.try_lock()
+            .map_err(|error| match error {
+                std::fs::TryLockError::WouldBlock => io::Error::from(io::ErrorKind::WouldBlock),
+                std::fs::TryLockError::Error(error) => error,
+            })
+            .context("protected state lock contention")?;
         Ok(Self {
             _directory: directory,
             _file: file,

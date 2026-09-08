@@ -540,8 +540,10 @@ fn runtime_error(error: anyhow::Error) -> Failure {
     }
     if cfg!(windows)
         && error.chain().any(|e| {
-            e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| matches!(e.raw_os_error(), Some(32 | 33)))
+            e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                e.kind() == std::io::ErrorKind::WouldBlock
+                    || matches!(e.raw_os_error(), Some(32 | 33))
+            })
         })
     {
         return fail(5, "busy");
