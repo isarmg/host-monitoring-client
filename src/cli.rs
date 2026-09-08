@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 fn service() -> Service {
     Service {
+        #[cfg(not(target_os = "macos"))]
         name: if cfg!(windows) {
             "host-monitor"
         } else {

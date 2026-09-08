@@ -182,7 +182,8 @@ mod tests {
     use super::*;
     #[test]
     fn socket_is_readonly_bounded_and_bound_to_this_runtime() {
-        let root = std::env::temp_dir()
+        // Darwin per-user TMPDIR can exceed the Unix socket path limit.
+        let root = std::path::Path::new("/tmp")
             .canonicalize()
             .unwrap()
             .join(format!("client-status-{}", uuid::Uuid::new_v4()));

@@ -340,6 +340,7 @@ pub fn prompt(label: &str, secret: bool) -> Result<String> {
 }
 
 pub struct Service {
+    #[cfg(not(target_os = "macos"))]
     pub name: &'static str,
     #[allow(dead_code)]
     pub label: &'static str,
