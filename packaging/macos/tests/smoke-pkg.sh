@@ -297,21 +297,21 @@ if grep -E '(^|/)Library/Application Support/host-monitor(/|$)' \
   echo 'package payload contains service-writable Client state' >&2
   exit 1
 fi
-grep -E '(^|/)usr/local/share/host-monitor/config\.example\.json$' \
+grep -E '(^|/)usr/local/share/host-monitor/host-monitor\.json\.example$' \
   <<<"$package_payload" >/dev/null || {
   echo 'package payload is missing the root-owned config template' >&2
   exit 1
 }
 
 install_package
-sudo launchctl print system/org.sarmg.hostmonitor >/dev/null
+sudo /usr/local/libexec/host-monitor service status --format json | python3 -c 'import json,sys; s=json.load(sys.stdin)["result"]; assert s["installed"] and s["state"] == "stopped"'
 assert_install_trust
 assert_runtime_state_trust
 assert_ownership_proof
 sudo touch '/Library/Application Support/host-monitor/release-lifecycle-marker'
 
 install_package
-sudo launchctl print system/org.sarmg.hostmonitor >/dev/null
+sudo /usr/local/libexec/host-monitor service status --format json | python3 -c 'import json,sys; s=json.load(sys.stdin)["result"]; assert s["installed"] and s["state"] == "stopped"'
 assert_install_trust
 assert_runtime_state_trust
 assert_ownership_proof

@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025, macos-26]
+        os: [ubuntu-24.04, windows-2025, macos-26, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -130,13 +130,17 @@ jobs:
           mkdir -p dist
           VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
           BINARY="$PWD/target/release/host-monitor" VERSION="$VERSION" OUTPUT="$PWD/dist/host-monitor-$VERSION-macos-$(uname -m)-unsigned.pkg" sh packaging/macos/build-pkg.sh
+      - name: Exercise native macOS install, preserved state, reinstall and purge
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash packaging/macos/tests/smoke-pkg.sh --allow-system-changes
       - name: Collect source-bound native release assets
         run: python scripts/collect-release.py
       - name: Upload native installers and checksums
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: host-monitor-client-${{ runner.os }}
+          name: host-monitor-client-${{ matrix.os }}
           path: release-dist/*
           if-no-files-found: error
 

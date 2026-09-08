@@ -1,4 +1,4 @@
-//! Native, nonblocking credential transaction lock. No directory creation or ACL repair.
+//! Native, nonblocking credential transaction lock. Creates only missing private state; never repairs existing ACLs.
 use std::path::Path;
 pub(crate) struct CredentialStateLock {
     _guard: crate::maintenance::Guard,

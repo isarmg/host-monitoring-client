@@ -165,15 +165,14 @@ fn directory_handle(path: &Path) -> Result<File, StorageError> {
         .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(storage_error)?;
+        .open(path)?;
     verify_kind(&file, true)?;
     Ok(file)
 }
 pub(crate) fn open_root(path: &Path, create: bool) -> Result<DirectoryGuard, StorageError> {
-    // Local absolute DOS drive paths only: no UNC shares, device namespaces, ADS or traversal.
+    // Local DOS drive paths, including canonical verbatim drive paths; no UNC, device paths, ADS or traversal.
     let mut components = path.components();
-    if !matches!(components.next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_)))
+    if !matches!(components.next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
         || !matches!(components.next(), Some(Component::RootDir))
     {
         return Err(storage_error(()));
@@ -190,10 +189,9 @@ pub(crate) fn open_root(path: &Path, create: bool) -> Result<DirectoryGuard, Sto
         }
         ancestors.push(directory_handle(&cursor)?);
     }
-    let current = current_sid()?;
-    let sddl = wide(OsStr::new(&format!(
-        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current})"
-    )))?;
+    let sddl = wide(OsStr::new(
+        "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LS)",
+    ))?;
     unsafe {
         let mut descriptor = std::ptr::null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -282,7 +280,7 @@ pub(crate) fn private_file(
             File::from_raw_handle(raw)
         }
     } else {
-        options.open(path).map_err(storage_error)?
+        options.open(path)?
     };
     verify_kind(&file, false)?;
     verify_private(&file)?;
@@ -333,7 +331,7 @@ impl Guard {
         Self::acquire_named(path, "maintenance.lock")
     }
     pub(crate) fn acquire_named(path: &Path, name: &str) -> anyhow::Result<Self> {
-        let directory = open_root(path, false)?;
+        let directory = open_root(path, true)?;
         let file = private_file(&directory.path.join(name), true, true)?;
         Ok(Self {
             _directory: directory,

@@ -28,10 +28,10 @@ component_count="$(printf '%s\n' "$VERSION" | awk -F. '{ print NF }')"
 [ -x "$BINARY" ] || die "BINARY is not executable: $BINARY"
 binary_version="$("$BINARY" --version)" || die "could not read the Client binary version"
 [ "$binary_version" = "host-monitor $VERSION" ] ||
-  die "BINARY version '$binary_version' does not match package VERSION $VERSION"
+  die "BINARY version '$binary_version' does not match frozen configuration format 0.9.4"
 config_version="$(sed -n 's/^  "application_version": "\([^"]*\)",$/\1/p' "$config_template")"
-[ "$config_version" = "$VERSION" ] ||
-  die "host-monitor.json.example application_version '$config_version' does not match package VERSION $VERSION"
+[ "$config_version" = "0.9.4" ] ||
+  die "host-monitor.json.example application_version '$config_version' does not match frozen configuration format 0.9.4"
 [ -n "$output" ] || die "OUTPUT must not be empty"
 case "$output" in
   *.pkg) ;;

@@ -867,7 +867,7 @@ mod tests {
                 "host-config-secret-budget-{}",
                 uuid::Uuid::new_v4()
             ));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let path = directory.join("config.json");
         let mut config = ClientConfig {
             config_path: Some(path.clone()),
@@ -900,7 +900,7 @@ mod tests {
                 "host-config-secret-errors-{}",
                 uuid::Uuid::new_v4()
             ));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let path = directory.join("config.json");
         for field in [
             "application_version",
@@ -939,7 +939,7 @@ mod tests {
             .canonicalize()
             .expect("physical test temporary directory")
             .join(format!("host-config-safety-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o750)).unwrap();
         let path = directory.join("config.json");
         let config = ClientConfig {
@@ -986,7 +986,7 @@ mod tests {
         let path = directory.join("config.json");
         assert!(persist_private_config(&path, &vec![b'x'; MAX_CONFIG_BYTES]).is_err());
         assert!(!directory.exists());
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let mut bytes = serde_json::to_vec(&ClientConfig::default()).unwrap();
         bytes.resize(MAX_CONFIG_BYTES - 1, b' ');
         persist_private_config(&path, &bytes).unwrap();

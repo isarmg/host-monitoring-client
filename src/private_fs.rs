@@ -60,7 +60,7 @@ pub(crate) fn ensure_private_directory(path: &Path) -> io::Result<()> {
         .map_err(io::Error::other)?;
     }
     #[cfg(not(unix))]
-    fs::create_dir_all(path)?;
+    drop(crate::maintenance::windows::open_root(path, true)?);
     Ok(())
 }
 
