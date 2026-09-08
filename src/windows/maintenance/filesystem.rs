@@ -807,7 +807,7 @@ fn write_or_validate_state_marker(paths: &FixedPaths) -> anyhow::Result<()> {
 // marker unchanged so repair rollback and preserved-state reinstall are lossless.
 fn existing_state_marker(paths: &FixedPaths) -> anyhow::Result<Option<PathBuf>> {
     let mut found = None;
-    for version in ["0.9.4", "0.9.5", "0.9.6", "0.9.7", env!("CARGO_PKG_VERSION")] {
+    for version in ["0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", env!("CARGO_PKG_VERSION")] {
         let marker = paths.state_root.join(format!(".host-monitor-managed-{version}"));
         if marker.try_exists()? {
             validate_marker_file(&marker)?;
@@ -840,7 +840,7 @@ fn validate_marker_file(marker: &Path) -> anyhow::Result<()> {
         "state marker has multiple hard links"
     );
     ensure!(
-        ["0.9.4", "0.9.5", "0.9.6", "0.9.7", env!("CARGO_PKG_VERSION")].iter().any(|version| {
+        ["0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", env!("CARGO_PKG_VERSION")].iter().any(|version| {
             marker.file_name().is_some_and(|name| name == format!(".host-monitor-managed-{version}").as_str())
                 && fs::read(marker).is_ok_and(|bytes| bytes == format!("host-monitor-windows-state-{version}\r\n").as_bytes())
         }),

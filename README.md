@@ -2,7 +2,7 @@
 
 跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
 
-当前纯 CLI 与系统服务版本为 [v0.9.8 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.8)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
+当前纯 CLI 与系统服务版本为 [v0.9.9 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.9)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
 
 支持 Windows x64、Linux x64 和 macOS Apple Silicon（arm64）。不再为 Intel macOS 适配、运行 CI 或提供发行包。
 

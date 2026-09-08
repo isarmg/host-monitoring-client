@@ -661,3 +661,18 @@ Assert-ArpVersion $ProductVersion
 Invoke-Msi /x $currentMsi "purge-uninstall" "PURGE=1"
 Assert-ClientCompletelyAbsent
 Assert-MaintenanceDiagnosticAbsent "After MSI lifecycle smoke test"
+
+# Exercise a real published package upgrade, including the old helper's uninstall
+# ACL transition while MSI keeps the SCM handle alive across MajorUpgrade.
+$priorMsi = Join-Path $logs 'host-monitor-0.9.7-x64.msi'
+Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/isarmg/host-monitoring-client/releases/download/v0.9.7/host-monitor-0.9.7-x64.msi' -OutFile $priorMsi
+if ((Get-FileHash $priorMsi -Algorithm SHA256).Hash.ToLowerInvariant() -ne '8dad777a37a063ebc0045ee4b4e435280360d2f98a235ddf1e433fb37f4f9233') { throw 'Published baseline MSI digest changed' }
+Invoke-Msi /i $priorMsi 'install-published-0.9.7'
+$stateMarker = '.host-monitor-managed-0.9.7'
+[IO.File]::WriteAllText((Join-Path $stateRoot 'host-id'), $fixtureIdentity, [Text.UTF8Encoding]::new($false))
+& (Join-Path $PSScriptRoot '../install-host-monitor.ps1') -Msi $currentMsi
+Assert-ArpVersion $ProductVersion
+Assert-StateAcl
+if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Published-version upgrade changed device identity' }
+Invoke-Msi /x $currentMsi 'purge-published-upgrade' 'PURGE=1'
+Assert-ClientCompletelyAbsent

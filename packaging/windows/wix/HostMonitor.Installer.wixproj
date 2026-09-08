@@ -6,7 +6,7 @@
     <Cultures>en-US</Cultures>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Callers must provide x64 executables for this exact package version. -->
-    <ProductVersion Condition="'$(ProductVersion)' == ''">0.9.8</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.9.9</ProductVersion>
     <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe</ClientExe>
     <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe</MaintenanceExe>
     <DefineConstants>ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe)</DefineConstants>

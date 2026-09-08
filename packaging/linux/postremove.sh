@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=host-monitor.service
-package_version=0.9.8
+package_version=0.9.9
 account_state_dir=/var/lib/host-monitor-package
 managed_user_marker="$account_state_dir/managed-user"
 managed_group_marker="$account_state_dir/managed-group"
@@ -57,7 +57,7 @@ load_user_marker() {
   recorded_user_primary_gid=
   while IFS= read -r marker_line || [ -n "$marker_line" ]; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format="$package_version")
+      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
         [ "$marker_format_seen" -eq 0 ] || return 1
         marker_format_seen=1
         ;;
@@ -88,7 +88,7 @@ load_group_marker() {
   recorded_group_gid=
   while IFS= read -r marker_line || [ -n "$marker_line" ]; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format="$package_version")
+      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
         [ "$marker_format_seen" -eq 0 ] || return 1
         marker_format_seen=1
         ;;

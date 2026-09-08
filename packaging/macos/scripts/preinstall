@@ -251,7 +251,7 @@ validate_existing_command_link() {
 
 if installed_receipt="$(pkgutil --pkg-info org.sarmg.hostmonitor 2>/dev/null)"; then
   installed_version="$(printf '%s\n' "$installed_receipt" | sed -n 's/^version: //p')"
-  case "$installed_version" in 0.9.4|0.9.5|0.9.6|0.9.7|"$package_version") ;; *)
+  case "$installed_version" in 0.9.4|0.9.5|0.9.6|0.9.7|0.9.8|"$package_version") ;; *)
     echo "Unsupported host-monitor state format from $installed_version" >&2
     exit 1
   ;; esac

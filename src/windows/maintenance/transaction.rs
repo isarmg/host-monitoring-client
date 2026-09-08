@@ -19,8 +19,13 @@ fn prepare_install(paths: &FixedPaths) -> anyhow::Result<()> {
         // An interrupted uninstall can leave SCM registration with no files/state.
         // The fixed ImagePath and LocalService identity above establish which
         // service MSI may repair; never require missing payloads to validate.
-        if state_existed {
-            validate_state_marker(paths, true)?;
+        if state_existed && validate_state_marker(paths, true).is_err() {
+            // MajorUpgrade can leave the trusted stopped SCM registration
+            // while the old uninstall has already removed service access.
+            // Accept only the exact SYSTEM/Administrators preserved-state ACL;
+            // apply_install restores the service SID before starting anything.
+            ensure!(!service_is_active(service)?, "running service state must retain service access");
+            validate_state_marker(paths, false)?;
         }
         let sid_type = query_service_sid_type(service)?;
         // MSI rolls back service registration itself. Native restoration needs
