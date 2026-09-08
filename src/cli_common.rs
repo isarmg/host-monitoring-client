@@ -451,7 +451,7 @@ impl Service {
                 line.contains(&format!("\"{}\"", self.label))
                     && line
                         .split_once("=>")
-                        .is_some_and(|(_, value)| value.trim() == "true")
+                        .is_some_and(|(_, value)| matches!(value.trim(), "true" | "disabled"))
             });
             Ok(json!({
                 "installed": Path::new(&plist).is_file(),

@@ -58,7 +58,7 @@ make_case() {
     "$(dirname -- "$case_client_binary")" "$(dirname -- "$case_client_command")" "$case_share"
   {
     printf '{\n'
-    printf '  "application_version": "@HOST_MONITOR_PACKAGE_VERSION@",\n'
+    printf '  "application_version": "0.9.4",\n'
     printf '  "server_url": null\n'
     printf '}\n'
   } >"$case_package_config"
@@ -647,6 +647,11 @@ case "${1:-}" in
     count=$((count + 1))
     printf '%s\n' "$count" >"$LAUNCH_STATE/bootstrap-count"
     if [ -n "${FAIL_BOOTSTRAP_AT:-}" ] && [ "$count" -eq "$FAIL_BOOTSTRAP_AT" ]; then
+      if [ "${FAIL_BOOTSTRAP_STARTS_CLIENT:-0}" = 1 ]; then
+        : >"$LAUNCH_STATE/loaded.org.sarmg.hostmonitor"
+        : >"$LAUNCH_STATE/process-u.org.sarmg.hostmonitor"
+        : >"$LAUNCH_STATE/process-U.org.sarmg.hostmonitor"
+      fi
       exit 74
     fi
     plist="$3"
@@ -751,6 +756,11 @@ run_postinstall() {
     CASE_ROOT="$run_case" \
     "$@" \
     "$run_case/postinstall"
+}
+
+start_prior_client() {
+  rm -f "$case_dir/launch/disabled.org.sarmg.hostmonitor"
+  touch "$case_dir/launch/loaded.org.sarmg.hostmonitor" "$case_dir/launch/process-u.org.sarmg.hostmonitor" "$case_dir/launch/process-U.org.sarmg.hostmonitor"
 }
 
 run_preinstall() {
@@ -956,7 +966,7 @@ while [ -n "$payload_failure" ]; do
       next_payload_failure=package-config-version
       ;;
     package-config-version)
-      sed 's/@HOST_MONITOR_PACKAGE_VERSION@/0.0.0/' \
+      sed 's/0.9.4/0.0.0/' \
         "$case_dir/usr/local/share/host-monitor/host-monitor.json.example" \
         >"$case_dir/config.example.invalid"
       mv "$case_dir/config.example.invalid" \
@@ -1149,8 +1159,9 @@ grep -Fx "450:450 $case_dir/Library/Application Support/host-monitor" \
   fail 'successful install did not return state ownership to the service account'
 grep -Fx 'disable system/org.sarmg.hostmonitor' "$case_dir/launch/calls" >/dev/null ||
   fail 'successful install did not disable Client autoload during mutable-state validation'
-grep -Fx 'enable system/org.sarmg.hostmonitor' "$case_dir/launch/calls" >/dev/null ||
-  fail 'successful install did not re-enable Client after mutable-state validation'
+[ -e "$case_dir/launch/disabled.org.sarmg.hostmonitor" ] &&
+  [ ! -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] ||
+  fail 'fresh install must leave Client stopped and disabled'
 
 assert_recoverable() {
   recovery_case="$1"
@@ -1303,6 +1314,7 @@ case_dir="$test_root/mutable-retained-config-symlink"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish state for the retained-config symlink case'
+start_prior_client
 reset_fault_counters "$case_dir"
 rm "$case_dir/Library/Application Support/host-monitor/config.json"
 cp "$case_dir/usr/local/share/host-monitor/host-monitor.json.example" \
@@ -1317,7 +1329,7 @@ fi
 
 case_dir="$test_root/stale-package-config"
 make_case "$case_dir"
-sed 's/@HOST_MONITOR_PACKAGE_VERSION@/0.0.0/' \
+sed 's/0.9.4/0.0.0/' \
   "$case_dir/usr/local/share/host-monitor/host-monitor.json.example" \
   >"$case_dir/config.example.stale"
 mv "$case_dir/config.example.stale" \
@@ -1471,6 +1483,7 @@ while [ -n "$mutable_fault" ]; do
   make_case "$case_dir"
   run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
     fail "could not establish jobs for mutable $mutable_fault"
+start_prior_client
   reset_fault_counters "$case_dir"
   : >"$case_dir/launch/calls"
   mutable_expect_lock=1
@@ -1544,6 +1557,7 @@ case_dir="$test_root/mutable-config-race"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish jobs for the retained-config race case'
+start_prior_client
 config_path="$case_dir/Library/Application Support/host-monitor/config.json"
 config_checksum="$(cksum "$config_path" | awk '{ print $1 ":" $2 }')"
 reset_fault_counters "$case_dir"
@@ -1578,6 +1592,7 @@ case_dir="$test_root/mutable-lingering-process"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish jobs for the lingering-process case'
+start_prior_client
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
 if run_postinstall "$case_dir" BOOTOUT_LEAVES_CLIENT_PROCESS=1 \
@@ -1601,11 +1616,11 @@ if grep -Fx "0:0 $case_dir/Library/Application Support/host-monitor" \
   fail 'postinstall locked state while a service process could still mutate it'
 fi
 
-# If the helper cannot be registered, the Client registered immediately before
-# it must not survive a failed package transaction.
+# Fault injection leaves a partial Client job during failed helper registration;
+# rollback must still remove it, although normal fresh installs never start Client.
 case_dir="$test_root/bootstrap-2"
 make_case "$case_dir"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 >"$case_dir/failure.log" 2>&1; then
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 >"$case_dir/failure.log" 2>&1; then
   fail "second launchctl bootstrap failure unexpectedly succeeded"
 fi
 [ ! -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] ||
@@ -1623,7 +1638,7 @@ assert_recoverable "$case_dir"
 # effective-UID and real-UID residual processes before returning failure.
 case_dir="$test_root/bootstrap-rollback-bootout-failure"
 make_case "$case_dir"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_BOOTOUT_AT=1 \
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 FAIL_BOOTOUT_AT=1 \
   BOOTOUT_LEAVES_CLIENT_PROCESS=1 LAUNCHCTL_KILL_LEAVES_CLIENT_PROCESS=1 \
   >"$case_dir/failure.log" 2>&1; then
   fail 'combined bootstrap/rollback-bootout failure unexpectedly succeeded'
@@ -1659,7 +1674,7 @@ grep -Fx -- '-KILL -U 450 .' "$case_dir/pkill-calls" >/dev/null ||
 # as incomplete rather than silently treating the failed inspection as success.
 case_dir="$test_root/bootstrap-rollback-print-failure"
 make_case "$case_dir"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 \
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 \
   FAIL_PRINT_AFTER_CLIENT_BOOTOUT=1 >"$case_dir/failure.log" 2>&1; then
   fail 'rollback launchd inspection failure unexpectedly succeeded'
 fi
@@ -1678,7 +1693,7 @@ grep -F 'host-monitor rollback cleanup is incomplete' "$case_dir/failure.log" >/
 # that cleanup is incomplete instead of claiming the failed cutover is closed.
 case_dir="$test_root/bootstrap-rollback-residual-process"
 make_case "$case_dir"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_BOOTOUT_AT=1 \
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 FAIL_BOOTOUT_AT=1 \
   BOOTOUT_LEAVES_CLIENT_PROCESS=1 LAUNCHCTL_KILL_LEAVES_CLIENT_PROCESS=1 \
   PKILL_LEAVES_PROCESS=1 >"$case_dir/failure.log" 2>&1; then
   fail 'unkillable rollback process case unexpectedly succeeded'
@@ -1693,7 +1708,7 @@ grep -F 'host-monitor rollback cleanup is incomplete' "$case_dir/failure.log" >/
 # removes the current process: reboot safety has not been established.
 case_dir="$test_root/bootstrap-rollback-disable-failure"
 make_case "$case_dir"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_DISABLE_FROM=3 \
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 FAIL_DISABLE_FROM=4 \
   >"$case_dir/failure.log" 2>&1; then
   fail 'rollback disable failure unexpectedly succeeded'
 fi
@@ -1710,6 +1725,7 @@ case_dir="$test_root/reinstall-postinstall-failure"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish the initial loaded launchd jobs'
+start_prior_client
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
 run_preinstall "$case_dir" PKGUTIL_INSTALLED=1 >"$case_dir/preinstall.log" 2>&1 ||
@@ -1724,7 +1740,7 @@ fi
 
 # A replacement that fails payload validation must likewise leave both old
 # jobs untouched because postinstall has not reached its stop transaction.
-sed 's/@HOST_MONITOR_PACKAGE_VERSION@/0.0.0/' \
+sed 's/0.9.4/0.0.0/' \
   "$case_dir/usr/local/share/host-monitor/host-monitor.json.example" \
   >"$case_dir/config.example.invalid"
 mv "$case_dir/config.example.invalid" \
@@ -1739,7 +1755,7 @@ fi
 if grep -F 'bootout ' "$case_dir/launch/calls" >/dev/null; then
   fail 'payload validation failure reached the launchd stop transaction'
 fi
-sed 's/0.0.0/@HOST_MONITOR_PACKAGE_VERSION@/' \
+sed 's/0.0.0/0.9.4/' \
   "$case_dir/usr/local/share/host-monitor/host-monitor.json.example" \
   >"$case_dir/config.example.restored"
 mv "$case_dir/config.example.restored" \
@@ -1747,7 +1763,7 @@ mv "$case_dir/config.example.restored" \
 
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
-if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 \
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 FAIL_BOOTSTRAP_STARTS_CLIENT=1 \
   >"$case_dir/postinstall-failure.log" 2>&1; then
   fail 'replacement helper bootstrap failure unexpectedly succeeded'
 fi
@@ -1765,6 +1781,7 @@ case_dir="$test_root/reinstall-helper-restores-client"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish jobs for the helper restore race case'
+start_prior_client
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
 rm -f "$case_dir/launch/loaded.org.sarmg.hostmonitor"
@@ -1775,9 +1792,10 @@ grep -Fx 'bootout system/org.sarmg.hostmonitor.logrotate' "$case_dir/launch/call
   fail 'helper restore race did not stop the helper'
 grep -Fx 'bootout system/org.sarmg.hostmonitor' "$case_dir/launch/calls" >/dev/null ||
   fail 'helper restore race left the restored Client running during state mutation'
-[ -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] &&
+[ ! -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] &&
+  [ -e "$case_dir/launch/disabled.org.sarmg.hostmonitor" ] &&
   [ -e "$case_dir/launch/loaded.org.sarmg.hostmonitor.logrotate" ] ||
-  fail 'helper restore race did not register the validated replacement jobs'
+  fail 'helper restore race did not leave the validated Client stopped'
 
 # A launchd inspection error after normal bootout is not an absent-label
 # result. Fail before locking mutable state, then restore only from later
@@ -1786,6 +1804,7 @@ case_dir="$test_root/reinstall-post-bootout-print-failure"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish jobs for the normal print-failure case'
+start_prior_client
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
 if run_postinstall "$case_dir" FAIL_PRINT_AFTER_CLIENT_BOOTOUT=1 \
@@ -1809,6 +1828,7 @@ case_dir="$test_root/postinstall-bootout-failure"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
   fail 'could not establish jobs for the postinstall bootout rollback case'
+start_prior_client
 reset_fault_counters "$case_dir"
 if run_postinstall "$case_dir" FAIL_BOOTOUT_AT=2 \
   >"$case_dir/postinstall-failure.log" 2>&1; then

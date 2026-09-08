@@ -257,7 +257,7 @@ retained_config_check_line="$(awk '/require_current_config "\$config"/ { line=NR
 state_contents_safe_line="$(awk '/^state_contents_safe=1$/ { print NR; exit }' "$postinstall")"
 state_release_line="$(awk '/^release_verified_state_to_service / { print NR; exit }' "$postinstall")"
 launchd_disable_line="$(awk '/^launchctl disable system\/org\.sarmg\.hostmonitor$/ { print NR; exit }' "$postinstall")"
-launchd_enable_line="$(awk '/^launchctl enable system\/org\.sarmg\.hostmonitor$/ { line=NR } END { print line }' "$postinstall")"
+launchd_enable_line="$(awk '/^launchctl disable system\/org\.sarmg\.hostmonitor$/ { line=NR } END { print line }' "$postinstall")"
 case "$client_bootout_line:$launchd_disable_line:$lingering_process_line:$state_lock_line:$state_acl_clear_line:$retained_config_check_line:$state_contents_safe_line:$state_release_line:$launchd_enable_line" in
   *[!0-9:]*|*::*|:*|*:)
     echo "Could not locate the complete post-bootout state lock transaction" >&2

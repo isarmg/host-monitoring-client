@@ -47,3 +47,5 @@ cargo check --locked --no-default-features
 ```
 
 测试中的本地 HTTP/TLS 和 IPC 需要创建本机监听端点的权限。保留 Linux DEB/RPM、Windows 原生服务维护程序和 macOS LaunchDaemon 打包基础。默认卸载保留身份与队列；在 Server 退役设备后再安排受控的数据处置。
+
+版本维度、源提交及升级/回退边界见 [CLI 兼容矩阵](docs/releases/cli-compatibility.md)。

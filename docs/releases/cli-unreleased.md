@@ -21,15 +21,12 @@
 
 配置修订与生效修订分别展示。Linux/macOS 的只读 Unix socket 使用受保护目录、对端身份、固定请求、版本与大小限制，绑定进程世代及身份；旧绑定摘要不能作为新绑定事实。无法获得运行事实时明确返回 unavailable/unknown。`status --check` 不会把未证实的健康状态当作成功。
 
-## 发布限制
+## 验证与发行边界
 
-这是可审阅的开发改造，**尚不能认定更新手册全部验收完成**：
+已发布到 `codex/client-cli-completion-20260907` 验证分支，详见 [精确基线与兼容矩阵](cli-compatibility.md)。Linux 原生 CI、Windows 原生 Rust 回归、macOS 原生 Rust 回归和本地安装故障注入已通过；MSI 与两种 Mac 架构的完整安装验收继续以该分支最终 CI 结果为准。
 
-- Windows 已加入受管理员/服务 ACL 保护的只读命名管道、对端进程与服务镜像验证及有界读写；尚待 Windows 原生压力与对抗验收。
-- Windows 日志读取使用 SCM 生命周期事件，macOS 读取服务文件日志；跟随按日志游标去重，Windows/macOS 路径仍待原生验收。macOS 的 `--since` 接受 UTC ISO 日期/时间，无法给无时间戳的旧文本行补造时间。
-- 尚未完成 Windows/macOS 原生安装、无人登录启动、SCM/launchd 策略、服务账户证书信任、故障回滚和真实 Sunshine 联调验收。
-- macOS 安装脚本/CI 是候选实现，没有签名、公证或已通过原生验收的发行承诺。
-- 现有产品原本拒绝跨版本覆盖；本次没有伪造升级路径。MSI 已加入仅针对已知托盘文件、快捷方式和 Run 登记的清理项；跨版本升级/回滚矩阵仍需要在 `sarmg-upgrade` 中完成并验收。卸载默认保留状态。
-- Sunshine macOS 协议用带出处的 vendored additive patch 保持仓库可独立构建。必须先部署匹配的 Server，再发布其不可变协议依赖；不能直接发布给不识别新枚举的旧 Server。
+配置和配对状态格式固定为历史 `0.9.4`，已与程序版本分离。此次不重写身份和队列，也不创建未经验证的历史迁移边。`sarmg-upgrade` 的 Server 恢复命令不适用于 Client。
 
-这些限制不能仅靠 Linux 上交叉编译消除，不能把本文件当作发行批准或实机通过记录。
+Windows 日志读取使用 SCM 生命周期事件，macOS 读取服务文件日志。macOS 的 `--since` 接受 UTC ISO 日期/时间，无法给没有时间戳的旧文本行补造时间。
+
+验证分支和 unsigned 安装产物不代表正式发行。发布者签名、公证、生产 Server 部署、重启后无人登录的物理设备验收，不能由 CI 编译或一次服务启动代替。
