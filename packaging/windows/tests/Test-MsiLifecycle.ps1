@@ -527,12 +527,63 @@ foreach ($entry in $fixtureFiles.GetEnumerator()) {
 }
 try { Start-Service host-monitor -ErrorAction Stop } catch {
     & sc.exe queryex host-monitor
+    foreach ($name in @('maintenance.lock', '.credential-state.lock')) {
+        $lockPath = Join-Path $stateRoot $name
+        if (Test-Path -LiteralPath $lockPath) {
+            Get-Item -LiteralPath $lockPath | Select-Object Name, Attributes
+            Write-Host (Get-Acl -LiteralPath $lockPath).Sddl
+        }
+    }
+    Write-Host (Get-Acl -LiteralPath $stateRoot).Sddl
     throw
 }
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
 Assert-ArpVersion $ProductVersion
+
+# Exercise the installed CLI against the real LocalService process. The fixture
+# endpoint is deliberately offline; IPC reachability is not delivery health.
+$client = Join-Path $installedRoot 'host-monitor.exe'
+$configPath = Join-Path $stateRoot 'config.json'
+$before = @{}
+foreach ($name in @($fixtureFiles.Keys) + @('config.json')) {
+    $before[$name] = (Get-FileHash -LiteralPath (Join-Path $stateRoot $name)).Hash
+}
+$statusText = & $client status --config $configPath --format json --non-interactive --timeout 10s
+if ($LASTEXITCODE -ne 0) { throw 'Installed CLI status failed' }
+$status = $statusText | ConvertFrom-Json
+if (-not $status.ok -or -not $status.result.runtime.available -or
+    $status.result.runtime.binding_generation -ne $fixtureIdentity -or
+    $status.result.service.state -ne 'running' -or $status.result.health -ne 'unknown') {
+    throw 'Installed CLI did not report the authenticated runtime and unconfirmed delivery health'
+}
+$revision = $status.result.config.stored_revision
+$busyText = & $client config apply --config $configPath --file $configPath --expected-revision $revision --format json --non-interactive
+if ($LASTEXITCODE -ne 5 -or ($busyText | ConvertFrom-Json).error.code -ne 'busy') {
+    throw 'Running service did not exclude CLI maintenance'
+}
+foreach ($name in $before.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $stateRoot $name)).Hash -ne $before[$name]) {
+        throw 'Readonly CLI or rejected maintenance changed persisted configuration or identity'
+    }
+}
+$stopText = & $client service stop --format json --non-interactive --timeout 20s
+if ($LASTEXITCODE -ne 0 -or -not ($stopText | ConvertFrom-Json).ok) { throw 'CLI service stop failed' }
+Start-Sleep -Seconds 3
+if ((Get-Service host-monitor).Status -ne 'Stopped') { throw 'Explicitly stopped service restarted' }
+$applyText = & $client config apply --config $configPath --file $configPath --expected-revision $revision --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or -not ($applyText | ConvertFrom-Json).result.committed) {
+    throw 'Stopped service configuration commit failed'
+}
+$startText = & $client service start --format json --non-interactive --timeout 20s
+if ($LASTEXITCODE -ne 0 -or -not ($startText | ConvertFrom-Json).ok) { throw 'CLI service restart after administrator commit failed' }
+Assert-ServiceRunning
+$updatedText = & $client status --config $configPath --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or -not ($updatedText | ConvertFrom-Json).result.runtime.available) {
+    throw 'LocalService could not read administrator-committed configuration'
+}
+Write-Host 'Installed CLI readonly IPC, maintenance exclusion and service-account configuration access passed.'
 $marker = Join-Path $stateRoot "release-lifecycle-marker"
 Set-Content -LiteralPath $marker -Value "must survive ordinary uninstall"
 

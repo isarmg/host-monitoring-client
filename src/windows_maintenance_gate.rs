@@ -253,23 +253,9 @@ pub(crate) fn private_file(
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     let file = if create {
         unsafe {
-            let mut descriptor = std::ptr::null_mut();
-            let sddl = private_descriptor(false)?;
-            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                1,
-                &mut descriptor,
-                std::ptr::null_mut(),
-            ) == 0
-            {
-                return Err(storage_error(()));
-            }
-            let _owned = LocalAllocation(descriptor);
-            let attributes = SECURITY_ATTRIBUTES {
-                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: descriptor,
-                bInheritHandle: 0,
-            };
+            // The caller pins and validates the private parent. Inherit its
+            // service ACL, then validate the opened empty file before use.
+            // LocalService must not need WRITE_DAC to create a lock.
             let raw = CreateFileW(
                 wide(path.as_os_str())?.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
@@ -278,7 +264,7 @@ pub(crate) fn private_file(
                 } else {
                     FILE_SHARE_READ | FILE_SHARE_WRITE
                 },
-                &attributes,
+                std::ptr::null(),
                 OPEN_ALWAYS,
                 FILE_FLAG_OPEN_REPARSE_POINT,
                 std::ptr::null_mut(),
@@ -342,8 +328,13 @@ impl Guard {
     pub(crate) fn acquire_named(path: &Path, name: &str) -> anyhow::Result<Self> {
         use anyhow::Context;
         let directory = open_root(path, true).context("protected state directory")?;
-        let file = private_file(&directory.path.join(name), true, true)
-            .context("protected state lock file")?;
+        let file = private_file(&directory.path.join(name), true, true).context(
+            if name == "maintenance.lock" {
+                "protected maintenance lock file"
+            } else {
+                "protected state lock file"
+            },
+        )?;
         Ok(Self {
             _directory: directory,
             _file: file,
@@ -353,28 +344,13 @@ impl Guard {
 
 pub(crate) fn create_temporary(path: &Path) -> io::Result<File> {
     unsafe {
-        let mut descriptor = std::ptr::null_mut();
-        let sddl = private_descriptor(false)?;
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let _owned = LocalAllocation(descriptor);
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor,
-            bInheritHandle: 0,
-        };
+        // private_fs::write_atomic holds the validated parent for this call.
+        // No bytes are written until the inherited ACL passes verification.
         let raw = CreateFileW(
             wide(path.as_os_str())?.as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
             0,
-            &attributes,
+            std::ptr::null(),
             CREATE_NEW,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
             std::ptr::null_mut(),

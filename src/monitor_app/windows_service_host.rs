@@ -137,6 +137,7 @@ fn runtime_failure_code(error: &anyhow::Error) -> u32 {
             "protected state lock file" => 21,
             "protected file type validation" => 22,
             "protected file ACL validation" => 23,
+            "protected maintenance lock file" => 24,
             _ => code,
         };
     }
