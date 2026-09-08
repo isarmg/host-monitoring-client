@@ -6,7 +6,7 @@ packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/host-monitor-package-builder-test.XXXXXX")
 fixture_root=$test_root/repository
 mock_bin=$test_root/bin
-package_version=0.9.4
+package_version=0.9.6
 execution_marker=$test_root/payload-executed
 nfpm_log=$test_root/nfpm.log
 builder_output=$test_root/builder.output
@@ -53,7 +53,7 @@ for lifecycle_script in postinstall.sh preremove.sh postremove.sh purge-local-st
 done
 cat >"$fixture_root/config/host-monitor.json.example" <<EOF
 {
-  "application_version": "$package_version",
+  "application_version": "0.9.4",
   "fixture": true
 }
 EOF
