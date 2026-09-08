@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
+import xml.etree.ElementTree as ET
 import shutil
 import subprocess
 import sys
@@ -13,11 +15,23 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_package_versions(version):
+    project = ET.parse(ROOT / "packaging/windows/wix/HostMonitor.Installer.wixproj")
+    defaults = project.findall(".//ProductVersion")
+    if len(defaults) != 1 or defaults[0].text != version:
+        raise ValueError("default WiX ProductVersion does not match Cargo")
+    for name in ("postinstall.sh", "preremove.sh", "postremove.sh", "purge-local-state.sh"):
+        script = (ROOT / "packaging/linux" / name).read_text(encoding="utf-8")
+        if re.findall(r"^package_version=([0-9.]+)$", script, re.MULTILINE) != [version]:
+            raise ValueError(f"Linux {name} package_version does not match Cargo")
+
+
 def main():
     os.chdir(ROOT)
     if platform.system() == "Darwin" and platform.machine().lower() not in {"arm64", "aarch64"}:
         raise ValueError("macOS release packages support Apple Silicon only")
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+    validate_package_versions(version)
     config = json.loads(Path("config/host-monitor.json.example").read_text(encoding="utf-8"))
     if config["application_version"] != "0.9.4":
         raise ValueError("configuration does not match the frozen 0.9.4 format")
