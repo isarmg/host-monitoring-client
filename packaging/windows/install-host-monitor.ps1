@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Msi)
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.OpenDatabase($Msi, 0)
@@ -26,7 +27,12 @@ function Invoke-Installer([string]$Arguments,[string]$Name) {
 }
 # Releases before 0.9.7 had no UpgradeCode. Remove their exact MSI registration
 # through Windows Installer; its normal uninstall retains identity/configuration.
-$entries = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'host-monitor' -and $_.Publisher -eq 'Host Monitoring' -and $_.WindowsInstaller -eq 1 })
+$entries = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object {
+    $properties = $_.PSObject.Properties.Name
+    $properties -contains 'DisplayName' -and $properties -contains 'Publisher' -and
+    $properties -contains 'WindowsInstaller' -and $properties -contains 'DisplayVersion' -and
+    $_.DisplayName -eq 'host-monitor' -and $_.Publisher -eq 'Host Monitoring' -and $_.WindowsInstaller -eq 1
+})
 foreach ($entry in $entries) {
     if ($entry.PSChildName -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Invalid legacy MSI product registration.' }
     if ([version]$entry.DisplayVersion -gt [version]$version) { throw 'A newer version is installed.' }
@@ -36,7 +42,7 @@ foreach ($entry in $entries) {
         Invoke-Installer ('/x ' + $entry.PSChildName) ('remove-' + $entry.DisplayVersion)
     }
 }
-$repair = if ($entries.PSChildName -contains $product) { ' REINSTALL=ALL REINSTALLMODE=amus' } else { '' }
+$repair = if (@($entries | ForEach-Object { $_.PSChildName }) -contains $product) { ' REINSTALL=ALL REINSTALLMODE=amus' } else { '' }
 Invoke-Installer ('/i "' + $Msi + '"' + $repair) 'install'
 & (Join-Path $env:ProgramFiles 'host-monitor\host-monitor.exe') --version
 if ($LASTEXITCODE -ne 0) { throw "Installed executable verification failed. Logs: $logRoot" }
