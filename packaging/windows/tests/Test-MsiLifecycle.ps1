@@ -556,6 +556,7 @@ $status = $statusText | ConvertFrom-Json
 if (-not $status.ok -or -not $status.result.runtime.available -or
     $status.result.runtime.binding_generation -ne $fixtureIdentity -or
     $status.result.service.state -ne 'running' -or $status.result.health -ne 'unknown') {
+    @{ ipc_available=$status.result.runtime.available; binding_matches=($status.result.runtime.binding_generation -eq $fixtureIdentity); service=$status.result.service.state; health=$status.result.health } | ConvertTo-Json -Compress | Write-Host
     throw 'Installed CLI did not report the authenticated runtime and unconfirmed delivery health'
 }
 $revision = $status.result.config.stored_revision

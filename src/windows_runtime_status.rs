@@ -173,9 +173,13 @@ pub(super) fn publish(
                     continue;
                 }
                 let mut pid = 0;
-                if GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) != 0
-                    && trusted(pid, false)
-                {
+                // The protected pipe DACL authorizes only SYSTEM, elevated
+                // administrators and LocalService. Windows already checked it
+                // when the client connected. LocalService cannot query an
+                // administrator's process token; that redundant check rejects
+                // authorized clients. The reader still authenticates our image,
+                // service identity and binding before accepting a response.
+                if GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) != 0 {
                     let mut bytes = [0u8; 14];
                     let mut count = 0;
                     let deadline = Instant::now() + Duration::from_millis(500);
@@ -242,7 +246,7 @@ pub(super) fn read(path: &Path, binding: Option<&str>) -> Option<Value> {
             0,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
             std::ptr::null_mut(),
         );
         if handle == INVALID_HANDLE_VALUE {
