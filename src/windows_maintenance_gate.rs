@@ -344,8 +344,10 @@ impl Guard {
         Self::acquire_named(path, "maintenance.lock")
     }
     pub(crate) fn acquire_named(path: &Path, name: &str) -> anyhow::Result<Self> {
-        let directory = open_root(path, true)?;
-        let file = private_file(&directory.path.join(name), true, true)?;
+        use anyhow::Context;
+        let directory = open_root(path, true).context("protected state directory")?;
+        let file = private_file(&directory.path.join(name), true, true)
+            .context("protected state lock file")?;
         Ok(Self {
             _directory: directory,
             _file: file,

@@ -71,7 +71,7 @@ fn build_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 
 #[cfg(windows)]
 async fn run_client(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Result<()> {
-    let (config, command) = ClientConfig::load_from_args()?;
+    let (config, command) = ClientConfig::load_from_args().context("service configuration")?;
     execute_config(config, command, ready).await
 }
 pub(crate) async fn execute_config(
@@ -89,9 +89,10 @@ pub(crate) async fn execute_config(
         command,
         ClientCommand::Run | ClientCommand::Once | ClientCommand::Doctor
     ) {
-        Some(host_monitor::maintenance::Guard::acquire(
-            &config.state_dir,
-        )?)
+        Some(
+            host_monitor::maintenance::Guard::acquire(&config.state_dir)
+                .context("service maintenance lock")?,
+        )
     } else {
         None
     };
@@ -104,11 +105,13 @@ pub(crate) async fn execute_config(
         }
         ClientCommand::Pair | ClientCommand::Probe | ClientCommand::Status => None,
     };
-    let shutdown = install_process_shutdown_signal()?;
+    let shutdown = install_process_shutdown_signal().context("service shutdown handler")?;
     let mut host = if command == ClientCommand::Probe {
         transient_host_identity(Uuid::new_v4())
-    } else if pairing::has_current_authorized_identity(&config)? {
-        load_host_identity(&config.state_dir)?
+    } else if pairing::has_current_authorized_identity(&config)
+        .context("service authorization state")?
+    {
+        load_host_identity(&config.state_dir).context("service host identity")?
     } else {
         transient_host_identity(Uuid::new_v4())
     };
@@ -120,11 +123,14 @@ pub(crate) async fn execute_config(
     }
 
     let _status = if command == ClientCommand::Run {
-        Some(host_monitor::runtime_status::publish(
-            &config.state_dir,
-            host.id.to_string(),
-            crate::cli_common::revision(&serde_json::to_vec(&config)?),
-        )?)
+        Some(
+            host_monitor::runtime_status::publish(
+                &config.state_dir,
+                host.id.to_string(),
+                crate::cli_common::revision(&serde_json::to_vec(&config)?),
+            )
+            .context("service status IPC")?,
+        )
     } else {
         None
     };
@@ -158,7 +164,7 @@ pub(crate) async fn execute_config(
         session.context("delivery requires an Client session")?,
         config.spool_max_bytes,
     )
-    .with_context(|| format!("failed to open spool in {}", config.state_dir.display()))?;
+    .context("service durable spool")?;
     // A service becomes ready only after configuration, host identity, collectors
     // and durable spool have all initialized. Network authorization is deliberately
     // not part of bootstrap: an unpaired service must remain healthy while it waits

@@ -525,7 +525,10 @@ foreach ($entry in $fixtureFiles.GetEnumerator()) {
     if (Test-Path -LiteralPath $path) { throw 'Refusing to overwrite an existing fixture identity' }
     [IO.File]::WriteAllText($path, $entry.Value, [Text.UTF8Encoding]::new($false))
 }
-Start-Service host-monitor
+try { Start-Service host-monitor -ErrorAction Stop } catch {
+    & sc.exe queryex host-monitor
+    throw
+}
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
@@ -563,7 +566,10 @@ if (@(Get-HostMonitorArpEntries).Count -ne 0) {
 Assert-PreservedStateAcl $installedServiceSid
 
 Invoke-Msi /i $currentMsi "reinstall"
-Start-Service host-monitor
+try { Start-Service host-monitor -ErrorAction Stop } catch {
+    & sc.exe queryex host-monitor
+    throw
+}
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
