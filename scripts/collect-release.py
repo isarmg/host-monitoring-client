@@ -49,7 +49,8 @@ def main():
     system = platform.system()
     if system == "Windows":
         assets = list(Path("packaging/windows/wix/bin/x64/Release").rglob(f"host-monitor-{version}-x64.msi"))
-        expected = 1
+        assets.append(Path("packaging/windows/install-host-monitor.ps1"))
+        expected = 2
     elif system == "Linux":
         assets = [Path(f"dist/host-monitor_{version}_amd64.deb"), Path(f"dist/host-monitor-{version}.x86_64.rpm")]
         expected = 2

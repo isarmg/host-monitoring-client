@@ -787,7 +787,7 @@ fn write_or_validate_state_marker(paths: &FixedPaths) -> anyhow::Result<()> {
         &paths.state_root,
         "state root required before marker update",
     )?;
-    let marker = paths.state_root.join(STATE_MARKER);
+    let marker = existing_state_marker(paths)?.unwrap_or_else(|| paths.state_root.join(STATE_MARKER));
     if marker.exists() {
         validate_marker_file(&marker)?;
     } else {
@@ -803,8 +803,25 @@ fn write_or_validate_state_marker(paths: &FixedPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Ownership format is compatible across these patch releases. Keep an existing
+// marker unchanged so repair rollback and preserved-state reinstall are lossless.
+fn existing_state_marker(paths: &FixedPaths) -> anyhow::Result<Option<PathBuf>> {
+    let mut found = None;
+    for version in ["0.9.4", "0.9.5", "0.9.6", env!("CARGO_PKG_VERSION")] {
+        let marker = paths.state_root.join(format!(".host-monitor-managed-{version}"));
+        if marker.try_exists()? {
+            validate_marker_file(&marker)?;
+            if found.as_ref().is_some_and(|previous| previous != &marker) {
+                bail!("multiple conflicting state ownership markers");
+            }
+            found = Some(marker);
+        }
+    }
+    Ok(found)
+}
+
 fn validate_state_marker(paths: &FixedPaths, require_service_access: bool) -> anyhow::Result<()> {
-    let marker = paths.state_root.join(STATE_MARKER);
+    let marker = existing_state_marker(paths)?.context("missing trusted state ownership marker")?;
     validate_marker_file(&marker)?;
     validate_managed_dacl(&paths.state_root, require_service_access)?;
     validate_managed_dacl(&marker, require_service_access)
@@ -823,7 +840,10 @@ fn validate_marker_file(marker: &Path) -> anyhow::Result<()> {
         "state marker has multiple hard links"
     );
     ensure!(
-        fs::read(marker)? == STATE_MARKER_CONTENT.as_bytes(),
+        ["0.9.4", "0.9.5", "0.9.6", env!("CARGO_PKG_VERSION")].iter().any(|version| {
+            marker.file_name().is_some_and(|name| name == format!(".host-monitor-managed-{version}").as_str())
+                && fs::read(marker).is_ok_and(|bytes| bytes == format!("host-monitor-windows-state-{version}\r\n").as_bytes())
+        }),
         "state marker content is invalid"
     );
     Ok(())

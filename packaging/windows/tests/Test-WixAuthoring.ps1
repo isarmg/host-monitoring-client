@@ -69,7 +69,7 @@ foreach ($currentVersionBinding in @(
         throw "Windows state markers and transaction journals must be bound to the current package version."
     }
 }
-foreach ($outOfScopeUpgradeMechanism in @('TaskScheduler', 'ScheduledTask', 'MajorUpgrade')) {
+foreach ($outOfScopeUpgradeMechanism in @('TaskScheduler', 'ScheduledTask')) {
     if ($helperText.Contains($outOfScopeUpgradeMechanism)) {
         throw "The current-only maintenance helper contains an upgrade mechanism: $outOfScopeUpgradeMechanism"
     }
@@ -124,19 +124,14 @@ function Assert-Equal {
 $product = Select-One "/w:Wix/w:Package"
 Assert-Equal $product.Scope "perMachine" "The MSI must be per-machine."
 Assert-Equal $product.InstallerVersion "500" "The MSI must target MSI 5.0."
-Assert-Equal ($product.GetAttribute("UpgradeCode")) "" `
-    "A current-only MSI must not declare a cross-version product family."
+Assert-Equal ($product.GetAttribute("UpgradeCode")) "B4A341EC-D4B2-419F-A00B-E8E504DE9798" `
+    "Upgrade family must stay stable."
 $infoUrl = Select-One "/w:Wix/w:Package/w:Property[@Id='ARPURLINFOABOUT']"
 Assert-Equal $infoUrl.Value "https://github.com/isarmg/host-monitoring-client" `
     "The Apps & Features project URL must identify the current repository."
 
-if (@($package.SelectNodes("/w:Wix/w:Package/w:MajorUpgrade", $namespace)).Count -ne 0) {
-    throw "The current-only MSI must not author automatic major-upgrade migration."
-}
-if (@($package.SelectNodes("/w:Wix/w:Package/w:Upgrade", $namespace)).Count -ne 0) {
-    throw "The current-only MSI must not detect or special-case another product version."
-}
-
+$upgrade = Select-One "/w:Wix/w:Package/w:MajorUpgrade"
+Assert-Equal $upgrade.Schedule "afterInstallInitialize" "Upgrade removal must be transactional."
 $service = Select-One "//w:ServiceInstall[@Name='host-monitor']"
 Assert-Equal $service.DisplayName "host-monitor" "Unexpected service display name."
 Assert-Equal $service.Type "ownProcess" "The Client must be an own-process service."
@@ -170,8 +165,8 @@ Assert-Equal $purgeProperty.Secure "yes" "PURGE must survive the client/server M
 $diagnosticsProperty = Select-One "//w:Property[@Id='HOST_MONITORING_MAINTENANCE_DIAGNOSTICS']"
 Assert-Equal $diagnosticsProperty.Secure "yes" `
     "The maintenance diagnostics switch must survive the client/server MSI boundary."
-Assert-Equal $diagnosticsProperty.GetAttribute("Value") "" `
-    "Maintenance diagnostics must remain disabled unless the operator explicitly requests them."
+Assert-Equal $diagnosticsProperty.GetAttribute("Value") "1" `
+    "Failed setup must leave protected diagnostics by default."
 $diagnosticsLaunches = @($package.SelectNodes(
     "//w:Launch[contains(@Condition, 'HOST_MONITORING_MAINTENANCE_DIAGNOSTICS')]",
     $namespace
@@ -295,16 +290,6 @@ foreach ($entry in $expectedSequence.GetEnumerator()) {
         "The execution condition for $($entry.Key) drifted."
 }
 
-foreach ($removedUpgradeMechanism in @(
-    'UpgradeCode=', '<Upgrade ', '<MajorUpgrade', 'RemoveExistingProducts',
-    'UPGRADINGPRODUCTCODE', 'WIX_UPGRADE_DETECTED', 'HOST_MONITORING_OTHER_VERSION_FOUND',
-    'HOST_MONITORING_TEST_FAIL_AFTER_REMOVE'
-)) {
-    if ($packageText.Contains($removedUpgradeMechanism)) {
-        throw "Removed automatic-upgrade mechanism remains in Package.wxs: $removedUpgradeMechanism"
-    }
-}
-
 if ($packageText -match '(?i)WixQuietExec|CAQuietExec') {
     throw "The MSI authoring must not use command-shell custom actions."
 }
@@ -316,18 +301,6 @@ if ($warningsAsErrors.Count -ne 1) {
 }
 Assert-Equal $warningsAsErrors[0] "true" `
     "All unsuppressed WiX warnings must remain build errors."
-$suppressedWarnings = @($project.Project.PropertyGroup.SuppressSpecificWarnings)
-if ($suppressedWarnings.Count -ne 1) {
-    throw "Expected exactly one WiX warning suppression; found $($suppressedWarnings.Count)."
-}
-Assert-Equal $suppressedWarnings[0] "1075" `
-    "Only the cross-version UpgradeCode recommendation may be suppressed."
-$suppressedIces = @($project.Project.PropertyGroup.SuppressIces)
-if ($suppressedIces.Count -ne 1) {
-    throw "Expected exactly one MSI validation suppression; found $($suppressedIces.Count)."
-}
-Assert-Equal $suppressedIces[0] "ICE74" `
-    "Only the cross-version UpgradeCode validation recommendation may be suppressed."
 $workspaceVersionMatches = [regex]::Matches(
     $workspaceText,
     '(?m)^version\s*=\s*"(?<version>\d+\.\d+\.\d+)"\s*$'

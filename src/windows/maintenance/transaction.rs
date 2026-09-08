@@ -11,24 +11,21 @@ fn prepare_install(paths: &FixedPaths) -> anyhow::Result<()> {
         validate_tree(&paths.state_root)?;
     }
     let existing_service = open_client_service(SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS)?;
-    ensure!(
-        !program_existed || existing_service.is_some(),
-        "an existing program root is not owned by the current host-monitor service"
-    );
+    if program_existed {
+        validate_program_tree(&paths.program_root)?;
+    }
     let original_service_sid_type = if let Some(service) = existing_service.as_ref() {
         validate_client_service(service, paths)?;
-        validate_program_tree(&paths.program_root)?;
-        ensure!(
-            state_existed,
-            "an existing host-monitor service has no trusted state root"
-        );
-        validate_state_marker(paths, true)?;
+        // An interrupted uninstall can leave SCM registration with no files/state.
+        // The fixed ImagePath and LocalService identity above establish which
+        // service MSI may repair; never require missing payloads to validate.
+        if state_existed {
+            validate_state_marker(paths, true)?;
+        }
         let sid_type = query_service_sid_type(service)?;
-        ensure!(
-            sid_type == SERVICE_SID_TYPE_UNRESTRICTED,
-            "the existing host-monitor service SID type is not unrestricted"
-        );
-        Some(sid_type)
+        // MSI rolls back service registration itself. Native restoration needs
+        // the old payload only when that payload actually existed.
+        (program_existed && state_existed).then_some(sid_type)
     } else {
         None
     };

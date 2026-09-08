@@ -503,6 +503,15 @@ if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
     throw "Smoke-test foreign service was not deleted."
 }
 
+# Reproduce the reported machine: correctly registered LocalService, but its
+# executable and state were removed by a previous uninstall.
+$orphanCommand = '"' + (Join-Path $installedRoot 'host-monitor.exe') + '" --windows-service run --config "' + (Join-Path $stateRoot 'config.json') + '"'
+& sc.exe create host-monitor binPath= $orphanCommand obj= 'NT AUTHORITY\LocalService' start= auto
+if ($LASTEXITCODE -ne 0) { throw 'Could not create orphan-service regression fixture' }
+Invoke-Msi /i $currentMsi "repair-orphan-service"
+Invoke-Msi /x $currentMsi "purge-orphan-fixture" "PURGE=1"
+Assert-ClientCompletelyAbsent
+
 Invoke-Msi /i $currentMsi "fresh-install"
 if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
 # Synthetic offline identity for SCM/ACL acceptance only. The installed private
@@ -626,7 +635,17 @@ if (@(Get-HostMonitorArpEntries).Count -ne 0) {
 }
 Assert-PreservedStateAcl $installedServiceSid
 
+# Preserve an older compatible ownership marker during reinstall.
+Rename-Item -LiteralPath (Join-Path $stateRoot $stateMarker) -NewName '.host-monitor-managed-0.9.4'
+[IO.File]::WriteAllText((Join-Path $stateRoot '.host-monitor-managed-0.9.4'), "host-monitor-windows-state-0.9.4`r`n", [Text.UTF8Encoding]::new($false))
+$stateMarker = '.host-monitor-managed-0.9.4'
 Invoke-Msi /i $currentMsi "reinstall"
+$expectedExeHash = (Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash
+Set-Content -LiteralPath (Join-Path $installedRoot 'host-monitor.exe') -Value 'damaged payload'
+Invoke-Msi /i $currentMsi "force-repair-damaged-payload" "REINSTALL=ALL REINSTALLMODE=amus"
+if ((Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash -ne $expectedExeHash) { throw 'Repair did not force replacement of damaged executable' }
+if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Repair changed device identity' }
+
 try { Start-Service host-monitor -ErrorAction Stop } catch {
     & sc.exe queryex host-monitor
     throw

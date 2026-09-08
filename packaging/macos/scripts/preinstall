@@ -251,10 +251,10 @@ validate_existing_command_link() {
 
 if installed_receipt="$(pkgutil --pkg-info org.sarmg.hostmonitor 2>/dev/null)"; then
   installed_version="$(printf '%s\n' "$installed_receipt" | sed -n 's/^version: //p')"
-  [ "$installed_version" = "$package_version" ] || {
-    echo "host-monitor $installed_version is installed; purge it before installing $package_version" >&2
+  case "$installed_version" in 0.9.4|0.9.5|0.9.6|"$package_version") ;; *)
+    echo "Unsupported host-monitor state format from $installed_version" >&2
     exit 1
-  }
+  ;; esac
 fi
 
 # Reject an unsafe pre-existing path before Installer can replace it or apply

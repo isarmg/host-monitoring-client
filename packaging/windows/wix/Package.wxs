@@ -3,6 +3,7 @@
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Package
+    UpgradeCode="B4A341EC-D4B2-419F-A00B-E8E504DE9798"
     Name="host-monitor"
     Manufacturer="Host Monitoring"
     Version="$(var.ProductVersion)"
@@ -16,6 +17,8 @@
       Description="Host Monitoring read-only host telemetry client"
       Keywords="Host Monitoring,client,telemetry,service"
       Manufacturer="Host Monitoring" />
+    <MajorUpgrade DowngradeErrorMessage="A newer host-monitor version is installed." Schedule="afterInstallInitialize" />
+    <Property Id="REINSTALLMODE" Value="amus" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Launch
@@ -35,9 +38,8 @@
     <Property Id="ARPCONTACT" Value="Host Monitoring maintainers" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/isarmg/host-monitoring-client" />
     <Property Id="ARPNOMODIFY" Value="1" />
-    <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="PURGE" Secure="yes" />
-    <Property Id="HOST_MONITORING_MAINTENANCE_DIAGNOSTICS" Secure="yes" />
+    <Property Id="HOST_MONITORING_MAINTENANCE_DIAGNOSTICS" Value="1" Secure="yes" />
     <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="host-monitor" />
@@ -276,7 +278,7 @@
         irreversible: if it cannot finish, the protected quarantine may remain for explicit
         administrator cleanup, but Windows Installer must not roll an already uninstalled product
         back onto a partially deleted state tree.
-        This current-version package has no cross-version product-family or upgrade path.
+        Major upgrades preserve state through the ordinary uninstall path.
       -->
       <Custom
         Action="RollbackPurgedState"
