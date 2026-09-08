@@ -23,10 +23,14 @@
 
 ## 验证与发行边界
 
-已发布到 `codex/client-cli-completion-20260907` 验证分支，详见 [精确基线与兼容矩阵](cli-compatibility.md)。Linux 原生 CI、Windows 原生 Rust 回归、macOS 原生 Rust 回归和本地安装故障注入已通过；MSI 与两种 Mac 架构的完整安装验收继续以该分支最终 CI 结果为准。
+已发布到 `codex/client-cli-completion-20260907` 验证分支，详见 [精确基线与兼容矩阵](cli-compatibility.md)。代码提交 `2d17630915bb3f1c3fb3b11023b8c922cd271984` 的[八个 CI 作业全部通过](https://github.com/isarmg/host-monitoring-client/actions/runs/34198794898)：Windows MSVC/MSI、Linux DEB/RPM、macOS Intel/Apple Silicon PKG、OTLP 端到端及三个移动库边界作业。各桌面平台安装产物及源码身份/校验和已上传到该 CI 页面。
+
+Windows 原生验收覆盖安装后停止、显式服务启动、经过校验的只读 IPC、离线业务健康不夸报、运行中配置维护冲突、停服务后原子提交、LocalService 读取管理员提交的配置、启用/关闭开机运行、卸载保留状态、重装及单独清除。macOS 两种架构通过原生安装、保留状态重装和清除；安装故障回滚另有自动化回归。
+
+Windows 新文件继承已验证的私有目录 ACL，并在写入前验证权限，避免要求 LocalService 重设 DACL。维护使用保留文件名称保护的字节范围锁，允许安装器只读检查元数据；管道 ACL 验证连接者权限，客户端核验服务进程和绑定。启动失败通过 SCM 返回固定分类及数字系统错误码，不输出秘密状态。
 
 配置和配对状态格式固定为历史 `0.9.4`，已与程序版本分离。此次不重写身份和队列，也不创建未经验证的历史迁移边。`sarmg-upgrade` 的 Server 恢复命令不适用于 Client。
 
 Windows 日志读取使用 SCM 生命周期事件，macOS 读取服务文件日志。macOS 的 `--since` 接受 UTC ISO 日期/时间，无法给没有时间戳的旧文本行补造时间。
 
-验证分支和 unsigned 安装产物不代表正式发行。发布者签名、公证、生产 Server 部署、重启后无人登录的物理设备验收，不能由 CI 编译或一次服务启动代替。
+验证使用一次性 runner 与合成离线身份，没有证明全部真实 Server 配对、网络故障及长时间运行场景。验证分支和 unsigned 安装产物不代表正式发行。发布者签名、公证、生产 Server 部署、重启后无人登录的物理设备验收仍未执行。
