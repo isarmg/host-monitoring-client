@@ -59,15 +59,15 @@ fn assert_remote_http_is_rejected(arguments: &[&str]) {
     let fixture = Fixture::new();
     let output = fixture.pair(arguments);
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let expected = if arguments.is_empty() {
-        "telemetry endpoint violates Foundation network policy"
-    } else {
-        "unknown argument: --allow-insecure-http"
-    };
-    assert!(
-        stderr.contains(expected),
-        "unexpected pairing error: {stderr}"
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        result["error"]["code"],
+        if arguments.is_empty() {
+            "invalid_configuration"
+        } else {
+            "unknown_option"
+        }
     );
     assert!(
         !fixture.state_dir.exists(),

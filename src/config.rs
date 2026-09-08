@@ -100,12 +100,16 @@ pub enum OutputMode {
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentPackageVersion;
 
+/// Frozen wire discriminator. The legacy field name remains application_version,
+/// but a binary-only release must not change the persisted configuration format.
+pub const CONFIG_FORMAT_VERSION: &str = "0.9.4";
+
 impl Serialize for CurrentPackageVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(env!("CARGO_PKG_VERSION"))
+        serializer.serialize_str(CONFIG_FORMAT_VERSION)
     }
 }
 
@@ -115,12 +119,12 @@ impl<'de> Deserialize<'de> for CurrentPackageVersion {
         D: Deserializer<'de>,
     {
         let version = String::deserialize(deserializer)?;
-        if version == env!("CARGO_PKG_VERSION") {
+        if version == CONFIG_FORMAT_VERSION {
             Ok(Self)
         } else {
             Err(D::Error::custom(format!(
-                "configuration belongs to Client {version}, expected {}",
-                env!("CARGO_PKG_VERSION")
+                "unsupported configuration format {version}, expected {}",
+                CONFIG_FORMAT_VERSION
             )))
         }
     }
@@ -154,22 +158,6 @@ pub struct ClientConfig {
     pub server_override: Option<String>,
     #[serde(skip)]
     pub endpoint_override: Option<String>,
-    /// Internal machine-readable event stream used by the signed Windows tray
-    /// broker. This flag is never read from or persisted to configuration.
-    #[serde(skip)]
-    pub tray_events: bool,
-    /// Internal graceful-cancellation event for the elevated Windows tray
-    /// broker. It is accepted only together with `pair --tray-events`.
-    #[serde(skip)]
-    pub tray_cancel_event: Option<String>,
-    /// Hard upper bound for a tray-initiated pairing operation.
-    #[serde(skip)]
-    pub tray_deadline_seconds: Option<u64>,
-    /// Internal one-shot authorization-key channel. The signed Windows tray
-    /// broker supplies the key over the pair child's anonymous stdin; it is
-    /// never accepted as an argument, environment variable, or config value.
-    #[serde(skip)]
-    pub tray_activation_stdin: bool,
     /// Explicit user-confirmed replacement of an incomplete saved request.
     /// Ordinary pairing remains resumable/fail-closed so a lost activation
     /// response cannot silently rotate secrets.
@@ -212,10 +200,6 @@ impl Default for ClientConfig {
             config_path: None,
             server_override: None,
             endpoint_override: None,
-            tray_events: false,
-            tray_cancel_event: None,
-            tray_deadline_seconds: None,
-            tray_activation_stdin: false,
             replace_pending_pairing: false,
             output_mode: OutputMode::Human,
             doctor_delivery: false,
@@ -226,20 +210,21 @@ impl Default for ClientConfig {
 
 impl ClientConfig {
     pub fn load_from_args() -> anyhow::Result<(Self, ClientCommand)> {
+        Self::load_from_iter(env::args().skip(1))
+    }
+    pub fn load_from_iter(
+        arguments: impl IntoIterator<Item = String>,
+    ) -> anyhow::Result<(Self, ClientCommand)> {
         let mut command = None;
         let mut windows_service = false;
         let mut config_path = env::var_os("HOST_MONITOR_CONFIG").map(PathBuf::from);
         let mut server_override = None;
         let mut endpoint_override = None;
-        let mut tray_events = false;
-        let mut tray_cancel_event = None;
-        let mut tray_deadline_seconds = None;
-        let mut tray_activation_stdin = false;
         let mut replace_pending_pairing = false;
         let mut output_mode = OutputMode::Human;
         let mut output_mode_selected = false;
         let mut doctor_delivery = false;
-        let mut args = env::args().skip(1);
+        let mut args = arguments.into_iter();
         let mut argument_position = 0usize;
         while let Some(arg) = args.next() {
             argument_position += 1;
@@ -267,38 +252,6 @@ impl ClientConfig {
                 "--endpoint" => {
                     endpoint_override =
                         Some(args.next().context("--endpoint requires a report URL")?);
-                }
-                "--tray-events" => {
-                    if tray_events {
-                        bail!("--tray-events may be specified only once");
-                    }
-                    tray_events = true;
-                }
-                "--tray-cancel-event" => {
-                    if tray_cancel_event.is_some() {
-                        bail!("--tray-cancel-event may be specified only once");
-                    }
-                    tray_cancel_event = Some(
-                        args.next()
-                            .context("--tray-cancel-event requires an event name")?,
-                    );
-                }
-                "--tray-deadline-seconds" => {
-                    if tray_deadline_seconds.is_some() {
-                        bail!("--tray-deadline-seconds may be specified only once");
-                    }
-                    tray_deadline_seconds = Some(
-                        args.next()
-                            .context("--tray-deadline-seconds requires a value")?
-                            .parse::<u64>()
-                            .context("invalid --tray-deadline-seconds value")?,
-                    );
-                }
-                "--tray-activation-stdin" => {
-                    if tray_activation_stdin {
-                        bail!("--tray-activation-stdin may be specified only once");
-                    }
-                    tray_activation_stdin = true;
                 }
                 "--replace-pending-pairing" => {
                     if replace_pending_pairing {
@@ -353,19 +306,8 @@ impl ClientConfig {
             bail!("--delivery may be used only with doctor");
         }
         validate_windows_service_invocation(windows_service, command)?;
-        validate_pairing_control_invocation(
-            command,
-            tray_events,
-            tray_cancel_event.is_some() || tray_deadline_seconds.is_some() || tray_activation_stdin,
-            replace_pending_pairing,
-        )?;
-        if let Some(seconds) = tray_deadline_seconds
-            && !(60..=3600).contains(&seconds)
-        {
-            bail!("--tray-deadline-seconds must be between 60 and 3600");
-        }
-        if let Some(name) = &tray_cancel_event {
-            validate_tray_cancel_event(name)?;
+        if replace_pending_pairing && command != ClientCommand::Pair {
+            bail!("replacement requires pair");
         }
 
         if config_path.is_none() {
@@ -380,10 +322,6 @@ impl ClientConfig {
         config.config_path = config_path;
         config.server_override = server_override;
         config.endpoint_override = endpoint_override;
-        config.tray_events = tray_events;
-        config.tray_cancel_event = tray_cancel_event;
-        config.tray_deadline_seconds = tray_deadline_seconds;
-        config.tray_activation_stdin = tray_activation_stdin;
         config.replace_pending_pairing = replace_pending_pairing;
         config.output_mode = output_mode;
         config.doctor_delivery = doctor_delivery;
@@ -398,7 +336,7 @@ impl ClientConfig {
         Ok((config, command))
     }
 
-    fn load_selected_config(
+    pub fn load_selected_config(
         config_path: Option<&Path>,
         command: ClientCommand,
     ) -> anyhow::Result<(Self, Option<String>)> {
@@ -445,7 +383,7 @@ impl ClientConfig {
             bail!("pair accepts either --server or --endpoint, not both");
         }
         if let Some(server) = self.server_override.as_deref() {
-            let server = crate::tray_support::validate_server_base(server)
+            let server = crate::pairing_input::validate_server_base(server)
                 .context("invalid --server URL")?;
             self.endpoint = format!(
                 "{}{}",
@@ -502,7 +440,7 @@ impl ClientConfig {
         Ok(())
     }
 
-    fn validate(&self, command: ClientCommand) -> anyhow::Result<()> {
+    pub fn validate(&self, command: ClientCommand) -> anyhow::Result<()> {
         // Status must be available precisely when configuration is missing or
         // malformed. It reports those conditions in its snapshot instead of
         // failing before any diagnostics can be rendered.
@@ -672,16 +610,12 @@ impl ClientConfig {
         self.persist_durable_config()
     }
 
-    fn persist_durable_config(&self) -> anyhow::Result<PathBuf> {
+    pub fn persist_durable_config(&self) -> anyhow::Result<PathBuf> {
         let path = self.config_path.clone().unwrap_or_else(default_config_path);
         let mut persisted = self.clone();
         persisted.config_path = None;
         persisted.server_override = None;
         persisted.endpoint_override = None;
-        persisted.tray_events = false;
-        persisted.tray_cancel_event = None;
-        persisted.tray_deadline_seconds = None;
-        persisted.tray_activation_stdin = false;
         persisted.replace_pending_pairing = false;
         let mut output = SecretWriter::new(MAX_CONFIG_BYTES)?;
         serde_json::to_writer_pretty(&mut output, &persisted)?;
@@ -701,24 +635,6 @@ fn select_command(
         bail!("multiple commands are not allowed (selected {previous:?}, then {spelling})");
     }
     *selected = Some(command);
-    Ok(())
-}
-
-fn validate_pairing_control_invocation(
-    command: ClientCommand,
-    tray_events: bool,
-    has_internal_tray_control: bool,
-    replace_pending_pairing: bool,
-) -> anyhow::Result<()> {
-    if tray_events && command != ClientCommand::Pair {
-        bail!("--tray-events may be used only with the pair command");
-    }
-    if has_internal_tray_control && (!tray_events || command != ClientCommand::Pair) {
-        bail!("internal tray pairing controls require pair --tray-events");
-    }
-    if replace_pending_pairing && command != ClientCommand::Pair {
-        bail!("--replace-pending-pairing may be used only with the pair command");
-    }
     Ok(())
 }
 
@@ -748,25 +664,6 @@ fn validate_windows_service_position(argument_position: usize) -> anyhow::Result
         bail!("--windows-service must be the first argument");
     }
     Ok(())
-}
-
-fn validate_tray_cancel_event(name: &str) -> anyhow::Result<()> {
-    #[cfg(not(windows))]
-    {
-        let _ = name;
-        bail!("--tray-cancel-event is available only on Windows");
-    }
-    #[cfg(windows)]
-    {
-        const PREFIX: &str = "Local\\HostMonitorPairCancel-";
-        let suffix = name
-            .strip_prefix(PREFIX)
-            .context("invalid tray cancellation event name")?;
-        if suffix.len() != 64 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            bail!("invalid tray cancellation event name");
-        }
-        Ok(())
-    }
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -815,7 +712,7 @@ fn default_state_dir() -> PathBuf {
     }
 }
 
-fn default_config_path() -> PathBuf {
+pub fn default_config_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         default_state_dir().join("config.json")
@@ -970,7 +867,7 @@ mod tests {
                 "host-config-secret-budget-{}",
                 uuid::Uuid::new_v4()
             ));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let path = directory.join("config.json");
         let mut config = ClientConfig {
             config_path: Some(path.clone()),
@@ -1003,7 +900,7 @@ mod tests {
                 "host-config-secret-errors-{}",
                 uuid::Uuid::new_v4()
             ));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let path = directory.join("config.json");
         for field in [
             "application_version",
@@ -1042,7 +939,7 @@ mod tests {
             .canonicalize()
             .expect("physical test temporary directory")
             .join(format!("host-config-safety-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o750)).unwrap();
         let path = directory.join("config.json");
         let config = ClientConfig {
@@ -1089,7 +986,7 @@ mod tests {
         let path = directory.join("config.json");
         assert!(persist_private_config(&path, &vec![b'x'; MAX_CONFIG_BYTES]).is_err());
         assert!(!directory.exists());
-        fs::create_dir(&directory).unwrap();
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
         let mut bytes = serde_json::to_vec(&ClientConfig::default()).unwrap();
         bytes.resize(MAX_CONFIG_BYTES - 1, b' ');
         persist_private_config(&path, &bytes).unwrap();
@@ -1206,22 +1103,6 @@ mod tests {
         assert!(validate_windows_service_position(1).is_ok());
         assert!(validate_windows_service_position(2).is_err());
         assert!(validate_windows_service_position(3).is_err());
-    }
-
-    #[test]
-    fn explicit_pairing_replacement_is_public_but_pair_only() {
-        assert!(
-            validate_pairing_control_invocation(ClientCommand::Pair, false, false, true).is_ok(),
-            "the recovery flag must not require the private tray event stream"
-        );
-        assert!(
-            validate_pairing_control_invocation(ClientCommand::Run, false, false, true).is_err()
-        );
-        assert!(
-            validate_pairing_control_invocation(ClientCommand::Pair, false, true, false).is_err(),
-            "the other tray controls must remain private"
-        );
-        assert!(validate_pairing_control_invocation(ClientCommand::Pair, true, true, true).is_ok());
     }
 
     #[test]
@@ -1376,9 +1257,9 @@ mod tests {
     }
 
     #[test]
-    fn configuration_requires_the_exact_current_application_version_and_shape() {
+    fn configuration_requires_the_frozen_format_and_shape() {
         let current = serde_json::to_value(ClientConfig::default()).unwrap();
-        assert_eq!(current["application_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(current["application_version"], CONFIG_FORMAT_VERSION);
         serde_json::from_value::<ClientConfig>(current.clone()).unwrap();
 
         let mut missing_version = current.clone();

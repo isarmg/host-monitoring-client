@@ -13,7 +13,7 @@ pub async fn activate_pending_with_code(
     request_id: Uuid,
     activation_code: &str,
 ) -> anyhow::Result<Option<Uuid>> {
-    crate::tray_support::validate_activation_code(activation_code)?;
+    crate::pairing_input::validate_activation_code(activation_code)?;
     let (activation_url, pairing_endpoint, report_endpoint, polling_secret) = {
         let transaction = lock_state(config)?;
         let store = &transaction;

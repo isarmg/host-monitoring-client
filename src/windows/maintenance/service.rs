@@ -33,8 +33,8 @@ fn validate_client_service(service: &ServiceHandle, paths: &FixedPaths) -> anyho
         "host-monitor is not an own-process service"
     );
     ensure!(
-        config.dwStartType == SERVICE_AUTO_START,
-        "host-monitor is not configured for automatic start"
+        matches!(config.dwStartType, SERVICE_AUTO_START | SERVICE_DEMAND_START | SERVICE_DISABLED),
+        "host-monitor has an unsupported service startup type"
     );
     let image_path = unsafe { config.lpBinaryPathName.to_string() }?;
     let arguments = split_windows_command_line(&image_path)?;

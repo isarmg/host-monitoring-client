@@ -17,8 +17,8 @@ def main():
     os.chdir(ROOT)
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     config = json.loads(Path("config/host-monitor.json.example").read_text(encoding="utf-8"))
-    if config["application_version"] != version:
-        raise ValueError("configuration version does not match Cargo")
+    if config["application_version"] != "0.9.4":
+        raise ValueError("configuration does not match the frozen 0.9.4 format")
     if os.environ.get("GITHUB_REF_TYPE") == "tag" and os.environ.get("GITHUB_REF_NAME") != f"v{version}":
         raise ValueError("release tag does not match Cargo")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -53,8 +53,8 @@ def main():
     manifest = {"version": version, "commit": commit, "os": system, "arch": platform.machine(), "sha256": files,
                 "signing": "unsigned (no Authenticode/Developer ID/notarization)",
                 "ci_run": os.environ.get("GITHUB_RUN_ID")}
-    (output / f"host-monitor-{version}-{system}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
-    (output / f"SHA256SUMS-{system}").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(files.items())), encoding="utf-8", newline="\n")
+    (output / f"host-monitor-{version}-{system}-{platform.machine()}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (output / f"SHA256SUMS-{system}-{platform.machine()}").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(files.items())), encoding="utf-8", newline="\n")
     print(json.dumps(manifest, indent=2))
 
 

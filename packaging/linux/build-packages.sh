@@ -83,8 +83,8 @@ LC_ALL=C readelf -p .host_monitor.version -- "$client_binary" 2>/dev/null |
   ' || die "Client package payload ELF version marker does not match Cargo $package_version"
 
 config_version=$(sed -n 's/^  "application_version": "\([^"]*\)",$/\1/p' config/host-monitor.json.example)
-[ "$config_version" = "$package_version" ] ||
-  die "host-monitor.json.example version $config_version does not match Client $package_version"
+[ "$config_version" = "0.9.4" ] ||
+  die "host-monitor.json.example must use the frozen configuration format 0.9.4"
 
 nfpm_bin=${NFPM_BIN:-nfpm}
 command -v "$nfpm_bin" >/dev/null 2>&1 || [ -x "$nfpm_bin" ] ||

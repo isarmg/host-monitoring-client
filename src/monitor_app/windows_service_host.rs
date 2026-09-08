@@ -113,9 +113,43 @@ fn service_main_inner() -> anyhow::Result<()> {
         Ok(()) => report_stopped(0),
         Err(error) => {
             eprintln!("host-monitor runtime failed: {error:#}");
-            report_stopped(SERVICE_FAILURE_RUNTIME)?;
+            report_stopped(runtime_failure_code(&error))?;
             Err(error)
         }
+    }
+}
+
+// SCM has no console for stderr. Publish only a fixed diagnostic category,
+// never paths, endpoints, credentials or arbitrary error text.
+fn runtime_failure_code(error: &anyhow::Error) -> u32 {
+    let mut code = SERVICE_FAILURE_RUNTIME;
+    for cause in error.chain() {
+        code = match cause.to_string().as_str() {
+            "service configuration" => 10,
+            "service maintenance lock" => 11,
+            "failed to acquire the exclusive Client delivery session" => 12,
+            "service shutdown handler" => 13,
+            "service authorization state" => 14,
+            "service host identity" => 15,
+            "service status IPC" => 16,
+            "service durable spool" => 17,
+            "protected state directory" => 20,
+            "protected state lock file" => 21,
+            "protected file type validation" => 22,
+            "protected file ACL validation" => 23,
+            "protected maintenance lock file" => 24,
+            _ => code,
+        };
+    }
+    // Preserve bounded OS failure codes, which contain no user-controlled text.
+    let native = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+    });
+    match native {
+        Some(native @ 1..=9999) => code * 10_000 + native as u32,
+        _ => code,
     }
 }
 

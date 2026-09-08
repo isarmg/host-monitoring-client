@@ -430,12 +430,8 @@ fn assert_pair_rejects_config_before_state_changes(config_path: &Path) {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to load config")
-            && stderr.contains(&config_path.display().to_string()),
-        "unexpected pairing error: {stderr}"
-    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"]["code"], "unsafe_or_corrupt_state");
     assert!(
         !fixture.state_dir.exists(),
         "pairing touched state before rejecting the explicit config"
@@ -508,11 +504,9 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains("exclusive Client delivery session"),
-            "{error}"
-        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(5));
+        assert_eq!(result["error"]["code"], "busy");
         assert!(!fixture.state_dir.join(".credential-state.lock").exists());
         assert!(!fixture.state_dir.join("spool").exists());
     }
@@ -531,7 +525,7 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
         assert!(!fixture.state_dir.join(".credential-state.lock").exists());
         assert!(!fixture.state_dir.join("spool").exists());
     }
-    assert_eq!(fs::read_dir(&fixture.state_dir).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(&fixture.state_dir).unwrap().count(), 2); // instance plus maintenance gate
     drop(session);
     assert!(sarmg_client_runtime::ClientSession::open(&fixture.state_dir).is_ok());
 }

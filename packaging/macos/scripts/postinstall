@@ -324,7 +324,7 @@ validate_launch_payload() {
 current_config_has_package_version() {
   current_config_path="$1"
   config_version_marker="$(
-    awk -v expected="$package_version" '
+    awk -v expected="0.9.4" '
       {
         remaining = $0
         while (match(remaining, /"application_version"[[:space:]]*:/)) {
@@ -1328,16 +1328,14 @@ release_verified_state_to_service || {
   exit 1
 }
 
-launchctl enable system/org.sarmg.hostmonitor
+launchctl disable system/org.sarmg.hostmonitor
 launchctl enable system/org.sarmg.hostmonitor.logrotate
 restart_state_safe=0
-launchctl bootstrap system "$client_plist"
 launchctl bootstrap system "$logrotate_plist"
 
 cat <<'EOF'
 
-host-monitor's LaunchDaemon is started, but this new installation is not paired yet and is not
-sending authorized telemetry.
+host-monitor's LaunchDaemon is installed and disabled until explicit pairing and enablement.
 
 Create an instance and one-time activation code in the Host Monitoring Web console, then run this
 command locally. It deliberately runs as the service account so the daemon owns and can read
@@ -1345,7 +1343,8 @@ the generated credential files:
 
   sudo -u _hostmonitor /usr/local/bin/host-monitor pair \
     --config '/Library/Application Support/host-monitor/config.json' \
-    --server https://host-monitoring.example.com
+    --server https://host-monitoring.example.com --interactive
+  sudo /usr/local/bin/host-monitor service enable --now
 
 Replace the example URL with your Host Monitoring console origin. The package does not contain a
 deployment token, and pairing does not expose the long-lived Client secret to the browser.

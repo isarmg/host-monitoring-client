@@ -1012,29 +1012,19 @@ fi
 assert_absent "$test_root/user.created"
 assert_absent "$test_root/group.created"
 
-# A live-system install cannot report success when service startup fails.
+# Installing or reinstalling leaves runtime and startup policy to the administrator.
 reset_safe_reinstall_state
 : >"$TEST_LOG"
-if FAIL_RESTART=1 "$test_root/postinstall.sh" >"$test_root/postinstall-failure.log" 2>&1; then
-  fail 'postinstall ignored a service restart failure'
+FAIL_RESTART=1 FAIL_ACTIVE=1 "$test_root/postinstall.sh" >"$test_root/postinstall-manual.log" 2>&1 ||
+  fail 'postinstall depended on service startup'
+assert_log_contains 'daemon-reload'
+if grep -E '(^| )(start|restart|enable|is-active)( |$)' "$TEST_LOG" >/dev/null; then
+  fail 'postinstall changed runtime or startup policy'
 fi
-assert_log_contains 'restart host-monitor.service'
-if grep -F 'host-monitor 服务已启动' "$test_root/postinstall-failure.log" >/dev/null; then
-  fail 'postinstall printed a false success message'
+if grep -F 'host-monitor 服务已启动' "$test_root/postinstall-manual.log" >/dev/null; then
+  fail 'postinstall printed a false startup message'
 fi
 assert_exists "$test_root/var/lib/host-monitor-package/managed-user"
 assert_exists "$test_root/var/lib/host-monitor-package/managed-group"
-
-# `is-active` is a second guard after the notify-aware restart job completes.
-reset_safe_reinstall_state
-: >"$TEST_LOG"
-if FAIL_ACTIVE=1 "$test_root/postinstall.sh" >"$test_root/postinstall-inactive.log" 2>&1; then
-  fail 'postinstall ignored a service that did not remain active'
-fi
-assert_log_contains 'restart host-monitor.service'
-assert_log_contains 'is-active --quiet host-monitor.service'
-if grep -F 'host-monitor 服务已启动' "$test_root/postinstall-inactive.log" >/dev/null; then
-  fail 'postinstall printed success for an inactive service'
-fi
 
 echo 'Linux packaging lifecycle tests passed'

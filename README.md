@@ -1,20 +1,51 @@
 # Host Monitoring Client
 
-独立的只读主机遥测客户端。Server 与管理 Web 位于
-[host-monitoring-server](https://github.com/isarmg/host-monitoring-server)，本仓库不构建 Server。
-协议通过完整 Git 提交固定依赖；Foundation Client SDK 采用精确版本与提交，不需要相邻仓库。
+跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
 
-桌面客户端支持 Linux、Windows、macOS；不带默认桌面能力的库另外检查 Android/iOS 目标。
-具体支持平台与安装步骤见 `packaging/linux`、`packaging/windows`、`packaging/macos`。
-可执行文件名称为 `host-monitor`；Windows 另有维护和托盘程序。
+当前纯 CLI 改造尚未发布；完整命令及验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。不要将交叉编译或 Linux 测试通过理解为 Windows/macOS 已完成实机验收。
+
+## 部署与配对
+
+安装包注册服务，新安装不自动配对或启动。Linux 使用 `host-monitor` 低权限账户，macOS 使用 `_hostmonitor`，Windows 保持 LocalService。Unix 写命令使用 `sudo`，Windows 使用已提权终端。
 
 ```sh
-cargo test --locked -p host-monitor
-cargo clippy --locked -p host-monitor --all-targets -- -D warnings
-cargo check --locked -p host-monitor --no-default-features --all-targets
-sh packaging/linux/tests/test-lifecycle.sh
-sh packaging/linux/tests/test-build-packages.sh
+host-monitor config init --interactive
+host-monitor pair --server https://monitor.example.com --interactive
+host-monitor service enable --now
+host-monitor status
 ```
 
-客户端通过配对获得自己的设备凭据，默认验证 HTTPS；不开放通用远程执行功能。
-本次拆分取消产品旧命名，不提供旧状态兼容或迁移。升级和恢复仍以 `sarmg-upgrade` 的支持矩阵为准。
+现有服务先执行 `service stop`。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
+
+自动化通过 stdin 交付单个 JSON 文档：字段为 `server` 和 `authorization_code`。例如部署器启动 `host-monitor pair --input-stdin --non-interactive --format json` 后写入受保护输入；不要在 Shell 参数或日志中拼接秘密。
+
+`pair resume` 只核对已有事务。`pair replace --confirm-replace --expected-binding <当前 host_id> --interactive` 明确替换绑定，要求旧待发送/隔离队列均为空。先通过 `queue status`、`queue inspect`、`queue drain --timeout 60s` 检查或排空；不会自动删除旧数据或换身份发送。
+
+## 配置和诊断
+
+```sh
+host-monitor config show --format json
+host-monitor config validate --file /absolute/candidate.json
+host-monitor config diff --file /absolute/candidate.json
+host-monitor service stop
+host-monitor config apply --file /absolute/candidate.json --expected-revision REVISION
+host-monitor service start
+host-monitor status --check
+```
+
+`config show/diff` 脱敏，提交核对修订并原子持久化。已绑定的 Server 地址及状态目录不能通过普通配置提交迁移。保留当前配置/状态版本检查，不通过修改版本字段绕过升级工具。
+
+`probe` 仅采集、不创建持久身份。`once` 是独占会话内的真实交付。`doctor` 默认本地只读，`doctor --network` 主动探测，`doctor --delivery` 显式真实交付。`status --watch --format ndjson` 的 Ctrl+C 只退出观察。
+
+## 构建验证
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo check --locked --no-default-features
+```
+
+测试中的本地 HTTP/TLS 和 IPC 需要创建本机监听端点的权限。保留 Linux DEB/RPM、Windows 原生服务维护程序和 macOS LaunchDaemon 打包基础。默认卸载保留身份与队列；在 Server 退役设备后再安排受控的数据处置。
+
+版本维度、源提交及升级/回退边界见 [CLI 兼容矩阵](docs/releases/cli-compatibility.md)。

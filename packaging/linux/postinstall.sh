@@ -57,7 +57,7 @@ read_path_metadata() {
 require_current_config() {
   current_config_path=$1
   config_version_marker=$(
-    awk -v expected="$package_version" '
+    awk -v expected="0.9.4" '
       {
         remaining = $0
         while (match(remaining, /"application_version"[[:space:]]*:/)) {
@@ -75,7 +75,7 @@ require_current_config() {
     ' "$current_config_path"
   ) || die "cannot inspect $current_config_path"
   [ "$config_version_marker" = 1:1 ] ||
-    die "$current_config_path must contain exactly one current application_version $package_version marker"
+    die "$current_config_path must contain exactly one supported application_version format 0.9.4 marker"
 }
 
 load_group_marker() {
@@ -529,54 +529,16 @@ read_path_metadata "$config_path"
 [ "$path_uid:$path_gid:$path_mode" = "0:$user_gid:640" ] ||
   die "$config_path could not be secured for the host-monitor group"
 
-service_started=0
 if [ -d /run/systemd/system ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemd is running but systemctl is unavailable"
   systemctl daemon-reload
-  systemctl enable "$service_name"
-  systemctl restart "$service_name"
-  systemctl is-active --quiet "$service_name" || die "$service_name did not remain active"
-  service_started=1
 fi
-
-if [ "$service_started" -eq 1 ]; then
-  cat <<'EOF'
-
-host-monitor 服务已启动，但新安装尚未配对，当前不会发送经过授权的遥测。
-请在本机发起浏览器配对：
-
-  sudo host-monitor pair --config /etc/host-monitor/config.json \
-    --server https://host-monitoring.example.com
-
-管理台只生成一次性激活码，不分发软件，也不会接触 Client 的长期通信 secret。
-
-配对后验证状态（只读，不发送或清理队列）：
-
-  sudo -u host-monitor host-monitor status --output human \
-    --config /etc/host-monitor/config.json
-  sudo -u host-monitor host-monitor doctor --output human \
-    --config /etc/host-monitor/config.json
-
-查看服务和日志：
-
-  systemctl status host-monitor.service
-  journalctl -u host-monitor.service -n 100 --no-pager
-
+cat <<'EOF'
+Client installed; pairing and service startup are explicit:
+  sudo host-monitor pair --config /etc/host-monitor/config.json --interactive
+  sudo host-monitor service enable --now
+  sudo host-monitor status
 EOF
-else
-  cat <<'EOF'
-
-host-monitor 文件已安装；当前环境没有运行 systemd，因此没有启用或启动后台服务。
-进入正常启动的系统后执行：
-
-  sudo systemctl enable --now host-monitor.service
-  sudo host-monitor pair --config /etc/host-monitor/config.json \
-    --server https://host-monitoring.example.com
-
-配对后使用 `host-monitor status --output human` 验证授权状态。
-
-EOF
-fi
 
 # 默认 unit 设置 PrivateDevices=yes，会屏蔽 /dev/nvidia* 与 /dev/dri。
 # 需要 GPU 采集时安装随包分发的 drop-in。

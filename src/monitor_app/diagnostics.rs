@@ -275,7 +275,7 @@ fn inspect_spool(config: &ClientConfig) -> SpoolInspection {
     }
 }
 
-pub(super) fn print_local_status(config: &ClientConfig) -> anyhow::Result<()> {
+pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<serde_json::Value> {
     let configured = config
         .config_path
         .as_ref()
@@ -335,8 +335,6 @@ pub(super) fn print_local_status(config: &ClientConfig) -> anyhow::Result<()> {
     } else {
         "unconfigured"
     };
-    let config_status = config_check.status;
-    let tls_status = tls_check.status;
     let (binding_status, binding_code, binding_message) = if let Some(error) = &pairing_error {
         (
             "error",
@@ -406,35 +404,11 @@ pub(super) fn print_local_status(config: &ClientConfig) -> anyhow::Result<()> {
         "checks": &checks,
         "next_action": next_action
     });
-    match config.output_mode {
-        OutputMode::Json => println!("{}", serde_json::to_string_pretty(&snapshot)?),
-        OutputMode::Human => {
-            println!("host-monitor: {overall_state}");
-            println!("  Configuration: {config_status}");
-            println!("  TLS (local inputs only): {tls_status}");
-            println!(
-                "  Identity: {}",
-                snapshot["host_id"].as_str().unwrap_or("not available")
-            );
-            println!(
-                "  Credential: {}",
-                if credential.present {
-                    "present"
-                } else {
-                    "missing"
-                }
-            );
-            println!("  Endpoint: {}", status_endpoint.unwrap_or("not available"));
-            println!(
-                "  Spool: {} pending, {} quarantined ({} identity mismatches), {} bytes",
-                spool.pending_batches,
-                spool.invalid_batches,
-                spool.identity_mismatch_batches,
-                spool.total_bytes
-            );
-            println!("  Next: {next_action}");
-        }
-    }
+    Ok(snapshot)
+}
+pub(super) fn print_local_status(config: &ClientConfig) -> anyhow::Result<()> {
+    let snapshot = local_status_snapshot(config)?;
+    println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
 }
 

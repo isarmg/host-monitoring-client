@@ -72,6 +72,7 @@ pub(super) async fn run_loop(
                         0
                     }
                 };
+                host_monitor::runtime_status::observe("last_collection_at",serde_json::json!(chrono::Utc::now().timestamp()));
                 let report = sampler.collect(
                     host_receiver.borrow().clone(),
                     config.slow_interval_seconds,

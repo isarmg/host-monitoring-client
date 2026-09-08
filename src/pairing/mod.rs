@@ -52,3 +52,12 @@ include!("polling.rs");
 include!("commit_flow.rs");
 include!("local.rs");
 include!("state_storage.rs");
+
+/// HTTP rejection is distinct from a transport failure with an uncertain result.
+#[derive(Debug, thiserror::Error)]
+#[error("pairing endpoint returned HTTP {status}; inspect the saved transaction before retrying")]
+pub struct PairingHttpError {
+    pub status: u16,
+}
+
+pub use state::PERSISTED_STATE_FORMAT;

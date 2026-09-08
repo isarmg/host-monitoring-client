@@ -124,7 +124,15 @@ impl Reporter {
             .headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok());
-        validate_host_monitoring_ack(response.status, content_type, &response.body, &bounded)
+        let result =
+            validate_host_monitoring_ack(response.status, content_type, &response.body, &bounded);
+        if result.is_ok() {
+            crate::runtime_status::observe(
+                "last_ack_at",
+                serde_json::json!(chrono::Utc::now().timestamp()),
+            );
+        }
+        result
     }
 
     #[cfg(feature = "otlp")]
@@ -459,6 +467,22 @@ fn ensure_generic_success(status: StatusCode, target: &str) -> Result<(), SendEr
     Err(SendError::Transient(format!(
         "{target} rejected telemetry with HTTP {status}"
     )))
+}
+
+/// Explicit unauthenticated network diagnostic using the configured protected TLS inputs.
+pub fn network_probe(config: &ClientConfig) -> anyhow::Result<serde_json::Value> {
+    let mut url = sarmg_client_secure_http::Url::parse(&config.endpoint)?;
+    url.set_path("/health/live");
+    url.set_query(None);
+    url.set_fragment(None);
+    let response = build_client(config)?.get_client_blocking(url.as_str(), Default::default())?;
+    anyhow::ensure!(
+        response.status.is_success(),
+        "public health endpoint unavailable"
+    );
+    Ok(
+        serde_json::json!({"reachable":true,"scope":"public_health_endpoint","trust_context":"current_cli_account"}),
+    )
 }
 
 #[cfg(test)]

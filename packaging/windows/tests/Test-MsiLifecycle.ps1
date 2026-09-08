@@ -266,7 +266,7 @@ function Assert-ServiceRunning {
     $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running,
         [TimeSpan]::FromSeconds(30))
     $definition = Get-CimInstance Win32_Service -Filter "Name='host-monitor'"
-    if ($definition.StartMode -ne "Auto" -or
+    if ($definition.StartMode -ne "Manual" -or
         $definition.StartName -ne "NT AUTHORITY\LocalService" -or
         $definition.PathName -notmatch '--windows-service run --config') {
         throw "Installed SCM service definition is not the expected host-monitor service."
@@ -346,74 +346,13 @@ function Assert-StateAcl {
 }
 
 function Assert-TrayIntegration {
-    if (Get-Process -Name "host-monitor-tray" -ErrorAction SilentlyContinue) {
-        throw "A quiet MSI install incorrectly launched an interactive tray process."
-    }
-    if (-not (Test-Path -LiteralPath $installedTray -PathType Leaf)) {
-        throw "The installed tray companion is missing."
-    }
-    $expectedRun = '"{0}" --startup' -f $installedTray
-    $actualRun = Get-ItemPropertyValue -LiteralPath $trayRunKey `
-        -Name $trayRunName -ErrorAction Stop
-    if ($actualRun -cne $expectedRun) {
-        throw "The tray Run registration is not the fixed installed command."
-    }
-    if (-not (Test-Path -LiteralPath $trayShortcut -PathType Leaf)) {
-        throw "The host-monitor Start menu shortcut is missing."
-    }
-
-    # Advertised MSI shortcuts store a Darwin descriptor instead of a normal shell-link
-    # target, so WScript.Shell.TargetPath is not a reliable assertion. Ask Windows
-    # Installer which installed component the actual shortcut advertises instead.
-    $productCode = New-Object System.Text.StringBuilder 39
-    $featureId = New-Object System.Text.StringBuilder 39
-    $componentCode = New-Object System.Text.StringBuilder 39
-    $shortcutResult = [HostMonitoring.MsiNativeMethods]::MsiGetShortcutTarget(
-        $trayShortcut, $productCode, $featureId, $componentCode
-    )
-    if ($shortcutResult -ne 0 -or $featureId.ToString() -cne "ClientFeature" -or
-        $componentCode.ToString() -ine "{882DF421-2758-42E4-95D4-730C2571803E}") {
-        throw "The Start menu shortcut does not advertise the tray component."
-    }
-
-    $componentPath = New-Object System.Text.StringBuilder 32768
-    [uint32]$componentPathLength = $componentPath.Capacity
-    $componentState = [HostMonitoring.MsiNativeMethods]::MsiGetComponentPath(
-        $productCode.ToString(), $componentCode.ToString(),
-        $componentPath, [ref]$componentPathLength
-    )
-    if ($componentState -ne 3 -or -not [string]::Equals(
-        [IO.Path]::GetFullPath($componentPath.ToString()),
-        [IO.Path]::GetFullPath($installedTray),
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        throw "The advertised tray component is not installed at the fixed path."
-    }
-
-    # The service/config remains isolated, but every interactive user must be able
-    # to execute the tray image from the protected Program Files tree.
-    $usersRules = @((Get-Acl -LiteralPath $installedTray).Access | Where-Object {
-        $_.AccessControlType -eq `
-            [System.Security.AccessControl.AccessControlType]::Allow -and
-        $_.IdentityReference.Translate(
-            [System.Security.Principal.SecurityIdentifier]
-        ).Value -eq "S-1-5-32-545"
-    })
-    if ($usersRules.Count -ne 1 -or
-        [int]$usersRules[0].FileSystemRights -ne 0x1200a9) {
-        throw "The tray image does not grant BUILTIN\\Users exact read/execute access."
+    if ((Test-Path -LiteralPath $installedTray) -or
+        (Test-Path -LiteralPath $trayShortcut) -or
+        (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName -ErrorAction SilentlyContinue)) {
+        throw "Removed tray integration remains installed."
     }
 }
 
-function Start-TrayForRemovalSmoke {
-    $process = Start-Process -FilePath $installedTray -ArgumentList "--startup" -PassThru
-    Start-Sleep -Seconds 2
-    $process.Refresh()
-    if ($process.HasExited) {
-        throw "The tray companion exited before the MSI shutdown smoke could run."
-    }
-    return $process
-}
 
 function Get-HostMonitorArpEntries {
     $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
@@ -565,21 +504,104 @@ if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
 }
 
 Invoke-Msi /i $currentMsi "fresh-install"
+if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
+# Synthetic offline identity for SCM/ACL acceptance only. The installed private
+# state root is fresh and the service is stopped; no remote registration occurs.
+Assert-StateAcl
+$fixtureIdentity = [Guid]::NewGuid().ToString()
+$fixtureGeneration = [Guid]::NewGuid().ToString()
+$fixtureRequest = [Guid]::NewGuid().ToString()
+$fixtureEndpoint = 'https://127.0.0.1:9/api/v2/host-monitor/report'
+$fixtureTime = [DateTime]::UtcNow.ToString('o')
+$fixtureFiles = @{
+    'host-id' = $fixtureIdentity
+    'client-token' = ('a' * 64)
+    'active-binding.json' = (@{ version='0.9.4'; generation=$fixtureGeneration; request_id=$fixtureRequest; instance_id=$fixtureIdentity; report_endpoint=$fixtureEndpoint } | ConvertTo-Json -Compress)
+    'auth-state.json' = (@{ version='0.9.4'; status='authorized'; reason='offline native service fixture'; changed_at=$fixtureTime } | ConvertTo-Json -Compress)
+    'pairing-state.json' = (@{ phase='active'; version='0.9.4'; generation=$fixtureGeneration; request_id=$fixtureRequest; instance_id=$fixtureIdentity; report_endpoint=$fixtureEndpoint; activation_url='https://127.0.0.1:9/activate'; completed_at=$fixtureTime } | ConvertTo-Json -Compress)
+}
+foreach ($entry in $fixtureFiles.GetEnumerator()) {
+    $path = Join-Path $stateRoot $entry.Key
+    if (Test-Path -LiteralPath $path) { throw 'Refusing to overwrite an existing fixture identity' }
+    [IO.File]::WriteAllText($path, $entry.Value, [Text.UTF8Encoding]::new($false))
+}
+try { Start-Service host-monitor -ErrorAction Stop } catch {
+    & sc.exe queryex host-monitor
+    foreach ($name in @('maintenance.lock', '.credential-state.lock')) {
+        $lockPath = Join-Path $stateRoot $name
+        if (Test-Path -LiteralPath $lockPath) {
+            Get-Item -LiteralPath $lockPath | Select-Object Name, Attributes
+            Write-Host (Get-Acl -LiteralPath $lockPath).Sddl
+        }
+    }
+    Write-Host (Get-Acl -LiteralPath $stateRoot).Sddl
+    throw
+}
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
 Assert-ArpVersion $ProductVersion
+
+# Exercise the installed CLI against the real LocalService process. The fixture
+# endpoint is deliberately offline; IPC reachability is not delivery health.
+$client = Join-Path $installedRoot 'host-monitor.exe'
+$configPath = Join-Path $stateRoot 'config.json'
+$before = @{}
+foreach ($name in @($fixtureFiles.Keys) + @('config.json')) {
+    $before[$name] = (Get-FileHash -LiteralPath (Join-Path $stateRoot $name)).Hash
+}
+$statusText = & $client status --config $configPath --format json --non-interactive --timeout 10s
+if ($LASTEXITCODE -ne 0) { throw 'Installed CLI status failed' }
+$status = $statusText | ConvertFrom-Json
+if (-not $status.ok -or -not $status.result.runtime.available -or
+    $status.result.runtime.binding_generation -ne $fixtureIdentity -or
+    $status.result.service.state -ne 'running' -or $status.result.health -ne 'unknown') {
+    @{ ipc_available=$status.result.runtime.available; binding_matches=($status.result.runtime.binding_generation -eq $fixtureIdentity); service=$status.result.service.state; health=$status.result.health } | ConvertTo-Json -Compress | Write-Host
+    throw 'Installed CLI did not report the authenticated runtime and unconfirmed delivery health'
+}
+$revision = $status.result.config.stored_revision
+$busyText = & $client config apply --config $configPath --file $configPath --expected-revision $revision --format json --non-interactive
+if ($LASTEXITCODE -ne 5 -or ($busyText | ConvertFrom-Json).error.code -ne 'busy') {
+    throw 'Running service did not exclude CLI maintenance'
+}
+foreach ($name in $before.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $stateRoot $name)).Hash -ne $before[$name]) {
+        throw 'Readonly CLI or rejected maintenance changed persisted configuration or identity'
+    }
+}
+$stopText = & $client service stop --format json --non-interactive --timeout 20s
+if ($LASTEXITCODE -ne 0 -or -not ($stopText | ConvertFrom-Json).ok) { throw 'CLI service stop failed' }
+Start-Sleep -Seconds 3
+if ((Get-Service host-monitor).Status -ne 'Stopped') { throw 'Explicitly stopped service restarted' }
+$applyText = & $client config apply --config $configPath --file $configPath --expected-revision $revision --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or -not ($applyText | ConvertFrom-Json).result.committed) {
+    throw 'Stopped service configuration commit failed'
+}
+$startText = & $client service start --format json --non-interactive --timeout 20s
+if ($LASTEXITCODE -ne 0 -or -not ($startText | ConvertFrom-Json).ok) { throw 'CLI service restart after administrator commit failed' }
+Assert-ServiceRunning
+$updatedText = & $client status --config $configPath --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or -not ($updatedText | ConvertFrom-Json).result.runtime.available) {
+    throw 'LocalService could not read administrator-committed configuration'
+}
+$enableText = & $client service enable --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or ($enableText | ConvertFrom-Json).result.startup -ne 'automatic') {
+    throw 'CLI did not enable automatic startup'
+}
+$disableText = & $client service disable --format json --non-interactive
+if ($LASTEXITCODE -ne 0 -or ($disableText | ConvertFrom-Json).result.startup -ne 'manual') {
+    throw 'CLI did not restore manual startup'
+}
+Assert-ServiceRunning
+Write-Host 'Installed CLI readonly IPC, maintenance exclusion and service-account configuration access passed.'
 $marker = Join-Path $stateRoot "release-lifecycle-marker"
 Set-Content -LiteralPath $marker -Value "must survive ordinary uninstall"
 
 $installedServiceSid = (New-Object System.Security.Principal.NTAccount(
     "NT SERVICE", "host-monitor"
 )).Translate([System.Security.Principal.SecurityIdentifier]).Value
-$trayBeforeUninstall = Start-TrayForRemovalSmoke
 Invoke-Msi /x $currentMsi "preserve-uninstall"
-if (-not $trayBeforeUninstall.WaitForExit(30000)) {
-    throw "MSI uninstall did not gracefully close the running tray before file removal."
-}
+
 if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
     throw "Client service survived ordinary uninstall."
 }
@@ -605,6 +627,10 @@ if (@(Get-HostMonitorArpEntries).Count -ne 0) {
 Assert-PreservedStateAcl $installedServiceSid
 
 Invoke-Msi /i $currentMsi "reinstall"
+try { Start-Service host-monitor -ErrorAction Stop } catch {
+    & sc.exe queryex host-monitor
+    throw
+}
 Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration

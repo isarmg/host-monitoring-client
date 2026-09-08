@@ -5,53 +5,6 @@ const SIGTERM_READY_MARKER: &str = "host-monitoring-sigterm-listener-ready";
 #[cfg(unix)]
 const SIGTERM_HELPER_ENV: &str = "HOST_MONITORING_SIGTERM_TEST_HELPER";
 
-#[tokio::test]
-async fn tray_pairing_cancel_wakes_without_terminating_the_process() {
-    let (_process_controller, process_shutdown) = host_monitor::service::shutdown_channel();
-    let (tray_controller, tray_signal) = host_monitor::service::shutdown_channel();
-    tray_controller.request_shutdown();
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(1),
-        wait_for_pairing_abort(&process_shutdown, Some(&tray_signal), None),
-    )
-    .await
-    .expect("graceful pairing cancellation should wake")
-    .unwrap();
-    assert_eq!(outcome, PairingWait::Cancelled);
-}
-
-#[tokio::test]
-async fn tray_pairing_deadline_is_observed_at_network_select_boundaries() {
-    let (_controller, process_shutdown) = host_monitor::service::shutdown_channel();
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(1),
-        wait_for_pairing_abort(&process_shutdown, None, Some(Instant::now())),
-    )
-    .await
-    .expect("expired pairing deadline should wake")
-    .unwrap();
-    assert_eq!(outcome, PairingWait::Deadline);
-}
-
-#[tokio::test]
-async fn process_shutdown_remains_sticky_between_separate_waits() {
-    let (controller, shutdown) = host_monitor::service::shutdown_channel();
-    let first = wait_for_pairing_control(Duration::ZERO, &shutdown, None, None)
-        .await
-        .unwrap();
-    assert_eq!(first, PairingWait::Elapsed);
-
-    controller.request_shutdown();
-    let second = tokio::time::timeout(
-        Duration::from_secs(1),
-        wait_for_pairing_control(Duration::from_secs(60), &shutdown, None, None),
-    )
-    .await
-    .expect("a shutdown received between waits must remain observable")
-    .unwrap();
-    assert_eq!(second, PairingWait::Shutdown);
-}
-
 #[cfg(unix)]
 #[tokio::test]
 #[ignore = "subprocess helper invoked only by process_sigterm_survives_an_unobserved_window"]

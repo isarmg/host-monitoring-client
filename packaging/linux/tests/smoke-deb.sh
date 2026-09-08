@@ -29,6 +29,7 @@ fi
 [[ -n $package && -f $package ]]
 
 sudo dpkg -i "$package"
+systemctl enable --now host-monitor.service
 systemctl is-enabled --quiet host-monitor.service
 systemctl is-active --quiet host-monitor.service
 sudo touch /var/lib/host-monitor/release-lifecycle-marker

@@ -80,7 +80,7 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_System_Registry",
     "Win32_System_Services",
     "Win32_System_SystemInformation",
-    "Win32_System_Threading",
+    "Win32_System_Pipes", "Win32_System_IO", "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
@@ -91,6 +91,7 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Memory",
+    "Win32_System_Pipes", "Win32_System_IO", "Win32_System_Threading",
 ] }
 
 [target.'cfg(unix)'.dependencies]
@@ -128,11 +129,6 @@ required-features = ["desktop"]
 [[bin]]
 name = "host-monitor-maintenance"
 path = "src/bin/host-monitor-maintenance.rs"
-required-features = ["desktop"]
-
-[[bin]]
-name = "host-monitor-tray"
-path = "src/bin/host-monitor-tray.rs"
 required-features = ["desktop"]
 
 [workspace]
