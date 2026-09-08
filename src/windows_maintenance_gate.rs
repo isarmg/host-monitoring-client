@@ -92,6 +92,20 @@ fn current_sid() -> Result<String, StorageError> {
         sid_text((*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid)
     }
 }
+fn private_descriptor(inherit: bool) -> Result<Vec<u16>, StorageError> {
+    // LocalService must be able to create its own lock/state files without
+    // assigning an owner SID (Administrators) that is absent from its token.
+    let owner = if current_sid()? == "S-1-5-19" {
+        "LS"
+    } else {
+        "BA"
+    };
+    let flags = if inherit { "OICI" } else { "" };
+    let service = service_sid().unwrap_or_else(|| "LS".into());
+    wide(OsStr::new(&format!(
+        "O:{owner}G:{owner}D:P(A;{flags};FA;;;SY)(A;{flags};FA;;;BA)(A;{flags};0x1301bf;;;{service})(A;{flags};RC;;;OW)"
+    )))
+}
 fn trusted(sid: &str, current: &str) -> bool {
     sid == current
         || sid == "S-1-5-18"
@@ -137,10 +151,13 @@ fn verify_private(file: &File) -> Result<(), StorageError> {
                 return Err(storage_error(()));
             }
             let allow = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-            if !trusted(
-                &sid_text(std::ptr::addr_of!(allow.SidStart).cast_mut().cast())?,
-                &current,
-            ) {
+            let trustee = sid_text(std::ptr::addr_of!(allow.SidStart).cast_mut().cast())?;
+            // Installer ACLs restrict the already-validated owner's implicit
+            // WRITE_DAC permission using a ReadControl-only OWNER RIGHTS ACE.
+            if trustee == "S-1-3-4" && allow.Mask == READ_CONTROL {
+                continue;
+            }
+            if !trusted(&trustee, &current) {
                 return Err(storage_error(()));
             }
         }
@@ -189,9 +206,7 @@ pub(crate) fn open_root(path: &Path, create: bool) -> Result<DirectoryGuard, Sto
         }
         ancestors.push(directory_handle(&cursor)?);
     }
-    let sddl = wide(OsStr::new(
-        "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LS)",
-    ))?;
+    let sddl = private_descriptor(true)?;
     unsafe {
         let mut descriptor = std::ptr::null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -243,9 +258,7 @@ pub(crate) fn private_file(
     let file = if create {
         unsafe {
             let mut descriptor = std::ptr::null_mut();
-            let sddl = wide(OsStr::new(
-                "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LS)",
-            ))?;
+            let sddl = private_descriptor(false)?;
             if ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 sddl.as_ptr(),
                 1,
@@ -343,9 +356,7 @@ impl Guard {
 pub(crate) fn create_temporary(path: &Path) -> io::Result<File> {
     unsafe {
         let mut descriptor = std::ptr::null_mut();
-        let sddl = wide(OsStr::new(
-            "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LS)",
-        ))?;
+        let sddl = private_descriptor(false)?;
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
             1,

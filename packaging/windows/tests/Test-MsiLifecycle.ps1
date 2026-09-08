@@ -505,6 +505,26 @@ if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
 
 Invoke-Msi /i $currentMsi "fresh-install"
 if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
+# Synthetic offline identity for SCM/ACL acceptance only. The installed private
+# state root is fresh and the service is stopped; no remote registration occurs.
+Assert-StateAcl
+$fixtureIdentity = [Guid]::NewGuid().ToString()
+$fixtureGeneration = [Guid]::NewGuid().ToString()
+$fixtureRequest = [Guid]::NewGuid().ToString()
+$fixtureEndpoint = 'https://127.0.0.1:9/api/v2/host-monitor/report'
+$fixtureTime = [DateTime]::UtcNow.ToString('o')
+$fixtureFiles = @{
+    'host-id' = $fixtureIdentity
+    'client-token' = ('a' * 64)
+    'active-binding.json' = (@{ version='0.9.4'; generation=$fixtureGeneration; request_id=$fixtureRequest; instance_id=$fixtureIdentity; report_endpoint=$fixtureEndpoint } | ConvertTo-Json -Compress)
+    'auth-state.json' = (@{ version='0.9.4'; status='authorized'; reason='offline native service fixture'; changed_at=$fixtureTime } | ConvertTo-Json -Compress)
+    'pairing-state.json' = (@{ phase='active'; version='0.9.4'; generation=$fixtureGeneration; request_id=$fixtureRequest; instance_id=$fixtureIdentity; report_endpoint=$fixtureEndpoint; activation_url='https://127.0.0.1:9/activate'; completed_at=$fixtureTime } | ConvertTo-Json -Compress)
+}
+foreach ($entry in $fixtureFiles.GetEnumerator()) {
+    $path = Join-Path $stateRoot $entry.Key
+    if (Test-Path -LiteralPath $path) { throw 'Refusing to overwrite an existing fixture identity' }
+    [IO.File]::WriteAllText($path, $entry.Value, [Text.UTF8Encoding]::new($false))
+}
 Start-Service host-monitor
 Assert-ServiceRunning
 Assert-StateAcl
