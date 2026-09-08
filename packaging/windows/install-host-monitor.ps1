@@ -7,7 +7,7 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.OpenDatabase($Msi, 0)
 function Read-MsiProperty([string]$Name) {
     $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$Name'")
-    $view.Execute(); $row = $view.Fetch(); $value = $row.StringData(1); $view.Close(); return $value
+    [void]$view.Execute(); $row = $view.Fetch(); $value = $row.StringData(1); [void]$view.Close(); return $value
 }
 if ((Read-MsiProperty 'ProductName') -ne 'host-monitor' -or (Read-MsiProperty 'Manufacturer') -ne 'Host Monitoring') { throw 'Expected the official host-monitor MSI.' }
 $version = Read-MsiProperty 'ProductVersion'

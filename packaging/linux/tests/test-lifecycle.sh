@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/host-monitor-packaging-test.XXXXXX")
-package_version=0.9.7
+package_version=0.9.8
 # packaging/linux is nested below clients/host-monitor, so the workspace
 # manifest is four levels above the packaging directory.
 workspace_version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$packaging_dir/../../Cargo.toml")
@@ -1029,6 +1029,6 @@ assert_exists "$test_root/var/lib/host-monitor-package/managed-group"
 
 # Compatible old package ownership must not require deleting retained accounts.
 reset_safe_reinstall_state
-sed -i 's/format=0.9.7/format=0.9.4/' "$test_root/var/lib/host-monitor-package/managed-user" "$test_root/var/lib/host-monitor-package/managed-group"
+sed -i 's/format=0.9.8/format=0.9.4/' "$test_root/var/lib/host-monitor-package/managed-user" "$test_root/var/lib/host-monitor-package/managed-group"
 "$test_root/postinstall.sh" >"$test_root/upgrade-compatible.log" 2>&1 || fail 'compatible old account markers rejected'
 echo 'Linux packaging lifecycle tests passed'

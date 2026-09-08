@@ -646,7 +646,7 @@ $stateMarker = '.host-monitor-managed-0.9.4'
 Invoke-Msi /i $currentMsi "reinstall"
 $expectedExeHash = (Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash
 Set-Content -LiteralPath (Join-Path $installedRoot 'host-monitor.exe') -Value 'damaged payload'
-Invoke-Msi /i $currentMsi "force-repair-damaged-payload" "REINSTALL=ALL REINSTALLMODE=amus"
+& (Join-Path $PSScriptRoot "../install-host-monitor.ps1") -Msi $currentMsi
 if ((Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash -ne $expectedExeHash) { throw 'Repair did not force replacement of damaged executable' }
 if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Repair changed device identity' }
 

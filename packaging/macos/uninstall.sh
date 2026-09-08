@@ -197,7 +197,7 @@ load_ownership_marker() {
   marker_invalid=0
   while IFS= read -r marker_line; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format="$package_version")
+      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format="$package_version")
         [ "$seen_format" -eq 0 ] || marker_invalid=1
         seen_format=1
         ;;
