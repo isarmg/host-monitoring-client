@@ -506,8 +506,12 @@ if (Get-Service -Name "host-monitor" -ErrorAction SilentlyContinue) {
 # Reproduce the reported machine: correctly registered LocalService, but its
 # executable and state were removed by a previous uninstall.
 $orphanCommand = '"' + (Join-Path $installedRoot 'host-monitor.exe') + '" --windows-service run --config "' + (Join-Path $stateRoot 'config.json') + '"'
-& sc.exe create host-monitor binPath= $orphanCommand obj= 'NT AUTHORITY\LocalService' start= auto
-if ($LASTEXITCODE -ne 0) { throw 'Could not create orphan-service regression fixture' }
+$orphan = Invoke-CimMethod -ClassName Win32_Service -MethodName Create -Arguments @{
+    Name = 'host-monitor'; DisplayName = 'host-monitor'; PathName = $orphanCommand
+    ServiceType = [byte]16; ErrorControl = [byte]1; StartMode = 'Automatic'
+    DesktopInteract = $false; StartName = 'NT AUTHORITY\LocalService'
+}
+if ($orphan.ReturnValue -ne 0) { throw "Could not create orphan-service regression fixture: $($orphan.ReturnValue)" }
 Invoke-Msi /i $currentMsi "repair-orphan-service"
 Invoke-Msi /x $currentMsi "purge-orphan-fixture" "PURGE=1"
 Assert-ClientCompletelyAbsent
