@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     os.chdir(ROOT)
+    if platform.system() == "Darwin" and platform.machine().lower() not in {"arm64", "aarch64"}:
+        raise ValueError("macOS release packages support Apple Silicon only")
     version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     config = json.loads(Path("config/host-monitor.json.example").read_text(encoding="utf-8"))
     if config["application_version"] != "0.9.4":

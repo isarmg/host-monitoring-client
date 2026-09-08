@@ -1,10 +1,10 @@
 # CLI 预发布兼容矩阵
 
-本次预发布版本为 `0.9.4`，发行标签指向已合并的源码提交 `af616d3f5c826775be6d3c0b054681015ddd625a`。部署时必须同时核对 `version --format json` 的源码身份，不能只比较程序版本号。
+本次预发布版本为 `0.9.5`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
 
 | 维度 | 契约 |
 | --- | --- |
-| 程序版本 | `0.9.4`，GitHub 预发布 |
+| 程序版本 | `0.9.5`，GitHub 预发布 |
 | CLI JSON | `schema_version = 1` |
 | 配置格式 | 固定 `0.9.4`；保留历史字段名 `application_version` |
 | 身份与配对状态格式 | 固定 `0.9.4`；不再取当前程序版本 |
