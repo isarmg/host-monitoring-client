@@ -216,7 +216,7 @@ fn unknown_authorization_is_an_error_not_an_implicit_state_or_repair() {
     let reporter = commit(&config, activating(&config));
     let transaction = lock_state(&config).unwrap();
     let invalid = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": "0.9.4",
         "status": "private-invalid-authorization-marker",
         "reason": "fixture",
         "changed_at": Utc::now(),
