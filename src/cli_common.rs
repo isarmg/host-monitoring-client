@@ -571,7 +571,7 @@ fn windows_is_elevated() -> Result<bool> {
 
 #[cfg(windows)]
 fn windows_relaunch_elevated(raw: &[String]) -> Result<u8> {
-    use std::{ffi::OsStr, mem::size_of, os::windows::ffi::OsStrExt, ptr::null_mut};
+    use std::{ffi::OsStr, mem::size_of, os::windows::ffi::OsStrExt};
     use windows_sys::Win32::{
         Foundation::{ERROR_CANCELLED, WAIT_OBJECT_0},
         System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
@@ -617,7 +617,7 @@ fn windows_relaunch_elevated(raw: &[String]) -> Result<u8> {
         };
         return Err(failure.at_step("configuration"));
     }
-    if info.hProcess == null_mut() {
+    if info.hProcess.is_null() {
         return Err(fail(6, "elevation_failed").at_step("configuration"));
     }
     let process = OwnedWindowsHandle(info.hProcess);
