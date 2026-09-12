@@ -15,6 +15,8 @@ pub struct Failure {
     pub code: &'static str,
     pub committed: bool,
     pub transaction_id: Option<String>,
+    pub step: Option<&'static str>,
+    pub detail: Option<String>,
 }
 pub type Result<T> = std::result::Result<T, Failure>;
 pub fn fail(exit: u8, code: &'static str) -> Failure {
@@ -23,6 +25,19 @@ pub fn fail(exit: u8, code: &'static str) -> Failure {
         code,
         committed: false,
         transaction_id: None,
+        step: None,
+        detail: None,
+    }
+}
+impl Failure {
+    pub fn at_step(mut self, step: &'static str) -> Self {
+        self.step = Some(step);
+        self
+    }
+
+    pub fn with_detail(mut self, detail: impl std::fmt::Display) -> Self {
+        self.detail = Some(sanitize(&detail.to_string()).chars().take(1024).collect());
+        self
     }
 }
 pub fn input_error(_: impl std::fmt::Debug) -> Failure {
@@ -221,7 +236,7 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
         ),
         Err(e) => (
             e.exit,
-            json!({"schema_version":1,"product":product,"command":command,"ok":false,"error":{"code":e.code,"retryable":matches!(e.exit,5|6|9),"committed":e.committed,"transaction_id":e.transaction_id,"next_step":if e.exit==9 {"inspect pair status; resume the same transaction"} else if e.exit==5 {"stop the service and retry"} else {"inspect configuration and local diagnostics"}}}),
+            json!({"schema_version":1,"product":product,"command":command,"ok":false,"error":{"code":e.code,"message":failure_message(e.code),"step":e.step,"detail":e.detail,"retryable":matches!(e.exit,5|6|9),"committed":e.committed,"transaction_id":e.transaction_id,"next_step":if e.exit==9 {"inspect pair status; resume the same transaction"} else if e.exit==5 {"stop the service and retry"} else {"inspect configuration and local diagnostics"}}}),
         ),
     };
     if let Ok(Value::Object(fields)) = result {
@@ -250,6 +265,67 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
         return if exit == 0 { 11 } else { exit };
     }
     exit
+}
+
+fn failure_message(code: &str) -> &'static str {
+    match code {
+        "service_config_mismatch" => {
+            "The selected configuration path does not match the installed service registration."
+        }
+        "invalid_configuration" => "The configuration failed validation.",
+        "unsafe_or_corrupt_state" => {
+            "The selected configuration or protected state is missing, unsafe, or corrupt."
+        }
+        "pairing_postcondition_unconfirmed" => {
+            "Pairing returned without a durable active identity."
+        }
+        "service_not_installed" => "The operating-system service is not installed.",
+        "service_registration_mismatch" => {
+            "The installed service points to an unexpected executable or configuration path."
+        }
+        "unsafe_service_registration" => {
+            "The installed service registration failed ownership or file-safety checks."
+        }
+        "service_manager_unavailable" => {
+            "The operating-system service manager could not be queried."
+        }
+        "service_action_denied" => {
+            "The operating-system service manager rejected the requested change; administrator privileges may be required."
+        }
+        "startup_policy_unconfirmed" => {
+            "The requested service startup policy was not observed after the change."
+        }
+        "service_state_unconfirmed" => "The service did not reach the requested state.",
+        "verification_requires_running_service" => {
+            "Connection verification was requested, but the service is not running."
+        }
+        "connection_unconfirmed" => {
+            "The client did not report a healthy connection before the timeout."
+        }
+        "permission_denied" => "The operation was denied by the operating system.",
+        "busy" => "The client state or service is currently in use.",
+        "service_timeout" => {
+            "The service manager did not reach the requested state before the timeout."
+        }
+        "invalid_confirmation" => "The response must be yes or no.",
+        _ => "The operation failed; error.code identifies the exact machine-readable reason.",
+    }
+}
+
+fn command_failure(exit: u8, code: &'static str, output: &std::process::Output) -> Failure {
+    let bytes = if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let reported = String::from_utf8_lossy(bytes);
+    let reported = reported.trim();
+    let detail = if reported.is_empty() {
+        format!("service manager exit status: {}", output.status)
+    } else {
+        format!("service manager exit status {}: {reported}", output.status)
+    };
+    fail(exit, code).with_detail(detail)
 }
 pub fn stdin_document<T: serde::de::DeserializeOwned + Send + 'static>(
     timeout: Duration,
@@ -367,9 +443,9 @@ impl Service {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|_| fail(6, "service_manager_unavailable"))?;
+            .map_err(|error| fail(6, "service_manager_unavailable").with_detail(error))?;
         let stdout = child
             .stdout
             .take()
@@ -381,6 +457,17 @@ impl Service {
                 .read_to_end(&mut bytes)
                 .map(|_| bytes)
         });
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| fail(8, "output_pipe_unavailable"))?;
+        let stderr_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map(|_| bytes)
+        });
         let deadline = Instant::now() + timeout;
         loop {
             if child.try_wait().map_err(storage_error)?.is_some() {
@@ -389,13 +476,17 @@ impl Service {
                     .join()
                     .map_err(|_| fail(8, "output_reader_unavailable"))?
                     .map_err(storage_error)?;
-                if bytes.len() > 4 * 1024 * 1024 {
+                let stderr = stderr_reader
+                    .join()
+                    .map_err(|_| fail(8, "output_reader_unavailable"))?
+                    .map_err(storage_error)?;
+                if bytes.len() > 4 * 1024 * 1024 || stderr.len() > 1024 * 1024 {
                     return Err(fail(8, "output_budget_exceeded"));
                 }
                 return Ok(std::process::Output {
                     status,
                     stdout: bytes,
-                    stderr: Vec::new(),
+                    stderr,
                 });
             }
             if Instant::now() >= deadline {
@@ -419,7 +510,7 @@ impl Service {
                 timeout,
             )?;
             if !o.status.success() {
-                return Err(fail(6, "service_manager_unavailable"));
+                return Err(command_failure(6, "service_manager_unavailable", &o));
             }
             let text = String::from_utf8_lossy(&o.stdout);
             let fields: BTreeMap<_, _> = text.lines().filter_map(|l| l.split_once('=')).collect();
@@ -452,7 +543,7 @@ impl Service {
             let plist = format!("/Library/LaunchDaemons/{}.plist", self.label);
             let policy = self.capture("/bin/launchctl", &["print-disabled", "system"], timeout)?;
             if !policy.status.success() {
-                return Err(fail(6, "service_manager_unavailable"));
+                return Err(command_failure(6, "service_manager_unavailable", &policy));
             }
             let policy = String::from_utf8_lossy(&policy.stdout);
             let disabled = policy.lines().any(|line| {
@@ -469,17 +560,17 @@ impl Service {
             }))
         }
     }
-    pub fn change(&self, args: &Args, action: &str, selected: &Path) -> Result<Value> {
+    pub fn verified_status(&self, timeout: Duration, selected: &Path) -> Result<Value> {
         if selected != self.default_config {
             return Err(fail(2, "service_config_mismatch"));
         }
-        let before = self.status(args.timeout)?;
-        if before["installed"] != true {
+        let status = self.status(timeout)?;
+        if status["installed"] != true {
             return Err(fail(4, "service_not_installed"));
         }
         #[cfg(any(target_os = "linux", windows))]
         {
-            let registration = before["registration"].as_str().unwrap_or("");
+            let registration = status["registration"].as_str().unwrap_or("");
             if !registration.contains(self.binary)
                 || !registration.contains(self.default_config.to_string_lossy().as_ref())
             {
@@ -498,7 +589,7 @@ impl Service {
             let output = self.capture(
                 "/usr/bin/plutil",
                 &["-extract", "ProgramArguments", "json", "-o", "-", &plist],
-                args.timeout,
+                timeout,
             )?;
             let registered: Vec<String> = serde_json::from_slice(&output.stdout)
                 .map_err(|_| fail(8, "service_registration_mismatch"))?;
@@ -513,6 +604,12 @@ impl Service {
                 return Err(fail(8, "service_registration_mismatch"));
             }
         }
+        Ok(status)
+    }
+    pub fn change(&self, args: &Args, action: &str, selected: &Path) -> Result<Value> {
+        let before = self.verified_status(args.timeout, selected)?;
+        #[cfg(target_os = "linux")]
+        let _ = &before;
         if !["start", "stop", "restart", "enable", "disable"].contains(&action) {
             return Err(fail(2, "invalid_service_action"));
         }
@@ -534,7 +631,7 @@ impl Service {
             if action == "restart" && before["state"] != "stopped" {
                 let o = self.capture("sc.exe", &["stop", self.name], args.timeout)?;
                 if !o.status.success() {
-                    return Err(fail(3, "service_action_denied"));
+                    return Err(command_failure(3, "service_action_denied", &o));
                 }
                 self.wait("stopped", args.timeout)?;
             }
@@ -579,7 +676,7 @@ impl Service {
             let policy_output = if policy_change {
                 let o = self.capture("/bin/launchctl", &[action, &target], args.timeout)?;
                 if !o.status.success() {
-                    return Err(fail(3, "service_action_denied"));
+                    return Err(command_failure(3, "service_action_denied", &o));
                 }
                 Some(o)
             } else {
@@ -592,7 +689,7 @@ impl Service {
                 if restore_disabled {
                     let o = self.capture("/bin/launchctl", &["enable", &target], args.timeout)?;
                     if !o.status.success() {
-                        return Err(fail(3, "service_action_denied"));
+                        return Err(command_failure(3, "service_action_denied", &o));
                     }
                 }
                 let result = if loaded {
@@ -627,7 +724,7 @@ impl Service {
             }
         };
         if !output.status.success() {
-            return Err(fail(3, "service_action_denied"));
+            return Err(command_failure(3, "service_action_denied", &output));
         }
         if ["start", "restart", "stop"].contains(&action) || args.has("--now") {
             self.wait(

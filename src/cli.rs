@@ -210,6 +210,8 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
                         code: "binding_committed_configuration_unconfirmed",
                         committed: true,
                         transaction_id: Some(request_id.to_string()),
+                        step: None,
+                        detail: None,
                     })?;
                     return Ok(
                         json!({"committed":true,"generation":generation,"transaction_id":request_id,"instance_id":instance_id,"endpoint":report_endpoint}),
@@ -270,15 +272,12 @@ fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
     }
 }
 
-fn setup_service_args(args: &Args, now: bool) -> Args {
+fn setup_service_args(args: &Args) -> Args {
     let mut options = args.options.clone();
     options.remove("--interactive");
     options.remove("--input-stdin");
     options.remove("--server");
     options.remove("--now");
-    if now {
-        options.insert("--now".into(), "true".into());
-    }
     Args {
         words: vec![],
         options,
@@ -293,6 +292,32 @@ fn preserve_setup_commit(mut error: Failure, pairing: &Value) -> Failure {
         error.transaction_id = pairing["transaction_id"].as_str().map(str::to_owned);
     }
     error
+}
+
+fn setup_failure(error: Failure, pairing: &Value, step: &'static str) -> Failure {
+    preserve_setup_commit(error, pairing).at_step(step)
+}
+
+fn startup_policy_matches(status: &Value, enabled: bool) -> bool {
+    let observed = status["startup"].as_str().unwrap_or("unknown");
+    if enabled {
+        matches!(observed, "automatic" | "enabled" | "enabled-runtime")
+    } else {
+        matches!(observed, "manual" | "disabled")
+    }
+}
+
+fn record_setup_step(
+    steps: &mut Vec<Value>,
+    interactive: bool,
+    step: &'static str,
+    status: &'static str,
+    evidence: Value,
+) {
+    if interactive {
+        eprintln!("[setup] {step}: {status}");
+    }
+    steps.push(json!({"step":step,"status":status,"evidence":evidence}));
 }
 
 async fn wait_for_healthy(c: &ClientConfig, timeout: std::time::Duration) -> Result<Value> {
@@ -311,11 +336,21 @@ async fn wait_for_healthy(c: &ClientConfig, timeout: std::time::Duration) -> Res
 
 async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     if path != service().default_config {
-        return Err(fail(2, "service_config_mismatch"));
+        return Err(fail(2, "service_config_mismatch").at_step("configuration"));
     }
+    let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
+    let mut steps = Vec::new();
     c.validate(ClientCommand::Pair)
-        .map_err(|_| fail(2, "invalid_configuration"))?;
-    let existing = pairing::local_status(&c).map_err(storage_error)?;
+        .map_err(|_| fail(2, "invalid_configuration").at_step("configuration"))?;
+    let existing =
+        pairing::local_status(&c).map_err(|error| storage_error(error).at_step("configuration"))?;
+    record_setup_step(
+        &mut steps,
+        interactive,
+        "configuration",
+        "verified",
+        json!({"path":path,"service_path_matches":true}),
+    );
     let pairing = if existing.active_report_endpoint.is_some() {
         json!({"committed":true,"already_active":true})
     } else {
@@ -331,49 +366,137 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         };
         let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
         let pair_args = setup_args(args, pair_words, interactive);
-        pair(&pair_args, c).await?
+        pair(&pair_args, c)
+            .await
+            .map_err(|error| error.at_step("pairing"))?
     };
     let config = match load(&path) {
         Ok(config) => config,
-        Err(error) => return Err(preserve_setup_commit(error, &pairing)),
+        Err(error) => return Err(setup_failure(error, &pairing, "pairing")),
     };
-    let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
+    let pairing_status = pairing::local_status(&config)
+        .map_err(|error| setup_failure(storage_error(error), &pairing, "pairing"))?;
+    if pairing_status.active_report_endpoint.is_none() {
+        return Err(setup_failure(
+            fail(11, "pairing_postcondition_unconfirmed"),
+            &pairing,
+            "pairing",
+        ));
+    }
+    record_setup_step(
+        &mut steps,
+        interactive,
+        "pairing",
+        "verified",
+        json!({"state":"active","durable_identity":true}),
+    );
     let (enable, start, verify) = if interactive {
         (
             ask_yes_no("Enable service at system startup?", true)
-                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+                .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
             ask_yes_no("Start the service now?", true)
-                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+                .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
             ask_yes_no("Verify the connection now?", true)
-                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+                .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
         )
     } else {
         // A protected stdin document is already an explicit deployment action.
         // Complete the same safe install contract without an interactive prompt.
         (true, true, true)
     };
-    let service_result = if enable {
-        service()
-            .change(&setup_service_args(args, start), "enable", &path)
-            .map_err(|error| preserve_setup_commit(error, &pairing))?
-    } else if start {
-        service()
-            .change(&setup_service_args(args, false), "start", &path)
-            .map_err(|error| preserve_setup_commit(error, &pairing))?
+    let service_api = service();
+    let registered = service_api
+        .verified_status(args.timeout, &path)
+        .map_err(|error| setup_failure(error, &pairing, "service_registration"))?;
+    record_setup_step(
+        &mut steps,
+        interactive,
+        "service_registration",
+        "verified",
+        json!({"installed":registered["installed"],"registration_matches":true}),
+    );
+    let policy_action = if enable { "enable" } else { "disable" };
+    let policy_status = service_api
+        .change(&setup_service_args(args), policy_action, &path)
+        .map_err(|error| setup_failure(error, &pairing, "startup_policy"))?;
+    if !startup_policy_matches(&policy_status, enable) {
+        return Err(setup_failure(
+            fail(11, "startup_policy_unconfirmed"),
+            &pairing,
+            "startup_policy",
+        ));
+    }
+    record_setup_step(
+        &mut steps,
+        interactive,
+        "startup_policy",
+        "verified",
+        json!({"requested":if enable {"enabled"} else {"disabled"},"observed":policy_status["startup"]}),
+    );
+    let service_result = if start {
+        let status = service_api
+            .change(&setup_service_args(args), "start", &path)
+            .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?;
+        if status["state"] != "running" {
+            return Err(setup_failure(
+                fail(11, "service_state_unconfirmed"),
+                &pairing,
+                "service_runtime",
+            ));
+        }
+        record_setup_step(
+            &mut steps,
+            interactive,
+            "service_runtime",
+            "verified",
+            json!({"requested":"running","observed":status["state"]}),
+        );
+        status
     } else {
-        service()
-            .status(args.timeout)
-            .map_err(|error| preserve_setup_commit(error, &pairing))?
+        let status = service_api
+            .verified_status(args.timeout, &path)
+            .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?;
+        record_setup_step(
+            &mut steps,
+            interactive,
+            "service_runtime",
+            "skipped",
+            json!({"reason":"not_requested","observed":status["state"]}),
+        );
+        status
     };
-    let verification = if verify && service_result["state"] == "running" {
-        wait_for_healthy(&config, args.timeout)
+    let verification = if verify {
+        if service_result["state"] != "running" {
+            return Err(setup_failure(
+                fail(4, "verification_requires_running_service"),
+                &pairing,
+                "connection",
+            ));
+        }
+        let status = wait_for_healthy(&config, args.timeout)
             .await
-            .map_err(|error| preserve_setup_commit(error, &pairing))?
+            .map_err(|error| setup_failure(error, &pairing, "connection"))?;
+        record_setup_step(
+            &mut steps,
+            interactive,
+            "connection",
+            "verified",
+            json!({"health":status["health"]}),
+        );
+        status
     } else {
-        json!({"state":"skipped","reason":if verify {"service_not_running"} else {"not_requested"}})
+        record_setup_step(
+            &mut steps,
+            interactive,
+            "connection",
+            "skipped",
+            json!({"reason":"not_requested"}),
+        );
+        json!({"state":"skipped","reason":"not_requested"})
     };
     Ok(json!({
         "setup":"completed",
+        "steps":steps,
         "pairing":pairing,
         "service":service_result,
         "verification":verification
@@ -466,12 +589,12 @@ fn execute(args: &Args) -> Result<Value> {
         ["setup"] => {
             args.validate_options(&["--interactive", "--input-stdin", "--server"])?;
             let c = if path.exists() || args.has("--config") {
-                load(&path)?
+                load(&path).map_err(|error| error.at_step("configuration"))?
             } else {
                 new_config(path.clone())
             };
             tokio::runtime::Runtime::new()
-                .map_err(storage_error)?
+                .map_err(|error| storage_error(error).at_step("configuration"))?
                 .block_on(setup(args, path, c))
         }
         ["logs"] => {
@@ -732,5 +855,39 @@ fn runtime_error(error: anyhow::Error) -> Failure {
         fail(5, "busy")
     } else {
         storage_error(error)
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    #[test]
+    fn startup_policy_requires_a_verified_platform_state() {
+        assert!(startup_policy_matches(
+            &json!({"startup":"automatic"}),
+            true
+        ));
+        assert!(startup_policy_matches(&json!({"startup":"enabled"}), true));
+        assert!(startup_policy_matches(&json!({"startup":"manual"}), false));
+        assert!(startup_policy_matches(
+            &json!({"startup":"disabled"}),
+            false
+        ));
+        assert!(!startup_policy_matches(&json!({"startup":"unknown"}), true));
+        assert!(!startup_policy_matches(&json!({"startup":"manual"}), true));
+    }
+
+    #[test]
+    fn setup_failures_preserve_pairing_and_identify_the_failed_gate() {
+        let pairing = json!({"committed":true,"transaction_id":"request-1"});
+        let failure = setup_failure(
+            fail(11, "service_state_unconfirmed"),
+            &pairing,
+            "service_runtime",
+        );
+        assert!(failure.committed);
+        assert_eq!(failure.transaction_id.as_deref(), Some("request-1"));
+        assert_eq!(failure.step, Some("service_runtime"));
     }
 }

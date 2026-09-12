@@ -59,6 +59,14 @@
           Name="host-monitor.exe"
           KeyPath="yes"
           Checksum="yes" />
+        <Environment
+          Id="HostMonitorMachinePath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Action="set"
+          Part="last"
+          Permanent="no"
+          System="yes" />
 
         <!-- Remove only this product's registered legacy UI entries. -->
         <RemoveRegistryValue Id="RemoveLegacyTrayRun" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="host-monitor-tray" />

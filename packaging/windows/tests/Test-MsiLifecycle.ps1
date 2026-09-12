@@ -370,6 +370,26 @@ function Assert-ArpVersion([string]$ExpectedVersion) {
     }
 }
 
+function Get-InstalledPathEntryCount {
+    $expected = $installedRoot.TrimEnd('\')
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    return @($machinePath -split ';' | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and $_.Trim().TrimEnd('\') -ieq $expected
+    }).Count
+}
+
+function Assert-MachinePathInstalled {
+    if ((Get-InstalledPathEntryCount) -ne 1) {
+        throw "Machine PATH does not contain exactly one host-monitor installation directory."
+    }
+}
+
+function Assert-MachinePathAbsent {
+    if ((Get-InstalledPathEntryCount) -ne 0) {
+        throw "Machine PATH retained the host-monitor installation directory."
+    }
+}
+
 function Assert-ClientCompletelyAbsent {
     if ((Test-Path -LiteralPath $installedRoot) -or
         (Test-Path -LiteralPath $stateRoot) -or
@@ -388,6 +408,7 @@ function Assert-ClientCompletelyAbsent {
     if ($entries.Count -ne 0) {
         throw "Apps & Features still contains host-monitor."
     }
+    Assert-MachinePathAbsent
 }
 
 function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
@@ -517,6 +538,7 @@ Invoke-Msi /x $currentMsi "purge-orphan-fixture" "PURGE=1"
 Assert-ClientCompletelyAbsent
 
 Invoke-Msi /i $currentMsi "fresh-install"
+Assert-MachinePathInstalled
 if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
 # Synthetic offline identity for SCM/ACL acceptance only. The installed private
 # state root is fresh and the service is stopped; no remote registration occurs.
@@ -554,6 +576,7 @@ Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
 Assert-ArpVersion $ProductVersion
+Assert-MachinePathInstalled
 
 # Exercise the installed CLI against the real LocalService process. The fixture
 # endpoint is deliberately offline; IPC reachability is not delivery health.
@@ -658,6 +681,7 @@ Assert-ServiceRunning
 Assert-StateAcl
 Assert-TrayIntegration
 Assert-ArpVersion $ProductVersion
+Assert-MachinePathInstalled
 Invoke-Msi /x $currentMsi "purge-uninstall" "PURGE=1"
 Assert-ClientCompletelyAbsent
 Assert-MaintenanceDiagnosticAbsent "After MSI lifecycle smoke test"
@@ -672,6 +696,7 @@ $stateMarker = '.host-monitor-managed-0.9.7'
 [IO.File]::WriteAllText((Join-Path $stateRoot 'host-id'), $fixtureIdentity, [Text.UTF8Encoding]::new($false))
 & (Join-Path $PSScriptRoot '../install-host-monitor.ps1') -Msi $currentMsi
 Assert-ArpVersion $ProductVersion
+Assert-MachinePathInstalled
 Assert-StateAcl
 if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Published-version upgrade changed device identity' }
 Invoke-Msi /x $currentMsi 'purge-published-upgrade' 'PURGE=1'

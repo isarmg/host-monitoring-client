@@ -2,7 +2,7 @@
 
 跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
 
-当前纯 CLI 与系统服务版本为 [v0.9.10 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.10)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
+当前纯 CLI 与系统服务版本为 [v0.9.11 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.11)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
 
 支持 Windows x64、Linux x64 和 macOS Apple Silicon（arm64）。不再为 Intel macOS 适配、运行 CI 或提供发行包。
 
@@ -16,7 +16,7 @@
 host-monitor setup
 ```
 
-`setup` 会在已存在有效身份时复用身份，在未完成的配对事务上执行 `pair resume`；配对失败不会回滚安装或删除进度。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
+`setup` 会在已存在有效身份时复用身份，在未完成的配对事务上执行 `pair resume`；配对失败不会回滚安装或删除进度。配置、配对持久化、服务注册、启动策略、运行状态与连接均逐关卡复查，只有当前关卡验证成功才进入下一关；失败结果包含稳定的 `error.code`、`error.step`、可读 `error.message`，服务管理器失败还包含受限长度的 `error.detail`。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
 
 自动化通过 stdin 交付单个 JSON 文档：字段为 `server` 和 `authorization_code`。例如部署器启动 `host-monitor setup --input-stdin --non-interactive --format json` 后写入受保护输入；非交互模式默认完成服务启用、启动和验证，不要在 Shell 参数或日志中拼接秘密。
 

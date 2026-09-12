@@ -142,6 +142,18 @@ Assert-Equal $service.Arguments `
     '--windows-service run --config "[CommonAppDataFolder]host-monitor\config.json"' `
     "The SCM entrypoint and fixed config path drifted."
 
+$pathEntry = Select-One "//w:Environment[@Name='PATH']"
+Assert-Equal $pathEntry.Value "[INSTALLFOLDER]" `
+    "The MSI must add the installed CLI directory to machine PATH."
+Assert-Equal $pathEntry.Action "set" `
+    "The machine PATH entry must be installed transactionally."
+Assert-Equal $pathEntry.Part "last" `
+    "The CLI directory must be appended without replacing machine PATH."
+Assert-Equal $pathEntry.Permanent "no" `
+    "Uninstall must remove the product-owned PATH entry."
+Assert-Equal $pathEntry.System "yes" `
+    "The per-machine installer must update machine PATH."
+
 $serviceControl = Select-One "//w:ServiceControl[@Name='host-monitor']"
 Assert-Equal $serviceControl.GetAttribute("Start") "" "Installation must not start an unpaired service."
 Assert-Equal $serviceControl.Stop "both" "MSI must stop the service transactionally."
