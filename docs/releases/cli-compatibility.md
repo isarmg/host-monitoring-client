@@ -1,10 +1,10 @@
 # CLI 预发布兼容矩阵
 
-本次预发布版本为 `0.9.6`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
+本次预发布版本为 `0.9.10`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
 
 | 维度 | 契约 |
 | --- | --- |
-| 程序版本 | `0.9.6`，GitHub 预发布 |
+| 程序版本 | `0.9.10`，GitHub 预发布 |
 | CLI JSON | `schema_version = 1` |
 | 配置格式 | 固定 `0.9.4`；保留历史字段名 `application_version` |
 | 身份与配对状态格式 | 固定 `0.9.4`；不再取当前程序版本 |
@@ -20,4 +20,4 @@
 
 当前没有需要重写持久字节的迁移步骤，也没有 Client 的 `sarmg-upgrade` 历史迁移边。Server 的 SQLite 恢复命令不能用于 Client。持久格式以后变化时，需要独立增加迁移能力，不能在 `run`、`status` 或 `doctor` 中自动执行。
 
-`--output json` 保留为本次 CLI 格式参数的兼容别名。`--tray-*` 属于已删除 UI 的私有入口，不保留。卸载默认保留身份、待发送数据和配对恢复信息；启用开机运行由管理员执行 `service enable --now`。
+`--output json` 保留为本次 CLI 格式参数的兼容别名。`--tray-*` 属于已删除 UI 的私有入口，不保留。安装后统一使用 `setup` 完成配对、服务策略和连接验证；卸载默认保留身份、待发送数据和配对恢复信息。

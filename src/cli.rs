@@ -243,16 +243,156 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
     }
     result
 }
+
+fn ask_yes_no(label: &str, default: bool) -> Result<bool> {
+    let value = prompt(
+        &format!("{label} [{}]", if default { "yes" } else { "no" }),
+        false,
+    )?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(default),
+        "y" | "yes" | "true" | "1" => Ok(true),
+        "n" | "no" | "false" | "0" => Ok(false),
+        _ => Err(fail(2, "invalid_confirmation")),
+    }
+}
+
+fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
+    let mut options = args.options.clone();
+    if interactive {
+        options.insert("--interactive".into(), "true".into());
+    }
+    Args {
+        words,
+        options,
+        format: args.format.clone(),
+        timeout: args.timeout,
+    }
+}
+
+fn setup_service_args(args: &Args, now: bool) -> Args {
+    let mut options = args.options.clone();
+    options.remove("--interactive");
+    options.remove("--input-stdin");
+    options.remove("--server");
+    options.remove("--now");
+    if now {
+        options.insert("--now".into(), "true".into());
+    }
+    Args {
+        words: vec![],
+        options,
+        format: args.format.clone(),
+        timeout: args.timeout,
+    }
+}
+
+fn preserve_setup_commit(mut error: Failure, pairing: &Value) -> Failure {
+    error.committed = true;
+    if error.transaction_id.is_none() {
+        error.transaction_id = pairing["transaction_id"].as_str().map(str::to_owned);
+    }
+    error
+}
+
+async fn wait_for_healthy(c: &ClientConfig, timeout: std::time::Duration) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = local_status(c)?;
+        if status["health"] == "healthy" {
+            return Ok(status);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(fail(9, "connection_unconfirmed"));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
+    if path != service().default_config {
+        return Err(fail(2, "service_config_mismatch"));
+    }
+    c.validate(ClientCommand::Pair)
+        .map_err(|_| fail(2, "invalid_configuration"))?;
+    let existing = pairing::local_status(&c).map_err(storage_error)?;
+    let pairing = if existing.active_report_endpoint.is_some() {
+        json!({"committed":true,"already_active":true})
+    } else {
+        let has_protected_input = args.has("--input-stdin") || args.has("--interactive");
+        let resume = existing.progress.is_some()
+            && !has_protected_input
+            && args.get("--server").is_none()
+            && !args.has("--non-interactive");
+        let pair_words = if resume {
+            vec!["pair".into(), "resume".into()]
+        } else {
+            vec!["pair".into()]
+        };
+        let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
+        let pair_args = setup_args(args, pair_words, interactive);
+        pair(&pair_args, c).await?
+    };
+    let config = match load(&path) {
+        Ok(config) => config,
+        Err(error) => return Err(preserve_setup_commit(error, &pairing)),
+    };
+    let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
+    let (enable, start, verify) = if interactive {
+        (
+            ask_yes_no("Enable service at system startup?", true)
+                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+            ask_yes_no("Start the service now?", true)
+                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+            ask_yes_no("Verify the connection now?", true)
+                .map_err(|error| preserve_setup_commit(error, &pairing))?,
+        )
+    } else {
+        // A protected stdin document is already an explicit deployment action.
+        // Complete the same safe install contract without an interactive prompt.
+        (true, true, true)
+    };
+    let service_result = if enable {
+        service()
+            .change(&setup_service_args(args, start), "enable", &path)
+            .map_err(|error| preserve_setup_commit(error, &pairing))?
+    } else if start {
+        service()
+            .change(&setup_service_args(args, false), "start", &path)
+            .map_err(|error| preserve_setup_commit(error, &pairing))?
+    } else {
+        service()
+            .status(args.timeout)
+            .map_err(|error| preserve_setup_commit(error, &pairing))?
+    };
+    let verification = if verify && service_result["state"] == "running" {
+        wait_for_healthy(&config, args.timeout)
+            .await
+            .map_err(|error| preserve_setup_commit(error, &pairing))?
+    } else {
+        json!({"state":"skipped","reason":if verify {"service_not_running"} else {"not_requested"}})
+    };
+    Ok(json!({
+        "setup":"completed",
+        "pairing":pairing,
+        "service":service_result,
+        "verification":verification
+    }))
+}
+
 pub fn entry(raw: Vec<String>) -> u8 {
     let args = match Args::parse(raw) {
         Ok(a) => a,
         Err(e) => return emit("host-monitor", "parse", "json", &Err(e)),
     };
-    if args.has("--help") || args.words.is_empty() && !args.has("--version") {
+    if args.has("--help") {
         println!(
-            "host-monitor: config init|show|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nPair uses --interactive or --input-stdin JSON containing server and authorization_code. Never pass secrets as arguments.\nconfig apply requires --file and --expected-revision. Stop the service before writes."
+            "host-monitor: setup; config init|show|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. setup completes pairing, service startup policy and connection verification. Never pass secrets as arguments.\nconfig apply requires --file and --expected-revision. Stop the service before writes."
         );
         return 0;
+    }
+    if args.words.is_empty() && !args.has("--version") {
+        return no_args(&args);
     }
     if (args.has("--version") || args.words == ["version"]) && args.format == "human" {
         println!("host-monitor {}", env!("CARGO_PKG_VERSION"));
@@ -323,6 +463,17 @@ fn execute(args: &Args) -> Result<Value> {
         };
     }
     match words.as_slice() {
+        ["setup"] => {
+            args.validate_options(&["--interactive", "--input-stdin", "--server"])?;
+            let c = if path.exists() || args.has("--config") {
+                load(&path)?
+            } else {
+                new_config(path.clone())
+            };
+            tokio::runtime::Runtime::new()
+                .map_err(storage_error)?
+                .block_on(setup(args, path, c))
+        }
         ["logs"] => {
             args.validate_options(&["--tail", "--since", "--follow"])?;
             if args.has("--follow") {
@@ -518,6 +669,25 @@ fn new_config(path: PathBuf) -> ClientConfig {
     let mut config = ClientConfig::default();
     config.config_path = Some(path);
     config
+}
+
+fn no_args(args: &Args) -> u8 {
+    let status_args = Args {
+        words: vec!["status".into()],
+        options: args.options.clone(),
+        format: args.format.clone(),
+        timeout: args.timeout,
+    };
+    let mut result = execute(&status_args);
+    if let Ok(value) = &mut result {
+        value["next_steps"] = json!([
+            "host-monitor setup",
+            "host-monitor status",
+            "host-monitor service status",
+            "host-monitor logs"
+        ]);
+    }
+    emit("host-monitor", "status", &args.format, &result)
 }
 
 fn watch(args: &Args) -> u8 {

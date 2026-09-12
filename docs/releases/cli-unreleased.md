@@ -1,4 +1,4 @@
-> 此文件保留 0.9.6 的验收记录。当前覆盖安装与修复行为见 [0.9.9](0.9.9.md) 和 [平台指南](../platform-setup.md)。
+> 此文件保留早期 CLI 验收记录。当前覆盖安装与修复行为见 [0.9.10](0.9.10.md) 和 [平台指南](../platform-setup.md)。
 
 # 纯命令行改造（v0.9.6 预发布）
 
@@ -16,6 +16,7 @@
 - `config apply --file /absolute/candidate.json --expected-revision REVISION`。
 - `pair --interactive` 或 `pair --input-stdin --non-interactive --format json`。
 - `pair status`，`pair resume`。恢复必须找到已有事务。
+- `setup`：安装后的唯一交互入口，串联配对、服务启动策略和连接验证；非交互部署使用受保护 stdin。
 - `status`，`status --watch --format ndjson --timeout 5m`，`status --check`。
 - `doctor` 只读；`doctor --network` 显式访问公共健康端点，报告当前 CLI 账户的信任环境。
 - `service status|start|stop|restart|enable|disable`；`enable/disable --now` 同时操作当前运行状态。

@@ -2,7 +2,7 @@
 
 跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
 
-当前纯 CLI 与系统服务版本为 [v0.9.9 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.9)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
+当前纯 CLI 与系统服务版本为 [v0.9.10 预发布](https://github.com/isarmg/host-monitoring-client/releases/tag/v0.9.10)；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
 
 支持 Windows x64、Linux x64 和 macOS Apple Silicon（arm64）。不再为 Intel macOS 适配、运行 CI 或提供发行包。
 
@@ -10,18 +10,15 @@
 
 ## 部署与配对
 
-安装包注册服务，新安装不自动配对或启动。Linux 使用 `host-monitor` 低权限账户，macOS 使用 `_hostmonitor`，Windows 保持 LocalService。Unix 写命令使用 `sudo`，Windows 使用已提权终端。
+每个平台只发布一个原生安装包文件：DEB/RPM、MSI 或 PKG。安装器检查平台、架构、权限并注册低权限系统服务；有交互终端的首次安装会直接调用唯一的 `setup` 命令，完成交互式配对、开机启动选择、立即启动和连接验证。Linux 使用 `host-monitor` 低权限账户，macOS 使用 `_hostmonitor`，Windows 保持 LocalService。Unix 写命令使用 `sudo`，Windows 使用已提权终端；静默或无终端安装会保留进度，随后显式运行 `setup`。
 
 ```sh
-host-monitor config init --interactive
-host-monitor pair --server https://monitor.example.com --interactive
-host-monitor service enable --now
-host-monitor status
+host-monitor setup
 ```
 
-现有服务先执行 `service stop`。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
+`setup` 会在已存在有效身份时复用身份，在未完成的配对事务上执行 `pair resume`；配对失败不会回滚安装或删除进度。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
 
-自动化通过 stdin 交付单个 JSON 文档：字段为 `server` 和 `authorization_code`。例如部署器启动 `host-monitor pair --input-stdin --non-interactive --format json` 后写入受保护输入；不要在 Shell 参数或日志中拼接秘密。
+自动化通过 stdin 交付单个 JSON 文档：字段为 `server` 和 `authorization_code`。例如部署器启动 `host-monitor setup --input-stdin --non-interactive --format json` 后写入受保护输入；非交互模式默认完成服务启用、启动和验证，不要在 Shell 参数或日志中拼接秘密。
 
 `pair resume` 只核对已有事务。`pair replace --confirm-replace --expected-binding <当前 host_id> --interactive` 明确替换绑定，要求旧待发送/隔离队列均为空。先通过 `queue status`、`queue inspect`、`queue drain --timeout 60s` 检查或排空；不会自动删除旧数据或换身份发送。
 

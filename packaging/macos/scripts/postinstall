@@ -1333,27 +1333,25 @@ launchctl enable system/org.sarmg.hostmonitor.logrotate
 restart_state_safe=0
 launchctl bootstrap system "$logrotate_plist"
 
-cat <<'EOF'
+if [ -t 0 ] && [ -t 1 ]; then
+  echo "host-monitor's LaunchDaemon is installed; starting the interactive setup wizard."
+  if ! "$client_command" setup --interactive; then
+    echo 'Setup was not completed; installation and pairing progress were retained.' >&2
+    echo 'Resume later with: sudo /usr/local/bin/host-monitor setup' >&2
+  fi
+else
+  cat <<'EOF'
 
-host-monitor's LaunchDaemon is installed and disabled until explicit pairing and enablement.
+host-monitor's LaunchDaemon is installed. No interactive terminal was available.
+Resume setup with:
 
-Create an instance and one-time activation code in the Host Monitoring Web console, then run this
-command locally. It deliberately runs as the service account so the daemon owns and can read
-the generated credential files:
+  sudo /usr/local/bin/host-monitor setup
 
-  sudo -u _hostmonitor /usr/local/bin/host-monitor pair \
-    --config '/Library/Application Support/host-monitor/config.json' \
-    --server https://host-monitoring.example.com --interactive
-  sudo /usr/local/bin/host-monitor service enable --now
+After setup, inspect local state with:
 
-Replace the example URL with your Host Monitoring console origin. The package does not contain a
-deployment token, and pairing does not expose the long-lived Client secret to the browser.
-
-After pairing, inspect local state and run the read-only doctor as the same service account:
-
-  sudo -u _hostmonitor /usr/local/bin/host-monitor status --output human \
+  sudo /usr/local/bin/host-monitor status --output human \
     --config '/Library/Application Support/host-monitor/config.json'
-  sudo -u _hostmonitor /usr/local/bin/host-monitor doctor --output human \
+  sudo /usr/local/bin/host-monitor doctor --output human \
     --config '/Library/Application Support/host-monitor/config.json'
 
 Inspect the LaunchDaemon and its private log:
@@ -1366,6 +1364,7 @@ Uninstall helper:
   sudo /usr/local/share/host-monitor/uninstall.sh
 
 EOF
+fi
 
 restart_state_safe=1
 exit 0

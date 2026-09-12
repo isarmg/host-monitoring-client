@@ -212,8 +212,23 @@ $nativeActions = @($actions | Where-Object {
 if ($nativeActions.Count -ne $expectedActions.Count) {
     throw "Expected exactly $($expectedActions.Count) native lifecycle custom actions; found $($nativeActions.Count)."
 }
-if ($actions.Count -ne $expectedActions.Count) {
-    throw "Only native lifecycle actions may be authored; found $($actions.Count)."
+if ($actions.Count -ne ($expectedActions.Count + 1)) {
+    throw "Expected the native lifecycle actions plus the first-run setup action; found $($actions.Count)."
+}
+
+$setupAction = Select-One "//w:CustomAction[@Id='LaunchInteractiveSetup']"
+Assert-Equal $setupAction.FileRef "ClientExecutable" `
+    "First-run setup must execute the installed Client executable."
+Assert-Equal $setupAction.ExeCommand "setup --interactive" `
+    "First-run setup must use the interactive CLI contract."
+Assert-Equal $setupAction.Execute "immediate" `
+    "First-run setup must run after the committed MSI transaction."
+Assert-Equal $setupAction.Impersonate "yes" `
+    "First-run setup must run in the invoking administrator's interactive context."
+Assert-Equal $setupAction.Return "ignore" `
+    "Pairing failure must preserve the committed installation for setup resume."
+if (-not [string]::IsNullOrEmpty($setupAction.GetAttribute("BinaryRef"))) {
+    throw "First-run setup must execute the installed Client file, not an embedded helper."
 }
 
 foreach ($entry in $expectedActions.GetEnumerator()) {
@@ -273,6 +288,7 @@ $expectedSequence = [ordered]@{
     "RollbackPurgedState" = @("After", "StopServices", $purgeCondition)
     "PreparePurgedState" = @("After", "RollbackPurgedState", $purgeCondition)
     "CommitPurgedState" = @("After", "PreparePurgedState", $purgeCondition)
+    "LaunchInteractiveSetup" = @("After", "InstallFinalize", 'NOT Installed AND NOT REMOVE~="ALL" AND UILevel >= 4')
 }
 $sequenceActions = @($package.SelectNodes("//w:InstallExecuteSequence/w:Custom", $namespace))
 if ($sequenceActions.Count -ne $expectedSequence.Count) {

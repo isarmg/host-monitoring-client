@@ -231,6 +231,14 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
             }
         }
     }
+    if command == "status" && value["ok"] == false {
+        value["next_steps"] = json!([
+            format!("{product} setup"),
+            format!("{product} status"),
+            format!("{product} service status"),
+            format!("{product} logs")
+        ]);
+    }
     redact(&mut value);
     // Every finite command emits exactly one object. Never interpolate untrusted text.
     let encoded = if format == "human" {
