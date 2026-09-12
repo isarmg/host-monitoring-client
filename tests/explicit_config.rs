@@ -422,6 +422,8 @@ fn assert_pair_rejects_config_before_state_changes(config_path: &Path) {
         .command()
         .args([
             "pair",
+            "--format",
+            "json",
             "--server",
             "http://127.0.0.1:1",
             "--config",
@@ -499,6 +501,7 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
         let output = fixture
             .command()
             .args(args)
+            .args(["--format", "json"])
             .arg("--config")
             .arg(&path)
             .output()

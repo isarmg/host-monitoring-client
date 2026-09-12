@@ -504,10 +504,39 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
 }
 
 pub fn entry(raw: Vec<String>) -> u8 {
+    let parse_format = requested_error_format(&raw);
+    #[cfg(windows)]
+    let elevation_raw = raw.clone();
     let args = match Args::parse(raw) {
         Ok(a) => a,
-        Err(e) => return emit("host-monitor", "parse", "json", &Err(e)),
+        Err(e) => return emit("host-monitor", "parse", parse_format, &Err(e)),
     };
+    #[cfg(windows)]
+    if args.words == ["setup"] {
+        let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
+        let installer_session = args.has("--installer-session");
+        match prepare_windows_setup_elevation(
+            &elevation_raw,
+            interactive,
+            installer_session,
+            args.has("--elevated-setup-child"),
+        ) {
+            Ok(WindowsSetupElevation::Continue) => {}
+            Ok(WindowsSetupElevation::ChildExited(exit)) => {
+                if !installer_session {
+                    if exit == 0 {
+                        println!("Setup completed with administrator privileges.");
+                    } else {
+                        eprintln!(
+                            "Setup failed with exit code {exit}. Run `host-monitor setup` from an Administrator terminal to keep the error visible."
+                        );
+                    }
+                }
+                return exit;
+            }
+            Err(error) => return emit("host-monitor", "setup", &args.format, &Err(error)),
+        }
+    }
     if args.has("--help") {
         println!(
             "host-monitor: setup; config init|show|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. setup completes pairing, service startup policy and connection verification. Never pass secrets as arguments.\nconfig apply requires --file and --expected-revision. Stop the service before writes."
@@ -558,7 +587,15 @@ pub fn entry(raw: Vec<String>) -> u8 {
             .and_then(|v| v["legacy_exit"].as_u64())
             .unwrap_or(0) as u8;
     }
-    emit("host-monitor", &command, &args.format, &result)
+    let exit = emit("host-monitor", &command, &args.format, &result);
+    #[cfg(windows)]
+    if args.words == ["setup"]
+        && args.has("--installer-session")
+        && args.has("--elevated-setup-child")
+    {
+        pause_installer_setup();
+    }
+    exit
 }
 fn execute(args: &Args) -> Result<Value> {
     let words: Vec<_> = args.words.iter().map(String::as_str).collect();
@@ -587,7 +624,13 @@ fn execute(args: &Args) -> Result<Value> {
     }
     match words.as_slice() {
         ["setup"] => {
-            args.validate_options(&["--interactive", "--input-stdin", "--server"])?;
+            args.validate_options(&[
+                "--interactive",
+                "--input-stdin",
+                "--server",
+                "--installer-session",
+                "--elevated-setup-child",
+            ])?;
             let c = if path.exists() || args.has("--config") {
                 load(&path).map_err(|error| error.at_step("configuration"))?
             } else {

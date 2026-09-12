@@ -42,7 +42,13 @@ impl Fixture {
 
     fn pair(&self, arguments: &[&str]) -> std::process::Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_host-monitor"));
-        command.args(["pair", "--config", self.config_path.to_str().unwrap()]);
+        command.args([
+            "pair",
+            "--format",
+            "json",
+            "--config",
+            self.config_path.to_str().unwrap(),
+        ]);
         command.args(arguments);
         command.env_remove("HOST_MONITOR_ALLOW_INSECURE_HTTP");
         command.output().unwrap()

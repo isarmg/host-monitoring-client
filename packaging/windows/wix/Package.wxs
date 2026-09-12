@@ -138,15 +138,14 @@
     <Binary Id="HostMonitorMaintenance.exe" SourceFile="$(var.MaintenanceExe)" />
 
     <!--
-      A normal MSI invocation has an interactive terminal available to the
-      installed console executable. Start the first-run setup only after the
-      transactional install has committed; silent/automation invocations keep
-      the installation intact and can resume through the CLI later.
+      The installed CLI relaunches this interactive session through the Windows
+      runas verb before it reads or writes protected state. Start it only after
+      the transaction commits; silent installs resume with an elevated CLI.
     -->
     <CustomAction
       Id="LaunchInteractiveSetup"
       FileRef="ClientExecutable"
-      ExeCommand="setup --interactive"
+      ExeCommand="setup --interactive --installer-session"
       Execute="immediate"
       Impersonate="yes"
       Return="ignore" />

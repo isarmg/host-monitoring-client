@@ -231,7 +231,7 @@ if ($actions.Count -ne ($expectedActions.Count + 1)) {
 $setupAction = Select-One "//w:CustomAction[@Id='LaunchInteractiveSetup']"
 Assert-Equal $setupAction.FileRef "ClientExecutable" `
     "First-run setup must execute the installed Client executable."
-Assert-Equal $setupAction.ExeCommand "setup --interactive" `
+Assert-Equal $setupAction.ExeCommand "setup --interactive --installer-session" `
     "First-run setup must use the interactive CLI contract."
 Assert-Equal $setupAction.Execute "immediate" `
     "First-run setup must run after the committed MSI transaction."

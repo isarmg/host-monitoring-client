@@ -36,7 +36,8 @@ impl Failure {
     }
 
     pub fn with_detail(mut self, detail: impl std::fmt::Display) -> Self {
-        self.detail = Some(sanitize(&detail.to_string()).chars().take(1024).collect());
+        let detail = compact_detail(&detail.to_string());
+        self.detail = (!detail.is_empty()).then_some(detail);
         self
     }
 }
@@ -87,11 +88,22 @@ impl Args {
                     | "--expected-binding" => {
                         it.next().ok_or_else(|| fail(2, "missing_option_value"))?
                     }
-                    "--interactive" | "--input-stdin" | "--non-interactive" | "--no-color"
-                    | "--now" | "--watch" | "--check" | "--network" | "--sunshine"
-                    | "--delivery" | "--follow" | "--confirm-replace" | "--help" | "--version" => {
-                        "true".into()
-                    }
+                    "--interactive"
+                    | "--input-stdin"
+                    | "--non-interactive"
+                    | "--no-color"
+                    | "--now"
+                    | "--watch"
+                    | "--check"
+                    | "--network"
+                    | "--sunshine"
+                    | "--delivery"
+                    | "--follow"
+                    | "--confirm-replace"
+                    | "--help"
+                    | "--version"
+                    | "--installer-session"
+                    | "--elevated-setup-child" => "true".into(),
                     "--json" => {
                         if options.insert("--format".into(), "json".into()).is_some() {
                             return Err(fail(2, "duplicate_option"));
@@ -204,6 +216,23 @@ pub fn revision(bytes: &[u8]) -> String {
 pub fn sanitize(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
+
+const MAX_ERROR_DETAIL_CHARS: usize = 240;
+
+fn compact_detail(raw: &str) -> String {
+    let one_line = raw
+        .split_whitespace()
+        .map(sanitize)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if one_line.chars().count() <= MAX_ERROR_DETAIL_CHARS {
+        return one_line;
+    }
+    let mut shortened: String = one_line.chars().take(MAX_ERROR_DETAIL_CHARS - 1).collect();
+    shortened.push('…');
+    shortened
+}
 pub fn redact(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -236,7 +265,7 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
         ),
         Err(e) => (
             e.exit,
-            json!({"schema_version":1,"product":product,"command":command,"ok":false,"error":{"code":e.code,"message":failure_message(e.code),"step":e.step,"detail":e.detail,"retryable":matches!(e.exit,5|6|9),"committed":e.committed,"transaction_id":e.transaction_id,"next_step":if e.exit==9 {"inspect pair status; resume the same transaction"} else if e.exit==5 {"stop the service and retry"} else {"inspect configuration and local diagnostics"}}}),
+            json!({"schema_version":1,"product":product,"command":command,"ok":false,"error":{"code":e.code,"message":failure_message(e.code),"step":e.step,"detail":e.detail,"retryable":matches!(e.exit,5|6|9),"committed":e.committed,"transaction_id":e.transaction_id,"next_step":failure_next_step(product, e)}}),
         ),
     };
     if let Ok(Value::Object(fields)) = result {
@@ -256,7 +285,11 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
     }
     redact(&mut value);
     // Every finite command emits exactly one object. Never interpolate untrusted text.
-    let encoded = if format == "human" {
+    let encoded = if format == "human"
+        && let Err(error) = result
+    {
+        Ok(human_failure(product, error))
+    } else if format == "human" {
         serde_json::to_string_pretty(&value)
     } else {
         serde_json::to_string(&value)
@@ -267,8 +300,140 @@ pub fn emit(product: &str, command: &str, format: &str, result: &Result<Value>) 
     exit
 }
 
+pub fn requested_error_format(raw: &[String]) -> &'static str {
+    if raw.iter().any(|argument| argument == "--json") {
+        return "json";
+    }
+    raw.windows(2)
+        .find_map(|pair| {
+            (["--format", "--output"].contains(&pair[0].as_str())
+                && ["json", "ndjson"].contains(&pair[1].as_str()))
+            .then_some(if pair[1] == "ndjson" {
+                "ndjson"
+            } else {
+                "json"
+            })
+        })
+        .unwrap_or("human")
+}
+
+fn human_failure(product: &str, error: &Failure) -> String {
+    let location = error
+        .step
+        .map(|step| format!(" at {step}"))
+        .unwrap_or_default();
+    let mut message = format!(
+        "Error [{}]{}: {}",
+        error.code,
+        location,
+        failure_message(error.code)
+    );
+    if let Some(detail) = error.detail.as_deref() {
+        message.push_str("\nReason: ");
+        message.push_str(detail);
+    }
+    message.push_str("\nNext: ");
+    message.push_str(&failure_next_step(product, error));
+    message
+}
+
+fn failure_next_step(product: &str, error: &Failure) -> String {
+    match error.code {
+        "administrator_privileges_required" | "elevation_cancelled" | "elevation_failed" => {
+            format!("Approve Windows administrator elevation, then run `{product} setup` again.")
+        }
+        "protected_input_required"
+        | "protected_input_timeout"
+        | "interactive_terminal_required" => {
+            format!(
+                "Run `{product} setup` interactively, or provide the documented JSON through stdin."
+            )
+        }
+        "unknown_command"
+        | "unknown_option"
+        | "option_not_valid_for_command"
+        | "missing_option_value"
+        | "missing_required_option"
+        | "duplicate_option"
+        | "invalid_format"
+        | "invalid_timeout"
+        | "conflicting_input_modes"
+        | "conflicting_input_sources" => format!("Run `{product} --help` and correct the command."),
+        "awaiting_configuration"
+        | "awaiting_pairing"
+        | "no_pairing_transaction"
+        | "pairing_transaction_missing" => {
+            format!("Run `{product} setup` to configure and pair this client.")
+        }
+        "credential_rejected" | "pairing_authorization_rejected" | "pairing_rejected" => {
+            format!("Create a new pairing code on the server, then run `{product} setup` again.")
+        }
+        "pairing_postcondition_unconfirmed" | "invalid_input" | "invalid_server_origin" => {
+            format!("Check the Server address and pairing code, then run `{product} setup` again.")
+        }
+        "server_unavailable" | "server_unavailable_or_untrusted" | "pairing_server_unavailable" => {
+            format!(
+                "Check the Server URL, TLS certificate, and network, then retry `{product} setup`."
+            )
+        }
+        "service_not_installed" => {
+            format!("Run `{product} setup` to install and verify the service.")
+        }
+        "service_action_denied" => {
+            format!("Run `{product} setup` from an administrator or root terminal.")
+        }
+        "connection_unconfirmed" | "verification_requires_running_service" => {
+            format!("Run `{product} service status`, then `{product} logs`.")
+        }
+        "permission_denied" => {
+            format!("Run `{product} setup` from an administrator or root terminal.")
+        }
+        "invalid_configuration" | "unsafe_or_corrupt_state" => {
+            format!("Run `{product} doctor`; repair the reported configuration or state problem.")
+        }
+        _ if error.exit == 9 => "Inspect pairing status and resume the same transaction.".into(),
+        _ if error.exit == 5 => "Stop the service and retry the same command.".into(),
+        _ => format!("Run `{product} doctor` for the focused diagnostic checks."),
+    }
+}
+
 fn failure_message(code: &str) -> &'static str {
     match code {
+        "absolute_path_required" => "The selected path must be absolute and normalized.",
+        "awaiting_configuration" => "The client has not been configured yet.",
+        "awaiting_pairing" => "The client has not completed server pairing yet.",
+        "configuration_already_exists" => "A configuration already exists at the selected path.",
+        "conflicting_input_modes" | "conflicting_input_sources" => {
+            "More than one Setup input mode was selected."
+        }
+        "credential_rejected" | "pairing_authorization_rejected" | "pairing_rejected" => {
+            "The server rejected the pairing credential."
+        }
+        "duplicate_option" => "The same command option was provided more than once.",
+        "interactive_terminal_required" | "terminal_unavailable" => {
+            "Interactive Setup requires an attached terminal."
+        }
+        "invalid_format" => "The output format must be human, json, or ndjson.",
+        "invalid_input" => "The supplied input is incomplete or invalid.",
+        "invalid_server_origin" => "The Server address must be a valid HTTPS origin.",
+        "invalid_timeout" => "The timeout must be greater than zero and no more than one hour.",
+        "missing_option_value" => "A command option is missing its value.",
+        "missing_required_option" => "A required command option was not supplied.",
+        "no_pairing_transaction" | "pairing_transaction_missing" => {
+            "There is no saved pairing transaction to resume."
+        }
+        "option_not_valid_for_command" => "This option is not valid for the selected command.",
+        "pairing_expired" => "The pairing request expired before authorization completed.",
+        "pairing_protocol_unsupported" | "unsupported_protocol_or_platform" => {
+            "The client and server do not support a compatible protocol or platform."
+        }
+        "pairing_server_unavailable" | "server_unavailable" | "server_unavailable_or_untrusted" => {
+            "The server could not be reached or its TLS identity could not be trusted."
+        }
+        "protected_input_required" => {
+            "Setup needs protected input from an interactive prompt or stdin."
+        }
+        "protected_input_timeout" => "Setup timed out while waiting for protected input.",
         "service_config_mismatch" => {
             "The selected configuration path does not match the installed service registration."
         }
@@ -308,8 +473,194 @@ fn failure_message(code: &str) -> &'static str {
             "The service manager did not reach the requested state before the timeout."
         }
         "invalid_confirmation" => "The response must be yes or no.",
+        "administrator_privileges_required" => {
+            "Setup must run with Windows administrator privileges."
+        }
+        "elevation_cancelled" => "Windows administrator elevation was cancelled.",
+        "elevation_failed" => "Windows could not start the elevated Setup process.",
+        "unknown_command" => "The requested command is not recognized.",
+        "unknown_option" => "The requested command option is not recognized.",
         _ => "The operation failed; error.code identifies the exact machine-readable reason.",
     }
+}
+
+#[cfg(windows)]
+pub enum WindowsSetupElevation {
+    Continue,
+    ChildExited(u8),
+}
+
+#[cfg(windows)]
+pub fn prepare_windows_setup_elevation(
+    raw: &[String],
+    interactive: bool,
+    installer_session: bool,
+    elevated_child: bool,
+) -> Result<WindowsSetupElevation> {
+    let elevated = windows_is_elevated()?;
+    if !interactive {
+        return if elevated {
+            Ok(WindowsSetupElevation::Continue)
+        } else {
+            Err(fail(7, "administrator_privileges_required").at_step("configuration"))
+        };
+    }
+    if elevated_child {
+        return if elevated {
+            Ok(WindowsSetupElevation::Continue)
+        } else {
+            Err(fail(7, "elevation_failed").at_step("configuration"))
+        };
+    }
+    if installer_session || !elevated {
+        return windows_relaunch_elevated(raw).map(WindowsSetupElevation::ChildExited);
+    }
+    Ok(WindowsSetupElevation::Continue)
+}
+
+#[cfg(windows)]
+pub fn pause_installer_setup() {
+    if io::stdin().is_terminal() {
+        eprintln!("Press Enter to close Setup.");
+        let mut line = String::new();
+        let _ = io::stdin().read_line(&mut line);
+    }
+}
+
+#[cfg(windows)]
+struct OwnedWindowsHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_is_elevated() -> Result<bool> {
+    use std::{ffi::c_void, mem::size_of, ptr::null_mut};
+    use windows_sys::Win32::{
+        Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(fail(6, "elevation_failed").with_detail(std::io::Error::last_os_error()));
+    }
+    let token = OwnedWindowsHandle(token);
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0;
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenElevation,
+            &mut elevation as *mut TOKEN_ELEVATION as *mut c_void,
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(fail(6, "elevation_failed").with_detail(std::io::Error::last_os_error()));
+    }
+    Ok(elevation.TokenIsElevated != 0)
+}
+
+#[cfg(windows)]
+fn windows_relaunch_elevated(raw: &[String]) -> Result<u8> {
+    use std::{ffi::OsStr, mem::size_of, os::windows::ffi::OsStrExt, ptr::null_mut};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_CANCELLED, WAIT_OBJECT_0},
+        System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
+        UI::{
+            Shell::{
+                SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+            },
+            WindowsAndMessaging::SW_SHOWNORMAL,
+        },
+    };
+
+    fn wide(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let executable =
+        std::env::current_exe().map_err(|error| fail(6, "elevation_failed").with_detail(error))?;
+    let mut child_args = raw.to_vec();
+    child_args.push("--elevated-setup-child".into());
+    let parameters = child_args
+        .iter()
+        .map(|argument| windows_quote_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let verb = wide(OsStr::new("runas"));
+    let executable = wide(executable.as_os_str());
+    let parameters = wide(OsStr::new(&parameters));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: verb.as_ptr(),
+        lpFile: executable.as_ptr(),
+        lpParameters: parameters.as_ptr(),
+        nShow: SW_SHOWNORMAL,
+        ..SHELLEXECUTEINFOW::default()
+    };
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        let failure = if code == ERROR_CANCELLED {
+            fail(7, "elevation_cancelled")
+        } else {
+            fail(6, "elevation_failed").with_detail(std::io::Error::from_raw_os_error(code as i32))
+        };
+        return Err(failure.at_step("configuration"));
+    }
+    if info.hProcess == null_mut() {
+        return Err(fail(6, "elevation_failed").at_step("configuration"));
+    }
+    let process = OwnedWindowsHandle(info.hProcess);
+    if unsafe { WaitForSingleObject(process.0, INFINITE) } != WAIT_OBJECT_0 {
+        return Err(fail(6, "elevation_failed")
+            .with_detail(std::io::Error::last_os_error())
+            .at_step("configuration"));
+    }
+    let mut exit_code = 1;
+    if unsafe { GetExitCodeProcess(process.0, &mut exit_code) } == 0 {
+        return Err(fail(6, "elevation_failed")
+            .with_detail(std::io::Error::last_os_error())
+            .at_step("configuration"));
+    }
+    Ok(u8::try_from(exit_code).unwrap_or(1))
+}
+
+#[cfg(windows)]
+fn windows_quote_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && !argument
+            .chars()
+            .any(|character| character.is_whitespace() || character == '"')
+    {
+        return argument.into();
+    }
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for character in argument.chars() {
+        if character == '\\' {
+            backslashes += 1;
+        } else {
+            quoted.extend(std::iter::repeat_n('\\', backslashes));
+            if character == '"' {
+                quoted.extend(std::iter::repeat_n('\\', backslashes + 1));
+            }
+            backslashes = 0;
+            quoted.push(character);
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 fn command_failure(exit: u8, code: &'static str, output: &std::process::Output) -> Failure {
@@ -965,5 +1316,54 @@ fn log_message(message: &str) -> String {
         "[sensitive log message redacted]".into()
     } else {
         sanitize(message)
+    }
+}
+
+#[cfg(test)]
+mod concise_error_tests {
+    use super::*;
+
+    #[test]
+    fn details_are_single_line_and_bounded() {
+        let raw = format!("first line\nsecond\tline {}", "x".repeat(400));
+        let detail = compact_detail(&raw);
+        assert!(!detail.contains('\n') && !detail.contains('\t'));
+        assert!(detail.chars().count() <= MAX_ERROR_DETAIL_CHARS);
+        assert!(detail.ends_with('…'));
+    }
+
+    #[test]
+    fn human_failures_keep_only_actionable_fields() {
+        let error = fail(7, "administrator_privileges_required")
+            .at_step("configuration")
+            .with_detail("Access denied\nwhile opening protected state");
+        let rendered = human_failure("sample-client", &error);
+        assert_eq!(rendered.lines().count(), 3);
+        assert!(rendered.contains("administrator_privileges_required"));
+        assert!(rendered.contains("Access denied while opening protected state"));
+        assert!(rendered.contains("sample-client setup"));
+        assert!(!rendered.contains("schema_version") && !rendered.contains("transaction_id"));
+    }
+
+    #[test]
+    fn parse_errors_default_to_human_but_honor_machine_output_requests() {
+        assert_eq!(requested_error_format(&["--bad".into()]), "human");
+        assert_eq!(
+            requested_error_format(&["--format".into(), "json".into(), "--bad".into()]),
+            "json"
+        );
+        assert_eq!(requested_error_format(&["--json".into()]), "json");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn elevation_arguments_follow_windows_quoting_rules() {
+        assert_eq!(windows_quote_argument("setup"), "setup");
+        assert_eq!(windows_quote_argument(""), "\"\"");
+        assert_eq!(
+            windows_quote_argument(r#"C:\Program Files\Client\"#),
+            r#""C:\Program Files\Client\\""#
+        );
+        assert_eq!(windows_quote_argument(r#"a"b"#), r#""a\"b""#);
     }
 }
