@@ -99,8 +99,21 @@ mod tests {
                 .unwrap();
             let mut request = Vec::new();
             let mut chunk = [0; 4096];
+            let read_deadline = Instant::now() + Duration::from_secs(3);
             loop {
-                let count = stream.read(&mut chunk).unwrap();
+                let count = match stream.read(&mut chunk) {
+                    Ok(count) => count,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) && Instant::now() < read_deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture request read: {error}"),
+                };
                 assert!(count > 0 && request.len() + count <= 1024 * 1024);
                 request.extend_from_slice(&chunk[..count]);
                 if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
