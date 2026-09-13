@@ -235,3 +235,70 @@ jobs:
         run: >-
           cargo test --locked -p host-monitor --no-default-features --features otlp
           --test otlp_live
+
+  publish:
+    name: Publish GitHub Release
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs:
+      - host-monitor
+      - android-host-monitor-library
+      - apple-mobile-host-monitor-library
+      - otlp
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download verified native packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: host-monitor-client-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the complete source-bound release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          test -f "docs/releases/${version}.md"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifests = sorted(Path("dist").glob("host-monitor-*-manifest.json"))
+          assert len(manifests) == 3, f"expected three platform manifests, found {manifests}"
+          platforms = set()
+          for path in manifests:
+              manifest = json.loads(path.read_text(encoding="utf-8"))
+              assert manifest["version"] == os.environ["GITHUB_REF_NAME"][1:]
+              assert manifest["commit"] == os.environ["GITHUB_SHA"]
+              platforms.add(manifest["os"])
+          assert platforms == {"Darwin", "Linux", "Windows"}, platforms
+          PY
+          test "$(find dist -maxdepth 1 -type f -name 'SHA256SUMS-*' | wc -l)" -eq 3
+          (
+            cd dist
+            for sums in SHA256SUMS-*; do sha256sum --check "$sums"; done
+          )
+      - name: Publish the immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Refusing to reuse or overwrite existing release $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --notes-file "docs/releases/${version}.md" \
+            --title "Host Monitoring Client $GITHUB_REF_NAME"
