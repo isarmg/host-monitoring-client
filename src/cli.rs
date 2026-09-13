@@ -260,7 +260,23 @@ fn ask_yes_no(label: &str, default: bool) -> Result<bool> {
 }
 
 fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
-    let mut options = args.options.clone();
+    let mut options: std::collections::BTreeMap<String, String> = args
+        .options
+        .iter()
+        .filter(|(name, _)| {
+            matches!(
+                name.as_str(),
+                "--format"
+                    | "--timeout"
+                    | "--config"
+                    | "--non-interactive"
+                    | "--no-color"
+                    | "--input-stdin"
+                    | "--server"
+            )
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     if interactive {
         options.insert("--interactive".into(), "true".into());
     }
@@ -273,11 +289,17 @@ fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
 }
 
 fn setup_service_args(args: &Args) -> Args {
-    let mut options = args.options.clone();
-    options.remove("--interactive");
-    options.remove("--input-stdin");
-    options.remove("--server");
-    options.remove("--now");
+    let options = args
+        .options
+        .iter()
+        .filter(|(name, _)| {
+            matches!(
+                name.as_str(),
+                "--format" | "--timeout" | "--config" | "--non-interactive" | "--no-color"
+            )
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     Args {
         words: vec![],
         options,
@@ -305,6 +327,13 @@ fn startup_policy_matches(status: &Value, enabled: bool) -> bool {
     } else {
         matches!(observed, "manual" | "disabled")
     }
+}
+
+fn can_reuse_pairing(
+    existing: &pairing::LocalPairingStatus,
+    reauthorization_required: bool,
+) -> bool {
+    existing.active_report_endpoint.is_some() && !reauthorization_required
 }
 
 fn record_setup_step(
@@ -344,6 +373,11 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         .map_err(|_| fail(2, "invalid_configuration").at_step("configuration"))?;
     let existing =
         pairing::local_status(&c).map_err(|error| storage_error(error).at_step("configuration"))?;
+    let reauthorization_required = pairing::local_auth_state(&c)
+        .map_err(|error| storage_error(error).at_step("configuration"))?
+        .is_some_and(|state| {
+            state.status == sarmg_client_runtime::CredentialAuthorization::ReauthorizationRequired
+        });
     record_setup_step(
         &mut steps,
         interactive,
@@ -351,21 +385,46 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         "verified",
         json!({"path":path,"service_path_matches":true}),
     );
-    let pairing = if existing.active_report_endpoint.is_some() {
+    let pairing = if can_reuse_pairing(&existing, reauthorization_required) {
         json!({"committed":true,"already_active":true})
     } else {
+        let service_api = service();
+        let service_status = service_api
+            .status(args.timeout)
+            .map_err(|error| error.at_step("service_quiesce"))?;
+        if service_status["state"] == "running" {
+            let stopped = service_api
+                .change(&setup_service_args(args), "stop", &path)
+                .map_err(|error| error.at_step("service_quiesce"))?;
+            if stopped["state"] == "running" {
+                return Err(fail(11, "service_state_unconfirmed").at_step("service_quiesce"));
+            }
+        }
         let has_protected_input = args.has("--input-stdin") || args.has("--interactive");
         let resume = existing.progress.is_some()
             && !has_protected_input
             && args.get("--server").is_none()
             && !args.has("--non-interactive");
-        let pair_words = if resume {
+        let pair_words = if reauthorization_required {
+            vec!["pair".into(), "replace".into()]
+        } else if resume {
             vec!["pair".into(), "resume".into()]
         } else {
             vec!["pair".into()]
         };
         let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
-        let pair_args = setup_args(args, pair_words, interactive);
+        let mut pair_args = setup_args(args, pair_words, interactive);
+        if reauthorization_required {
+            let binding = host_monitor::client_identity::load(&c.state_dir)
+                .map_err(|error| storage_error(error).at_step("pairing"))?;
+            pair_args
+                .options
+                .insert("--confirm-replace".into(), "true".into());
+            pair_args.options.insert(
+                "--expected-binding".into(),
+                binding.instance_id().to_owned(),
+            );
+        }
         pair(&pair_args, c)
             .await
             .map_err(|error| error.at_step("pairing"))?
@@ -473,17 +532,31 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 "connection",
             ));
         }
-        let status = wait_for_healthy(&config, args.timeout)
-            .await
-            .map_err(|error| setup_failure(error, &pairing, "connection"))?;
-        record_setup_step(
-            &mut steps,
-            interactive,
-            "connection",
-            "verified",
-            json!({"health":status["health"]}),
-        );
-        status
+        match wait_for_healthy(&config, args.timeout).await {
+            Ok(status) => {
+                record_setup_step(
+                    &mut steps,
+                    interactive,
+                    "connection",
+                    "verified",
+                    json!({"health":status["health"]}),
+                );
+                status
+            }
+            Err(error) if error.code == "connection_unconfirmed" => {
+                let status = local_status(&config)
+                    .map_err(|error| setup_failure(error, &pairing, "connection"))?;
+                record_setup_step(
+                    &mut steps,
+                    interactive,
+                    "connection",
+                    "warning",
+                    json!({"health":status["health"],"reason":"connection_unconfirmed"}),
+                );
+                json!({"state":"warning","reason":"connection_unconfirmed","status":status})
+            }
+            Err(error) => return Err(setup_failure(error, &pairing, "connection")),
+        }
     } else {
         record_setup_step(
             &mut steps,
@@ -932,5 +1005,34 @@ mod setup_tests {
         assert!(failure.committed);
         assert_eq!(failure.transaction_id.as_deref(), Some("request-1"));
         assert_eq!(failure.step, Some("service_runtime"));
+    }
+
+    #[test]
+    fn setup_does_not_reuse_rejected_credentials_and_filters_installer_flags() {
+        let active = pairing::LocalPairingStatus {
+            progress: None,
+            active_report_endpoint: Some(
+                "https://host-monitoring.example/api/v2/host-monitor/report".into(),
+            ),
+        };
+        assert!(can_reuse_pairing(&active, false));
+        assert!(!can_reuse_pairing(&active, true));
+
+        let parsed = Args::parse(vec![
+            "setup".into(),
+            "--interactive".into(),
+            "--installer-session".into(),
+            "--elevated-setup-child".into(),
+        ])
+        .unwrap();
+        let child = setup_args(&parsed, vec!["pair".into()], true);
+        assert!(child.has("--interactive"));
+        assert!(!child.has("--installer-session"));
+        assert!(!child.has("--elevated-setup-child"));
+        assert!(
+            child
+                .validate_options(&["--interactive", "--input-stdin", "--server"])
+                .is_ok()
+        );
     }
 }

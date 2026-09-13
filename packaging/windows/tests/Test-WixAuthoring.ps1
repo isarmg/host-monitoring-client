@@ -224,23 +224,11 @@ $nativeActions = @($actions | Where-Object {
 if ($nativeActions.Count -ne $expectedActions.Count) {
     throw "Expected exactly $($expectedActions.Count) native lifecycle custom actions; found $($nativeActions.Count)."
 }
-if ($actions.Count -ne ($expectedActions.Count + 1)) {
-    throw "Expected the native lifecycle actions plus the first-run setup action; found $($actions.Count)."
+if ($actions.Count -ne $expectedActions.Count) {
+    throw "Expected only the native lifecycle custom actions; found $($actions.Count)."
 }
-
-$setupAction = Select-One "//w:CustomAction[@Id='LaunchInteractiveSetup']"
-Assert-Equal $setupAction.FileRef "ClientExecutable" `
-    "First-run setup must execute the installed Client executable."
-Assert-Equal $setupAction.ExeCommand "setup --interactive --installer-session" `
-    "First-run setup must use the interactive CLI contract."
-Assert-Equal $setupAction.Execute "immediate" `
-    "First-run setup must run after the committed MSI transaction."
-Assert-Equal $setupAction.Impersonate "yes" `
-    "First-run setup must run in the invoking administrator's interactive context."
-Assert-Equal $setupAction.Return "ignore" `
-    "Pairing failure must preserve the committed installation for setup resume."
-if (-not [string]::IsNullOrEmpty($setupAction.GetAttribute("BinaryRef"))) {
-    throw "First-run setup must execute the installed Client file, not an embedded helper."
+if ($null -ne $package.SelectSingleNode("//w:CustomAction[@Id='LaunchInteractiveSetup']", $namespace)) {
+    throw "MSI must not launch interactive product setup from the installer transaction."
 }
 
 foreach ($entry in $expectedActions.GetEnumerator()) {

@@ -137,19 +137,6 @@
     <!-- The same helper is embedded once and is never left behind as another utility. -->
     <Binary Id="HostMonitorMaintenance.exe" SourceFile="$(var.MaintenanceExe)" />
 
-    <!--
-      The installed CLI relaunches this interactive session through the Windows
-      runas verb before it reads or writes protected state. Start it only after
-      the transaction commits; silent installs resume with an elevated CLI.
-    -->
-    <CustomAction
-      Id="LaunchInteractiveSetup"
-      FileRef="ClientExecutable"
-      ExeCommand="setup --interactive --installer-session"
-      Execute="immediate"
-      Impersonate="yes"
-      Return="ignore" />
-
     <CustomAction
       Id="RollbackClientInstall"
       BinaryRef="HostMonitorMaintenance.exe"
@@ -263,11 +250,6 @@
         Action="CommitClientInstall"
         After="ApplyClientInstall"
         Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom
-        Action="LaunchInteractiveSetup"
-        After="InstallFinalize"
-        Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot; AND UILevel &gt;= 4" />
-
       <!--
         Standard MSI service/file removal is name/path based, so it must never run until the
         helper has rejected a replaced service and file/junction/reparse root. Register a narrow

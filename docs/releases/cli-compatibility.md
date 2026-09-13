@@ -1,10 +1,10 @@
 # CLI 预发布兼容矩阵
 
-本次预发布版本为 `0.9.12`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
+本次预发布版本为 `0.9.13`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
 
 | 维度 | 契约 |
 | --- | --- |
-| 程序版本 | `0.9.12`，GitHub 预发布 |
+| 程序版本 | `0.9.13`，GitHub 预发布 |
 | CLI JSON | `schema_version = 1` |
 | 配置格式 | 固定 `0.9.4`；保留历史字段名 `application_version` |
 | 身份与配对状态格式 | 固定 `0.9.4`；不再取当前程序版本 |

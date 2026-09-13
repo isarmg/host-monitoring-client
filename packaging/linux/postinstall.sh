@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=host-monitor.service
-package_version=0.9.12
+package_version=0.9.13
 client_binary=/usr/bin/host-monitor
 account_state_dir=/var/lib/host-monitor-package
 state_dir=/var/lib/host-monitor
@@ -533,19 +533,11 @@ if [ -d /run/systemd/system ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemd is running but systemctl is unavailable"
   systemctl daemon-reload
 fi
-if [ -t 0 ] && [ -t 1 ]; then
-  echo 'Client installed; starting the interactive setup wizard.'
-  if ! /usr/bin/host-monitor setup --interactive; then
-    echo 'Setup was not completed; installation and pairing progress were retained.' >&2
-    echo 'Resume later with: sudo host-monitor setup' >&2
-  fi
-else
-  cat <<'EOF'
-Client installed; no interactive terminal was available.
-Resume setup with:
+cat <<'EOF'
+Client installed without starting an interactive configuration session.
+Complete setup from a terminal with:
   sudo host-monitor setup
 EOF
-fi
 
 # 默认 unit 设置 PrivateDevices=yes，会屏蔽 /dev/nvidia* 与 /dev/dri。
 # 需要 GPU 采集时安装随包分发的 drop-in。

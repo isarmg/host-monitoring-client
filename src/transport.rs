@@ -12,7 +12,9 @@ use sarmg_client_error::ErrorEnvelope;
 use sarmg_client_runtime::{ClientIdentity, CredentialSnapshot, CredentialStore};
 use sarmg_client_secret::{SecretBytes, SecretString};
 use sarmg_client_secure_http::{Certificate, Identity, StatusCode, header};
-use sarmg_client_secure_http::{ResponseBudget, SecureHttpClient, TlsConfig};
+#[cfg(test)]
+use sarmg_client_secure_http::{NetworkPolicy, Url};
+use sarmg_client_secure_http::{ResponseBudget, SecureHttpClient, TlsConfig, TrustMode};
 use uuid::Uuid;
 
 use host_protocol::ClientReportAck;
@@ -42,6 +44,8 @@ pub struct Reporter {
     otlp_endpoint: Option<String>,
     #[cfg_attr(not(feature = "otlp"), allow(dead_code))]
     otlp_token: Option<Arc<SecretString>>,
+    #[cfg(test)]
+    network_policy_override: Option<NetworkPolicy>,
 }
 
 impl Reporter {
@@ -101,6 +105,8 @@ impl Reporter {
             credential_revision: credential.revision,
             otlp_endpoint: config.otlp_endpoint.clone(),
             otlp_token: config.otlp_token.clone(),
+            #[cfg(test)]
+            network_policy_override: None,
         })
     }
 
@@ -113,13 +119,21 @@ impl Reporter {
             .map_err(|_| SendError::IdentityMismatch)?;
         let headers = authenticated_headers(&self.token, "application/json")
             .map_err(|_| SendError::Transient("invalid host authorization header".into()))?;
-        let response = self
-            .client
-            .post_client(&self.endpoint, headers, body)
-            .await
-            .map_err(|error| {
-                SendError::Transient(format!("Host Monitoring request failed: {error}"))
-            })?;
+        #[cfg(test)]
+        let response = if let Some(policy) = self.network_policy_override {
+            let url = Url::parse(&self.endpoint)
+                .map_err(|_| SendError::Transient("invalid report endpoint".into()))?;
+            self.client
+                .post_with_policy(policy, url, headers, body)
+                .await
+        } else {
+            self.client.post_client(&self.endpoint, headers, body).await
+        };
+        #[cfg(not(test))]
+        let response = self.client.post_client(&self.endpoint, headers, body).await;
+        let response = response.map_err(|error| {
+            SendError::Transient(format!("Host Monitoring request failed: {error}"))
+        })?;
         let content_type = response
             .headers
             .get(header::CONTENT_TYPE)
@@ -272,9 +286,7 @@ pub(crate) fn build_client(config: &ClientConfig) -> anyhow::Result<SecureHttpCl
             !certificates.is_empty(),
             "TLS CA input contains no certificates"
         );
-        for certificate in certificates {
-            tls.roots.push(certificate);
-        }
+        tls.trust = TrustMode::CustomOnly(certificates);
     }
     Ok(SecureHttpClient::new(
         config.request_timeout(),

@@ -138,7 +138,7 @@ required-features = ["desktop"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.12"
+version = "0.9.13"
 edition = "2024"
 rust-version = "1.98"
 authors = ["sarmg <isarmg@163.com>"]
@@ -154,22 +154,22 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 host-protocol = { git = "https://github.com/isarmg/host-monitoring-server.git", rev = "ca41b7cdbdd662d2a4a5b28ace7be74cd7fded6c", version = "=0.9.3" }
-sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1", version = "=0.7.0" }
-sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1", version = "=0.7.0" }
+sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "be2c2e246763c373794ffd1f2228c4005fb94954", version = "=0.8.0" }
+sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "be2c2e246763c373794ffd1f2228c4005fb94954", version = "=0.8.0" }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 
 [workspace.dependencies.sarmg-client-error]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
-version = "=0.7.0"
+rev = "be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "=0.8.0"
 
 [workspace.dependencies.sarmg-client-fs-safety]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
-version = "=0.7.0"
+rev = "be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "=0.8.0"
 
 [workspace.dependencies.sarmg-client-secure-http]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "b47b550a39336b4a592ea9acf26e98b4d8a660b1"
-version = "=0.7.0"
+rev = "be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "=0.8.0"
