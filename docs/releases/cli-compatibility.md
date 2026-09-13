@@ -8,7 +8,7 @@
 | CLI JSON | `schema_version = 1` |
 | 配置格式 | 固定 `0.9.4`；保留历史字段名 `application_version` |
 | 身份与配对状态格式 | 固定 `0.9.4`；不再取当前程序版本 |
-| Client Foundation | `0.9.0`，固定提交 `67e59576fd641091bb075bb999c17520a9e45256` |
+| Client Foundation | `0.9.1`，固定提交 `2fa783a1eb7aefde8e54e328f91d67aa9e1eb890` |
 | IPC | Foundation `GetStatus/1`，进程世代与绑定校验 |
 | 业务协议 | 既有 Host 协议；本次 UI 删除没有更换协议依赖 |
 

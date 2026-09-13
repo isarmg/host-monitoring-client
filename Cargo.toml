@@ -156,23 +156,23 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 host-protocol = { git = "https://github.com/isarmg/host-monitoring-server.git", rev = "ca41b7cdbdd662d2a4a5b28ace7be74cd7fded6c", version = "=0.9.3" }
-sarmg-client-cli = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "67e59576fd641091bb075bb999c17520a9e45256", version = "=0.9.0" }
-sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "67e59576fd641091bb075bb999c17520a9e45256", version = "=0.9.0" }
-sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "67e59576fd641091bb075bb999c17520a9e45256", version = "=0.9.0" }
+sarmg-client-cli = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890", version = "=0.9.1" }
+sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890", version = "=0.9.1" }
+sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890", version = "=0.9.1" }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 
 [workspace.dependencies.sarmg-client-error]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "67e59576fd641091bb075bb999c17520a9e45256"
-version = "=0.9.0"
+rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "=0.9.1"
 
 [workspace.dependencies.sarmg-client-fs-safety]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "67e59576fd641091bb075bb999c17520a9e45256"
-version = "=0.9.0"
+rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "=0.9.1"
 
 [workspace.dependencies.sarmg-client-secure-http]
 git = "https://github.com/isarmg/sarmg-foundation-client.git"
-rev = "67e59576fd641091bb075bb999c17520a9e45256"
-version = "=0.9.0"
+rev = "2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "=0.9.1"

@@ -372,6 +372,11 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     let mut steps = Vec::new();
     c.validate(ClientCommand::Pair)
         .map_err(|_| fail(2, "invalid_configuration").at_step("configuration"))?;
+    let service_api = service();
+    let initial_service = service_api
+        .status(args.timeout)
+        .map_err(|error| error.at_step("service_inspection"))?;
+    let (default_enable, default_start) = setup_service_intent(&initial_service);
     let existing =
         pairing::local_status(&c).map_err(|error| storage_error(error).at_step("configuration"))?;
     let reauthorization_required = pairing::local_auth_state(&c)
@@ -379,6 +384,23 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         .is_some_and(|state| {
             state.status == sarmg_client_runtime::CredentialAuthorization::ReauthorizationRequired
         });
+    if can_reuse_pairing(&existing, reauthorization_required) {
+        if args.has("--input-stdin") {
+            return Err(
+                fail(5, "active_setup_input_requires_pair_replace").at_step("configuration")
+            );
+        }
+        if let Some(server) = args.get("--server") {
+            let server = host_monitor::pairing_input::validate_server_base(server)
+                .map_err(|_| fail(2, "invalid_server_origin").at_step("configuration"))?;
+            let expected = format!("{server}{}", host_protocol::CLIENT_REPORT_PATH);
+            if c.endpoint != expected {
+                return Err(
+                    fail(5, "server_replacement_requires_pair_replace").at_step("configuration")
+                );
+            }
+        }
+    }
     record_setup_step(
         &mut steps,
         interactive,
@@ -389,7 +411,6 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     let pairing = if can_reuse_pairing(&existing, reauthorization_required) {
         json!({"committed":true,"already_active":true})
     } else {
-        let service_api = service();
         let service_status = service_api
             .status(args.timeout)
             .map_err(|error| error.at_step("service_quiesce"))?;
@@ -452,19 +473,16 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     );
     let (enable, start, verify) = if interactive {
         (
-            ask_yes_no("Enable service at system startup?", true)
+            ask_yes_no("Enable service at system startup?", default_enable)
                 .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
-            ask_yes_no("Start the service now?", true)
+            ask_yes_no("Run the service now?", default_start)
                 .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
-            ask_yes_no("Verify the connection now?", true)
+            ask_yes_no("Verify the connection now?", default_start)
                 .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
         )
     } else {
-        // A protected stdin document is already an explicit deployment action.
-        // Complete the same safe install contract without an interactive prompt.
-        (true, true, true)
+        (default_enable, default_start, default_start)
     };
-    let service_api = service();
     let registered = service_api
         .verified_status(args.timeout, &path)
         .map_err(|error| setup_failure(error, &pairing, "service_registration"))?;
@@ -513,9 +531,16 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         );
         status
     } else {
-        let status = service_api
+        let current = service_api
             .verified_status(args.timeout, &path)
             .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?;
+        let status = if current["state"] == "running" {
+            service_api
+                .change(&setup_service_args(args), "stop", &path)
+                .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?
+        } else {
+            current
+        };
         record_setup_step(
             &mut steps,
             interactive,
@@ -543,18 +568,6 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                     json!({"health":status["health"]}),
                 );
                 status
-            }
-            Err(error) if error.code == "connection_unconfirmed" => {
-                let status = local_status(&config)
-                    .map_err(|error| setup_failure(error, &pairing, "connection"))?;
-                record_setup_step(
-                    &mut steps,
-                    interactive,
-                    "connection",
-                    "warning",
-                    json!({"health":status["health"],"reason":"connection_unconfirmed"}),
-                );
-                json!({"state":"warning","reason":"connection_unconfirmed","status":status})
             }
             Err(error) => return Err(setup_failure(error, &pairing, "connection")),
         }
@@ -622,7 +635,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
     }
     if args.has("--help") {
         println!(
-            "host-monitor: setup; config init|show|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. setup completes pairing, service startup policy and connection verification. Never pass secrets as arguments.\nconfig apply requires --file and --expected-revision. Stop the service before writes."
+            "host-monitor: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. setup completes pairing, service startup policy and connection verification. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
         );
         return 0;
     }
@@ -749,6 +762,36 @@ fn execute(args: &Args) -> Result<Value> {
             let _guard = Guard::acquire(&c.state_dir).map_err(runtime_error)?;
             c.persist_durable_config().map_err(storage_error)?;
             Ok(json!({"committed":true,"stored_revision":revision_of(&c)?}))
+        }
+        ["config", "edit"] => {
+            args.validate_options(&[])?;
+            let current = load(&path)?;
+            let before = revision_of(&current)?;
+            let edited = edit_json(&serde_json::to_value(&current).map_err(storage_error)?)?;
+            let mut candidate: ClientConfig =
+                serde_json::from_value(edited).map_err(input_error)?;
+            candidate
+                .validate(ClientCommand::Pair)
+                .map_err(input_error)?;
+            if candidate.state_dir != current.state_dir {
+                return Err(fail(2, "state_directory_migration_required"));
+            }
+            let binding = pairing::local_status(&current).map_err(storage_error)?;
+            if (binding.active_report_endpoint.is_some() || binding.progress.is_some())
+                && (candidate.endpoint != current.endpoint
+                    || candidate.pairing_endpoint != current.pairing_endpoint)
+            {
+                return Err(fail(5, "server_change_requires_pair_replace"));
+            }
+            let _guard = Guard::acquire(&current.state_dir).map_err(runtime_error)?;
+            if revision_of(&load(&path)?)? != before {
+                return Err(fail(5, "revision_conflict"));
+            }
+            candidate.config_path = Some(path);
+            candidate.persist_durable_config().map_err(storage_error)?;
+            Ok(
+                json!({"committed":true,"previous_revision":before,"stored_revision":revision_of(&candidate)?,"effective_revision":null,"restart_required":true}),
+            )
         }
         ["config", action] if ["validate", "diff", "apply"].contains(action) => {
             args.validate_options(&["--file", "--expected-revision"])?;
