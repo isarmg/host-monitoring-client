@@ -48,4 +48,4 @@ pub use model::*;
 pub mod maintenance;
 
 #[cfg(feature = "desktop")]
-pub mod runtime_status;
+pub use sarmg_client_runtime::local_status as runtime_status;

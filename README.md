@@ -2,7 +2,7 @@
 
 跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
 
-当前纯 CLI 与系统服务版本为 `0.9.14`；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
+当前纯 CLI 与系统服务版本为 `0.9.15`；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
 
 支持 Windows x64、Linux x64 和 macOS Apple Silicon（arm64）。不再为 Intel macOS 适配、运行 CI 或提供发行包。
 
@@ -36,7 +36,7 @@ host-monitor status --check
 
 `config show/diff` 脱敏，提交核对修订并原子持久化。已绑定的 Server 地址及状态目录不能通过普通配置提交迁移。保留当前配置/状态版本检查，不通过修改版本字段绕过升级工具。
 
-`probe` 仅采集、不创建持久身份。`once` 是独占会话内的真实交付。`doctor` 默认本地只读，`doctor --network` 主动探测，`doctor --delivery` 显式真实交付。`status --watch --format ndjson` 的 Ctrl+C 只退出观察。
+`probe` 仅采集、不联网、不创建持久身份。`once` 是独占会话内的真实报告投递，会读取身份、访问 Server 并更新投递状态。`doctor` 默认只读本地配置、身份与队列；`doctor --network` 会访问已配置 Server，但不发送遥测报告；`doctor --delivery` 会执行一次真实投递并产生服务端报告及本地投递状态。诊断输出分享前仍应脱敏 Server 地址、主机标识和时间线。`status --watch --format ndjson` 只读取受保护的本地状态通道，Ctrl+C 只退出观察。
 
 ## 构建验证
 

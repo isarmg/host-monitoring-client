@@ -5,12 +5,12 @@ source_roots = ["."]
 # Development workspace identity; not an immutable release pin.
 [foundation]
 platform_generation = 1
-version = "0.7.0"
+version = "0.9.0"
 
 [[components]]
 id = "client"
 profile = "desktop-client"
-capabilities = ["private-state", "bounded-spool", "https-delivery", "doctor", "local-web-management"]
+capabilities = ["private-state", "bounded-spool", "https-delivery", "doctor", "local-web-management", "authenticated-local-status", "desktop-cli-lifecycle"]
 
 [components.client_limits]
 max_record_bytes = 524288

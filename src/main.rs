@@ -1,5 +1,4 @@
 mod cli;
-mod cli_common;
 mod monitor_app;
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]

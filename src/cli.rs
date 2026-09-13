@@ -1,9 +1,9 @@
-use crate::cli_common::*;
 use host_monitor::{
     ClientCommand, ClientConfig,
     maintenance::Guard,
     pairing::{self, PairingProgress},
 };
+use sarmg_client_cli::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ fn service() -> Service {
         label: "org.sarmg.hostmonitor",
         default_config: host_monitor::config::default_config_path(),
         binary: "host-monitor",
+        log_path: "/var/log/host-monitor.log",
     }
 }
 fn load(path: &Path) -> Result<ClientConfig> {
@@ -580,7 +581,16 @@ pub fn entry(raw: Vec<String>) -> u8 {
     let parse_format = requested_error_format(&raw);
     #[cfg(windows)]
     let elevation_raw = raw.clone();
-    let args = match Args::parse(raw) {
+    let args = match Args::parse(
+        raw,
+        &[
+            "--file",
+            "--server",
+            "--expected-revision",
+            "--expected-binding",
+        ],
+        &["--network", "--delivery", "--confirm-replace"],
+    ) {
         Ok(a) => a,
         Err(e) => return emit("host-monitor", "parse", parse_format, &Err(e)),
     };
@@ -1018,12 +1028,21 @@ mod setup_tests {
         assert!(can_reuse_pairing(&active, false));
         assert!(!can_reuse_pairing(&active, true));
 
-        let parsed = Args::parse(vec![
-            "setup".into(),
-            "--interactive".into(),
-            "--installer-session".into(),
-            "--elevated-setup-child".into(),
-        ])
+        let parsed = Args::parse(
+            vec![
+                "setup".into(),
+                "--interactive".into(),
+                "--installer-session".into(),
+                "--elevated-setup-child".into(),
+            ],
+            &[
+                "--file",
+                "--server",
+                "--expected-revision",
+                "--expected-binding",
+            ],
+            &["--network", "--delivery", "--confirm-replace"],
+        )
         .unwrap();
         let child = setup_args(&parsed, vec!["pair".into()], true);
         assert!(child.has("--interactive"));

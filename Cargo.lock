@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "host-monitor"
-version = "0.9.14"
+version = "0.9.15"
 dependencies = [
  "anyhow",
  "chrono",
@@ -653,6 +653,7 @@ dependencies = [
  "opentelemetry-proto",
  "prost",
  "rand 0.9.5",
+ "sarmg-client-cli",
  "sarmg-client-error",
  "sarmg-client-fs-safety",
  "sarmg-client-runtime",
@@ -1779,9 +1780,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sarmg-client-cli"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sarmg-client-error"
-version = "0.8.0"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=be2c2e246763c373794ffd1f2228c4005fb94954#be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
 dependencies = [
  "serde",
  "serde_json",
@@ -1790,8 +1803,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-fs-safety"
-version = "0.8.0"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=be2c2e246763c373794ffd1f2228c4005fb94954#be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
@@ -1801,32 +1814,36 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-runtime"
-version = "0.8.0"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=be2c2e246763c373794ffd1f2228c4005fb94954#be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
 dependencies = [
  "async-trait",
  "getrandom 0.4.3",
+ "libc",
  "rand 0.9.5",
  "sarmg-client-fs-safety",
  "sarmg-client-secret",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "sarmg-client-secret"
-version = "0.8.0"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=be2c2e246763c373794ffd1f2228c4005fb94954#be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
 dependencies = [
  "zeroize",
 ]
 
 [[package]]
 name = "sarmg-client-secure-http"
-version = "0.8.0"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=be2c2e246763c373794ffd1f2228c4005fb94954#be2c2e246763c373794ffd1f2228c4005fb94954"
+version = "0.9.0"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=67e59576fd641091bb075bb999c17520a9e45256#67e59576fd641091bb075bb999c17520a9e45256"
 dependencies = [
  "hickory-resolver",
  "ipnet",

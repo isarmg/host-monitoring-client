@@ -127,7 +127,7 @@ pub(crate) async fn execute_config(
             host_monitor::runtime_status::publish(
                 &config.state_dir,
                 host.id.to_string(),
-                crate::cli_common::revision(&serde_json::to_vec(&config)?),
+                sarmg_client_cli::revision(&serde_json::to_vec(&config)?),
             )
             .context("service status IPC")?,
         )

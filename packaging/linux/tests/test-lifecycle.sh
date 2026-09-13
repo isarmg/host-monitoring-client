@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/host-monitor-packaging-test.XXXXXX")
-package_version=0.9.14
+package_version=0.9.15
 # packaging/linux is nested below clients/host-monitor, so the workspace
 # manifest is four levels above the packaging directory.
 workspace_version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$packaging_dir/../../Cargo.toml")

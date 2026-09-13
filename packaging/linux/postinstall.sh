@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=host-monitor.service
-package_version=0.9.14
+package_version=0.9.15
 client_binary=/usr/bin/host-monitor
 account_state_dir=/var/lib/host-monitor-package
 state_dir=/var/lib/host-monitor
