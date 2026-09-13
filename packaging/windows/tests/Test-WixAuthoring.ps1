@@ -288,7 +288,6 @@ $expectedSequence = [ordered]@{
     "RollbackPurgedState" = @("After", "StopServices", $purgeCondition)
     "PreparePurgedState" = @("After", "RollbackPurgedState", $purgeCondition)
     "CommitPurgedState" = @("After", "PreparePurgedState", $purgeCondition)
-    "LaunchInteractiveSetup" = @("After", "InstallFinalize", 'NOT Installed AND NOT REMOVE~="ALL" AND UILevel >= 4')
 }
 $sequenceActions = @($package.SelectNodes("//w:InstallExecuteSequence/w:Custom", $namespace))
 if ($sequenceActions.Count -ne $expectedSequence.Count) {
