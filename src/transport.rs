@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::fs;
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 #[cfg(feature = "otlp")]
 use std::io::Write;
@@ -26,7 +26,66 @@ pub enum RemoteBindingStatus {
     Authorized { host_id: String },
     Unauthorized,
     ProtocolUnsupported { received: u16, supported: Vec<u16> },
-    ServerUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForbiddenAddressClass {
+    FakeIpBenchmark,
+    PrivateOrReserved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteBindingFailure {
+    InvalidEndpoint,
+    LocalCredentialCorrupt,
+    DnsResolutionFailed,
+    DnsResolutionEmpty,
+    DnsResolutionTooLarge,
+    ForbiddenAddress(ForbiddenAddressClass),
+    ConnectionFailed,
+    Timeout,
+    TlsValidationFailed,
+    ResponseTooLarge,
+    HttpTransportFailed,
+    RuntimeFailed,
+    ServerUpgradeRequired,
+    ReverseProxyMisconfigured,
+    RateLimited,
+    ServerUnavailable { status: u16 },
+    UnexpectedRedirect { status: u16 },
+    ContractMismatch { status: u16 },
+    AuthResponseUntrusted,
+}
+
+impl RemoteBindingFailure {
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::InvalidEndpoint => "pairing_invalid_endpoint",
+            Self::LocalCredentialCorrupt => "local_credential_corrupt",
+            Self::DnsResolutionFailed | Self::DnsResolutionEmpty | Self::DnsResolutionTooLarge => {
+                "pairing_dns_resolution_failed"
+            }
+            Self::ForbiddenAddress(ForbiddenAddressClass::FakeIpBenchmark) => {
+                "pairing_dns_fake_ip_rejected"
+            }
+            Self::ForbiddenAddress(ForbiddenAddressClass::PrivateOrReserved) => {
+                "pairing_forbidden_address"
+            }
+            Self::ConnectionFailed => "pairing_connection_failed",
+            Self::Timeout => "pairing_connection_timeout",
+            Self::TlsValidationFailed => "pairing_tls_untrusted",
+            Self::ResponseTooLarge => "pairing_response_too_large",
+            Self::HttpTransportFailed => "pairing_http_transport_failed",
+            Self::RuntimeFailed => "pairing_http_runtime_failed",
+            Self::ServerUpgradeRequired => "pairing_server_upgrade_required",
+            Self::ReverseProxyMisconfigured => "pairing_reverse_proxy_misconfigured",
+            Self::RateLimited => "pairing_rate_limited",
+            Self::ServerUnavailable { .. } => "pairing_server_unavailable",
+            Self::UnexpectedRedirect { .. } => "pairing_unexpected_redirect",
+            Self::ContractMismatch { .. } => "pairing_server_contract_mismatch",
+            Self::AuthResponseUntrusted => "pairing_auth_response_untrusted",
+        }
+    }
 }
 
 use crate::{
@@ -88,28 +147,34 @@ impl Reporter {
         &self.identity
     }
 
-    pub async fn verify_remote_binding(&self) -> RemoteBindingStatus {
+    pub fn new_with_timeout(config: &ClientConfig, timeout: Duration) -> anyhow::Result<Self> {
+        let mut reporter = Self::new(config)?;
+        reporter.client = build_client_with_timeout(config, timeout)?;
+        Ok(reporter)
+    }
+
+    pub async fn verify_remote_binding(&self) -> Result<RemoteBindingStatus, RemoteBindingFailure> {
         let reporter = self.clone();
         tokio::task::spawn_blocking(move || reporter.verify_remote_binding_blocking())
             .await
-            .unwrap_or(RemoteBindingStatus::ServerUnavailable)
+            .map_err(|_| RemoteBindingFailure::RuntimeFailed)?
     }
 
-    fn verify_remote_binding_blocking(&self) -> RemoteBindingStatus {
+    fn verify_remote_binding_blocking(&self) -> Result<RemoteBindingStatus, RemoteBindingFailure> {
         let mut url = match sarmg_client_secure_http::Url::parse(&self.endpoint) {
             Ok(url) => url,
-            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+            Err(_) => return Err(RemoteBindingFailure::InvalidEndpoint),
         };
         url.set_path(host_protocol::CLIENT_CREDENTIAL_STATUS_PATH);
         url.set_query(None);
         url.set_fragment(None);
         let headers = match authenticated_headers(&self.token, "application/json") {
             Ok(headers) => headers,
-            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+            Err(_) => return Err(RemoteBindingFailure::LocalCredentialCorrupt),
         };
         let response = match self.client.get_client_blocking(url.as_str(), headers) {
             Ok(response) => response,
-            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+            Err(error) => return Err(classify_secure_http_error(error)),
         };
         let content_type = response
             .headers
@@ -244,6 +309,16 @@ impl Reporter {
             header::CONTENT_ENCODING,
             header::HeaderValue::from_static("gzip"),
         );
+        #[cfg(test)]
+        let response = if let Some(policy) = self.network_policy_override {
+            let url = Url::parse(endpoint)?;
+            self.client
+                .post_with_policy(policy, url, headers, body)
+                .await?
+        } else {
+            self.client.post_client(endpoint, headers, body).await?
+        };
+        #[cfg(not(test))]
         let response = self.client.post_client(endpoint, headers, body).await?;
         Ok(ensure_generic_success(response.status, "OTLP")?)
     }
@@ -259,24 +334,28 @@ fn classify_credential_status_response(
     status_code: StatusCode,
     content_type: Option<&str>,
     body: &[u8],
-) -> RemoteBindingStatus {
+) -> Result<RemoteBindingStatus, RemoteBindingFailure> {
     if status_code == StatusCode::OK && content_type.is_some_and(is_application_json) {
         let Ok(status) = serde_json::from_slice::<CredentialStatusResponse>(body) else {
-            return RemoteBindingStatus::ServerUnavailable;
+            return Err(RemoteBindingFailure::ContractMismatch {
+                status: status_code.as_u16(),
+            });
         };
         let CredentialStatus::Authorized = status.status;
         if status.protocol_version != HOST_PAIRING_PROTOCOL_VERSION {
-            return RemoteBindingStatus::ProtocolUnsupported {
+            return Ok(RemoteBindingStatus::ProtocolUnsupported {
                 received: HOST_PAIRING_PROTOCOL_VERSION,
                 supported: vec![status.protocol_version],
-            };
+            });
         }
         if status.host_id == status.instance_id && status.host_id == expected_host_id {
-            return RemoteBindingStatus::Authorized {
+            return Ok(RemoteBindingStatus::Authorized {
                 host_id: status.host_id,
-            };
+            });
         }
-        return RemoteBindingStatus::Unauthorized;
+        return Err(RemoteBindingFailure::ContractMismatch {
+            status: status_code.as_u16(),
+        });
     }
     let envelope = content_type
         .filter(|value| is_application_json(value))
@@ -286,7 +365,7 @@ fn classify_credential_status_response(
             .as_ref()
             .is_some_and(|error| error.code.as_str() == "unauthorized" && !error.retryable)
     {
-        return RemoteBindingStatus::Unauthorized;
+        return Ok(RemoteBindingStatus::Unauthorized);
     }
     if status_code == StatusCode::BAD_REQUEST
         && let Some(error) = envelope
@@ -309,14 +388,61 @@ fn classify_credential_status_response(
                 .filter_map(|value| value.as_u64().and_then(|v| u16::try_from(v).ok()))
                 .collect();
             if !supported.is_empty() {
-                return RemoteBindingStatus::ProtocolUnsupported {
+                return Ok(RemoteBindingStatus::ProtocolUnsupported {
                     received,
                     supported,
-                };
+                });
             }
         }
     }
-    RemoteBindingStatus::ServerUnavailable
+    match status_code.as_u16() {
+        300..=399 => Err(RemoteBindingFailure::UnexpectedRedirect {
+            status: status_code.as_u16(),
+        }),
+        401 => Err(RemoteBindingFailure::AuthResponseUntrusted),
+        404 | 405 | 426 => Err(RemoteBindingFailure::ServerUpgradeRequired),
+        421 => Err(RemoteBindingFailure::ReverseProxyMisconfigured),
+        429 => Err(RemoteBindingFailure::RateLimited),
+        500..=599 => Err(RemoteBindingFailure::ServerUnavailable {
+            status: status_code.as_u16(),
+        }),
+        _ => Err(RemoteBindingFailure::ContractMismatch {
+            status: status_code.as_u16(),
+        }),
+    }
+}
+
+fn classify_secure_http_error(error: sarmg_client_secure_http::Error) -> RemoteBindingFailure {
+    use sarmg_client_secure_http::Error;
+    match error {
+        Error::UnsafeUrl | Error::UnsafeScheme | Error::HttpsRequired | Error::DevelopmentOnly => {
+            RemoteBindingFailure::InvalidEndpoint
+        }
+        Error::ForbiddenAddress(address) => {
+            RemoteBindingFailure::ForbiddenAddress(if is_fake_ip_benchmark(address) {
+                ForbiddenAddressClass::FakeIpBenchmark
+            } else {
+                ForbiddenAddressClass::PrivateOrReserved
+            })
+        }
+        Error::Resolve => RemoteBindingFailure::DnsResolutionFailed,
+        Error::ResolveEmpty => RemoteBindingFailure::DnsResolutionEmpty,
+        Error::ResolveTooLarge => RemoteBindingFailure::DnsResolutionTooLarge,
+        Error::Connect => RemoteBindingFailure::ConnectionFailed,
+        Error::Tls => RemoteBindingFailure::TlsValidationFailed,
+        Error::Timeout => RemoteBindingFailure::Timeout,
+        Error::ResponseTooLarge => RemoteBindingFailure::ResponseTooLarge,
+        Error::Http => RemoteBindingFailure::HttpTransportFailed,
+        Error::Runtime => RemoteBindingFailure::RuntimeFailed,
+        Error::InvalidBudget | Error::RequestTooLarge => RemoteBindingFailure::RuntimeFailed,
+    }
+}
+
+fn is_fake_ip_benchmark(address: IpAddr) -> bool {
+    matches!(address, IpAddr::V4(value) if {
+        let [first, second, ..] = value.octets();
+        first == 198 && matches!(second, 18 | 19)
+    })
 }
 
 fn record_delivery_failure(error: &SendError) {
@@ -355,6 +481,10 @@ fn authenticated_headers(
 )]
 pub struct LocalTlsConfigurationError;
 
+#[derive(Debug, thiserror::Error)]
+#[error("credential does not use the current fixed encoding")]
+pub struct LocalCredentialCorrupt;
+
 /// Construct and discard the same transport used for delivery, without DNS,
 /// requests, credential locks, state creation or file repairs. Success validates
 /// local inputs only, not peer trust, expiry at handshake time or connectivity.
@@ -373,10 +503,18 @@ pub fn stored_credential_is_nonempty(config: &ClientConfig) -> std::io::Result<b
     let text = std::str::from_utf8(bytes.expose()).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "credential is not UTF-8")
     })?;
-    Ok(!text.trim().is_empty())
+    validate_current_token(text).map_err(std::io::Error::other)?;
+    Ok(true)
 }
 
 pub(crate) fn build_client(config: &ClientConfig) -> anyhow::Result<SecureHttpClient> {
+    build_client_with_timeout(config, config.request_timeout())
+}
+
+fn build_client_with_timeout(
+    config: &ClientConfig,
+    timeout: Duration,
+) -> anyhow::Result<SecureHttpClient> {
     let mut tls = TlsConfig::default();
     if config.tls_identity_password.is_some() && config.tls_identity_pkcs12.is_none() {
         bail!("tls_identity_password requires tls_identity_pkcs12");
@@ -433,7 +571,7 @@ pub(crate) fn build_client(config: &ClientConfig) -> anyhow::Result<SecureHttpCl
         tls.trust = TrustMode::CustomOnly(certificates);
     }
     Ok(SecureHttpClient::new(
-        config.request_timeout(),
+        timeout,
         ResponseBudget {
             max_header_bytes: 64 * 1024,
             max_body_bytes: MAX_ERROR_RESPONSE_BYTES,
@@ -452,11 +590,21 @@ pub(crate) fn read_secret(store: &StateReader, kind: &str) -> anyhow::Result<Sec
     );
     let token =
         std::str::from_utf8(bytes.expose()).with_context(|| format!("{kind} is not UTF-8"))?;
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        bail!("{kind} {} is empty", path.display());
+    validate_current_token(token)
+        .with_context(|| format!("{kind} {} is corrupt", path.display()))?;
+    Ok(SecretString::new(token.to_owned()))
+}
+
+pub(crate) fn validate_current_token(token: &str) -> Result<(), LocalCredentialCorrupt> {
+    if token.len() == 64
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(LocalCredentialCorrupt)
     }
-    Ok(SecretString::new(token))
 }
 
 /// 上报失败的性质。判据是**要让同一份报文最终被接受，需要改变什么**：
@@ -734,9 +882,9 @@ mod tests {
                 Some("application/json"),
                 &body,
             ),
-            RemoteBindingStatus::Authorized {
+            Ok(RemoteBindingStatus::Authorized {
                 host_id: host_id.clone()
-            }
+            })
         );
         assert_eq!(
             classify_credential_status_response(
@@ -745,7 +893,7 @@ mod tests {
                 Some("application/json"),
                 &body,
             ),
-            RemoteBindingStatus::Unauthorized
+            Err(RemoteBindingFailure::ContractMismatch { status: 200 })
         );
         assert_eq!(
             classify_credential_status_response(
@@ -754,7 +902,7 @@ mod tests {
                 Some("application/json"),
                 br#"{"code":"unauthorized","message":"denied","retryable":false}"#,
             ),
-            RemoteBindingStatus::Unauthorized
+            Ok(RemoteBindingStatus::Unauthorized)
         );
         assert_eq!(
             classify_credential_status_response(
@@ -763,8 +911,45 @@ mod tests {
                 Some("text/html"),
                 b"unauthorized",
             ),
-            RemoteBindingStatus::ServerUnavailable
+            Err(RemoteBindingFailure::AuthResponseUntrusted)
         );
+        for (status, expected) in [
+            (StatusCode::NOT_FOUND, "pairing_server_upgrade_required"),
+            (
+                StatusCode::MISDIRECTED_REQUEST,
+                "pairing_reverse_proxy_misconfigured",
+            ),
+            (StatusCode::TOO_MANY_REQUESTS, "pairing_rate_limited"),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "pairing_server_unavailable",
+            ),
+            (
+                StatusCode::TEMPORARY_REDIRECT,
+                "pairing_unexpected_redirect",
+            ),
+        ] {
+            let failure = classify_credential_status_response(
+                &host_id,
+                status,
+                Some("application/json"),
+                br#"{}"#,
+            )
+            .unwrap_err();
+            assert_eq!(failure.stable_code(), expected);
+        }
+    }
+
+    #[test]
+    fn fake_ip_and_other_forbidden_addresses_have_distinct_stable_codes() {
+        let fake = classify_secure_http_error(sarmg_client_secure_http::Error::ForbiddenAddress(
+            "198.18.0.56".parse().unwrap(),
+        ));
+        assert_eq!(fake.stable_code(), "pairing_dns_fake_ip_rejected");
+        let private = classify_secure_http_error(
+            sarmg_client_secure_http::Error::ForbiddenAddress("192.168.1.10".parse().unwrap()),
+        );
+        assert_eq!(private.stable_code(), "pairing_forbidden_address");
     }
     use crate::model::{ClientHealth, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot};
 
@@ -811,17 +996,17 @@ mod tests {
     }
 
     #[test]
-    fn persists_trimmed_host_token() {
+    fn accepts_only_the_current_exact_host_token_encoding() {
         let directory = std::env::temp_dir()
             .canonicalize()
             .expect("physical test temporary directory")
             .join(format!("host-monitor-token-{}", Uuid::new_v4()));
         crate::state_store::StateTransaction::begin(&directory)
             .unwrap()
-            .write(StateFile::Credential, " secret-token\n")
+            .write(StateFile::Credential, &"a".repeat(64))
             .unwrap();
         let token = read_secret(&StateReader::open(&directory).unwrap(), "host token").unwrap();
-        assert_eq!(token.expose(), "secret-token");
+        assert_eq!(token.expose(), "a".repeat(64));
         assert_eq!(format!("{token:?}/{token}"), "[REDACTED]/[REDACTED]");
 
         #[cfg(unix)]
@@ -838,6 +1023,17 @@ mod tests {
             );
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_truncated_uppercase_or_whitespace_wrapped_host_tokens() {
+        for token in [
+            "a".repeat(63),
+            "A".repeat(64),
+            format!("{}\n", "a".repeat(64)),
+        ] {
+            assert!(validate_current_token(&token).is_err());
+        }
     }
 
     #[test]

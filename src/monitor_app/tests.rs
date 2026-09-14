@@ -119,7 +119,7 @@ fn pairing_activation_loads_the_server_assigned_identity() {
 
     let generation = Uuid::new_v4();
     let request_id = Uuid::new_v4();
-    write_private_fixture(directory.join("client-token"), "paired-token").unwrap();
+    write_private_fixture(directory.join("client-token"), "c".repeat(64)).unwrap();
     write_private_fixture(directory.join("host-id"), instance_id.to_string()).unwrap();
     write_private_fixture(
         directory.join("auth-state.json"),

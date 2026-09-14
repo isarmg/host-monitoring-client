@@ -349,6 +349,7 @@ fn credential_diagnostics_are_bounded_read_only_and_reject_unsafe_files() {
     config.state_dir = fixture.state_dir.clone();
     fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let valid_credential = "d".repeat(64);
     let check = |expected: &str| {
         let before = local_tree_snapshot(&fixture.root);
         for name in ["status", "doctor"] {
@@ -357,8 +358,8 @@ fn credential_diagnostics_are_bounded_read_only_and_reject_unsafe_files() {
                 .args([name, "--output", "json", "--config"])
                 .arg(&config_path);
             let output = bounded_output(command);
-            assert!(!String::from_utf8_lossy(&output.stdout).contains("credential-secret-marker"));
-            assert!(!String::from_utf8_lossy(&output.stderr).contains("credential-secret-marker"));
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(&valid_credential));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(&valid_credential));
             let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             let credential = if name == "status" {
                 &value["checks"]["credential"]
@@ -375,7 +376,7 @@ fn credential_diagnostics_are_bounded_read_only_and_reject_unsafe_files() {
         }
     };
     check("missing");
-    fs::write(&credential, "credential-secret-marker").unwrap();
+    fs::write(&credential, &valid_credential).unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
     check("ok");
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o644)).unwrap();

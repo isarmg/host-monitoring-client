@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "host-monitor"
-version = "0.9.16"
+version = "0.9.17"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1696,6 +1696,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -1781,8 +1782,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-cli"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "serde",
  "serde_json",
@@ -1794,8 +1795,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-error"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "serde",
  "serde_json",
@@ -1804,8 +1805,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-fs-safety"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
@@ -1815,8 +1816,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-runtime"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "async-trait",
  "getrandom 0.4.3",
@@ -1835,20 +1836,22 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-secret"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "zeroize",
 ]
 
 [[package]]
 name = "sarmg-client-secure-http"
-version = "0.9.1"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=2fa783a1eb7aefde8e54e328f91d67aa9e1eb890#2fa783a1eb7aefde8e54e328f91d67aa9e1eb890"
+version = "0.9.2"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=4efc2c0fd42874489b312034ca20ebf95dccd122#4efc2c0fd42874489b312034ca20ebf95dccd122"
 dependencies = [
  "hickory-resolver",
  "ipnet",
+ "native-tls",
  "reqwest",
+ "rustls",
  "thiserror 2.0.20",
  "tokio",
  "url",

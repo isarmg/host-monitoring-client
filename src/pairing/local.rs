@@ -222,6 +222,26 @@ pub(crate) fn reporter_for_current_active_state(
         .map(|snapshot| snapshot.map(|snapshot| snapshot.reporter))
 }
 
+/// Read the revision bound to the currently authorized Active credential under
+/// the cross-process lock. A network result may only describe this revision;
+/// callers must retry when a service-side rotation changed it meanwhile.
+pub fn active_credential_revision(
+    config: &ClientConfig,
+) -> anyhow::Result<Option<(Uuid, Uuid)>> {
+    let transaction = lock_state(config)?;
+    if local_auth_state_unlocked(&transaction)?
+        .is_none_or(|state| state.status != CredentialAuthorization::Authorized)
+    {
+        return Ok(None);
+    }
+    let Some(state @ StoredPairingState::Active { .. }) = load_state(&transaction)? else {
+        return Ok(None);
+    };
+    let expected = binding_from_active_state(&state)?;
+    let binding = load_current_active_binding_unlocked(config, &transaction, &expected)?;
+    Ok(Some((binding.generation, binding.request_id)))
+}
+
 /// Revalidate the exact Active generation and durably converge the main
 /// configuration before a caller starts using its token.
 pub fn commit_active_configuration(

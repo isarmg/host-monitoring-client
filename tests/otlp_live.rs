@@ -19,7 +19,7 @@ fn otlp_test_config(endpoint: String) -> (ClientConfig, std::path::PathBuf, Uuid
     let request_id = Uuid::new_v4();
     let generation = Uuid::new_v4();
     let report_endpoint = "https://host-monitoring.example/api/v2/host-monitor/report";
-    write_private_fixture(state_dir.join("client-token"), "test-only-host-token")
+    write_private_fixture(state_dir.join("client-token"), "e".repeat(64))
         .expect("seed paired test credential");
     write_private_fixture(state_dir.join("host-id"), instance_id.to_string())
         .expect("seed paired test identity");

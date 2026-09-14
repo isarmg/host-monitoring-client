@@ -11,6 +11,7 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
+  HOST_MONITOR_BUILD_SHA: ${{ github.sha }}
   RUSTFLAGS: -D warnings
   RUSTUP_TOOLCHAIN: 1.98.0
 
@@ -118,6 +119,8 @@ jobs:
       - name: Build native Unix executable
         if: runner.os != 'Windows'
         run: cargo build --locked --release -p host-monitor --bin host-monitor
+      - name: Verify executable source identity
+        run: python scripts/verify-binary-identity.py
       - name: Build Linux DEB and RPM
         if: runner.os == 'Linux'
         shell: bash

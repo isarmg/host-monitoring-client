@@ -308,7 +308,7 @@ async fn otlp_uses_the_same_verified_mtls_transport() {
             ..ClientConfig::default()
         };
         let report = super::tests::report();
-        let reporter = Reporter::with_client_and_credential(
+        let mut reporter = Reporter::with_client_and_credential(
             &config,
             build_client(&config).unwrap(),
             CredentialSnapshot {
@@ -318,8 +318,16 @@ async fn otlp_uses_the_same_verified_mtls_transport() {
             },
         )
         .unwrap();
+        reporter.network_policy_override = Some(NetworkPolicy::PrivateDevice {
+            allow_loopback: true,
+            allow_link_local: false,
+        });
         let result = reporter.send_otlp(&report).await;
-        assert_eq!(result.is_ok(), identity.is_some());
+        assert_eq!(
+            result.is_ok(),
+            identity.is_some(),
+            "OTLP mTLS case {identity:?}: {result:?}"
+        );
         if let Err(error) = result {
             assert!(!format!("{error:#}/{error:?}").contains("tls-fixture-secret-marker"));
         }

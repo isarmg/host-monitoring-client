@@ -6,7 +6,10 @@ use host_monitor::{
 use sarmg_client_cli::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 fn service() -> Service {
     Service {
@@ -168,7 +171,7 @@ fn archive_queue(c: &ClientConfig, reason: &str) -> Result<Value> {
         "queue": snapshot,
     }))
 }
-fn local_status(c: &ClientConfig) -> Result<Value> {
+fn local_runtime_status(c: &ClientConfig) -> Result<Value> {
     let mut value =
         crate::monitor_app::diagnostics::local_status_snapshot(c).map_err(storage_error)?;
     let id = value["host_id"].as_str();
@@ -187,6 +190,11 @@ fn local_status(c: &ClientConfig) -> Result<Value> {
         && value["spool_invalid_batches"] == 0
         && value["status"] == "configured";
     value["health"] = json!(if healthy { "healthy" } else { "unknown" });
+    Ok(value)
+}
+
+fn local_status(c: &ClientConfig) -> Result<Value> {
+    let mut value = local_runtime_status(c)?;
     value["service"] = service()
         .status(std::time::Duration::from_secs(5))
         .unwrap_or(json!({"state":"unknown"}));
@@ -431,7 +439,7 @@ fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
     }
 }
 
-fn setup_service_args(args: &Args) -> Args {
+fn setup_service_args(args: &Args, timeout: Duration) -> Args {
     let options = args
         .options
         .iter()
@@ -447,7 +455,27 @@ fn setup_service_args(args: &Args) -> Args {
         words: vec![],
         options,
         format: args.format.clone(),
-        timeout: args.timeout,
+        timeout,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SetupDeadline {
+    expires_at: Instant,
+}
+
+impl SetupDeadline {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + timeout,
+        }
+    }
+
+    fn remaining(self, step: &'static str) -> Result<Duration> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| fail(9, "setup_deadline_exceeded").at_step(step))
     }
 }
 
@@ -476,41 +504,96 @@ fn startup_policy_matches(status: &Value, enabled: bool) -> bool {
 enum ExistingBindingState {
     None,
     LocalOnly,
-    RemoteVerified { host_id: String },
+    RemoteVerified {
+        host_id: String,
+    },
     Unauthorized,
-    ServerUnavailable,
-    ProtocolUnsupported { received: u16, supported: Vec<u16> },
+    RemoteFailure(host_monitor::transport::RemoteBindingFailure),
+    ServerChanged {
+        configured: String,
+        requested: String,
+    },
+    ConcurrentlyChanged,
+    ProtocolUnsupported {
+        received: u16,
+        supported: Vec<u16>,
+    },
+}
+
+fn requested_server_change(
+    existing: &pairing::LocalPairingStatus,
+    requested_endpoint: Option<&str>,
+) -> Option<ExistingBindingState> {
+    match (&existing.active_report_endpoint, requested_endpoint) {
+        (Some(configured), Some(requested)) if configured != requested => {
+            Some(ExistingBindingState::ServerChanged {
+                configured: configured.clone(),
+                requested: requested.to_owned(),
+            })
+        }
+        _ => None,
+    }
 }
 
 async fn existing_binding_state(
     c: &ClientConfig,
     existing: &pairing::LocalPairingStatus,
+    deadline: SetupDeadline,
 ) -> ExistingBindingState {
     if existing.active_report_endpoint.is_none() {
         return ExistingBindingState::None;
     }
-    let reporter = match host_monitor::transport::Reporter::new(c) {
-        Ok(reporter) => reporter,
-        Err(_) => return ExistingBindingState::LocalOnly,
-    };
-    match reporter.verify_remote_binding().await {
-        host_monitor::transport::RemoteBindingStatus::Authorized { host_id } => {
-            ExistingBindingState::RemoteVerified { host_id }
+    for _ in 0..3 {
+        let timeout = match deadline.remaining("pairing") {
+            Ok(timeout) => timeout,
+            Err(_) => {
+                return ExistingBindingState::RemoteFailure(
+                    host_monitor::transport::RemoteBindingFailure::Timeout,
+                );
+            }
+        };
+        let reporter = match host_monitor::transport::Reporter::new_with_timeout(c, timeout) {
+            Ok(reporter) => reporter,
+            Err(error)
+                if error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<host_monitor::transport::LocalCredentialCorrupt>()
+                        .is_some()
+                }) =>
+            {
+                return ExistingBindingState::RemoteFailure(
+                    host_monitor::transport::RemoteBindingFailure::LocalCredentialCorrupt,
+                );
+            }
+            Err(_) => return ExistingBindingState::LocalOnly,
+        };
+        let revision = reporter.credential_revision();
+        let result = reporter.verify_remote_binding().await;
+        match pairing::active_credential_revision(c) {
+            Ok(Some(current)) if current != revision => continue,
+            Ok(Some(_)) => {
+                return match result {
+                    Ok(host_monitor::transport::RemoteBindingStatus::Authorized { host_id }) => {
+                        ExistingBindingState::RemoteVerified { host_id }
+                    }
+                    Ok(host_monitor::transport::RemoteBindingStatus::Unauthorized) => {
+                        ExistingBindingState::Unauthorized
+                    }
+                    Ok(host_monitor::transport::RemoteBindingStatus::ProtocolUnsupported {
+                        received,
+                        supported,
+                    }) => ExistingBindingState::ProtocolUnsupported {
+                        received,
+                        supported,
+                    },
+                    Err(error) => ExistingBindingState::RemoteFailure(error),
+                };
+            }
+            Ok(None) => return ExistingBindingState::ConcurrentlyChanged,
+            Err(_) => return ExistingBindingState::LocalOnly,
         }
-        host_monitor::transport::RemoteBindingStatus::Unauthorized => {
-            ExistingBindingState::Unauthorized
-        }
-        host_monitor::transport::RemoteBindingStatus::ServerUnavailable => {
-            ExistingBindingState::ServerUnavailable
-        }
-        host_monitor::transport::RemoteBindingStatus::ProtocolUnsupported {
-            received,
-            supported,
-        } => ExistingBindingState::ProtocolUnsupported {
-            received,
-            supported,
-        },
     }
+    ExistingBindingState::ConcurrentlyChanged
 }
 
 fn record_setup_step(
@@ -538,9 +621,10 @@ async fn wait_for_healthy(
         let mut last_progress = 0;
         loop {
             let snapshot_config = config.clone();
-            let status = tokio::task::spawn_blocking(move || local_status(&snapshot_config))
-                .await
-                .map_err(storage_error)??;
+            let status =
+                tokio::task::spawn_blocking(move || local_runtime_status(&snapshot_config))
+                    .await
+                    .map_err(storage_error)??;
             if status["health"] == "healthy" {
                 return Ok(status);
             }
@@ -585,6 +669,7 @@ async fn wait_for_healthy(
 }
 
 async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
+    let deadline = SetupDeadline::new(args.timeout);
     if path != service().default_config {
         return Err(fail(2, "service_config_mismatch").at_step("configuration"));
     }
@@ -592,9 +677,14 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     let mut steps = Vec::new();
     c.validate(ClientCommand::Pair)
         .map_err(|_| fail(2, "invalid_configuration").at_step("configuration"))?;
+    let requested_server = args
+        .get("--server")
+        .map(host_monitor::pairing_input::validate_server_base)
+        .transpose()
+        .map_err(|_| fail(2, "invalid_server_origin").at_step("configuration"))?;
     let service_api = service();
     let initial_service = service_api
-        .status(args.timeout)
+        .status(deadline.remaining("service_inspection")?)
         .map_err(|error| error.at_step("service_inspection"))?;
     let (default_enable, default_start) = setup_service_intent(&initial_service);
     let existing =
@@ -607,11 +697,37 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     if existing.active_report_endpoint.is_some() && interactive {
         eprintln!("[setup] pairing: local_binding_found");
     }
-    let mut binding_state = existing_binding_state(&c, &existing).await;
-    if reauthorization_required && matches!(binding_state, ExistingBindingState::ServerUnavailable)
+    let requested_endpoint = requested_server
+        .as_ref()
+        .map(|server| format!("{server}{}", host_protocol::CLIENT_REPORT_PATH));
+    let service_verified_host = if initial_service["state"] == "running" {
+        local_runtime_status(&c).ok().and_then(|status| {
+            (status["health"] == "healthy")
+                .then(|| status["host_id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+    } else {
+        None
+    };
+    let mut binding_state = match requested_server_change(&existing, requested_endpoint.as_deref())
+    {
+        Some(change) => change,
+        _ if service_verified_host.is_some() => ExistingBindingState::RemoteVerified {
+            host_id: service_verified_host.expect("checked above"),
+        },
+        _ => existing_binding_state(&c, &existing, deadline).await,
+    };
+    if reauthorization_required
+        && matches!(
+            binding_state,
+            ExistingBindingState::RemoteFailure(
+                host_monitor::transport::RemoteBindingFailure::ServerUnavailable { .. }
+            )
+        )
     {
         binding_state = ExistingBindingState::Unauthorized;
     }
+    let mut recover_changed_server = false;
     let reuse_pairing = match &binding_state {
         ExistingBindingState::RemoteVerified { host_id } => {
             if interactive {
@@ -632,8 +748,40 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         ExistingBindingState::LocalOnly => {
             return Err(fail(8, "local_binding_incomplete").at_step("pairing"));
         }
-        ExistingBindingState::ServerUnavailable => {
-            return Err(fail(6, "pairing_server_unavailable").at_step("pairing"));
+        ExistingBindingState::RemoteFailure(failure) => {
+            let mut error = fail(6, failure.stable_code()).at_step("pairing");
+            error.detail = match failure {
+                host_monitor::transport::RemoteBindingFailure::ServerUnavailable { status }
+                | host_monitor::transport::RemoteBindingFailure::UnexpectedRedirect { status }
+                | host_monitor::transport::RemoteBindingFailure::ContractMismatch { status } => {
+                    Some(format!("http_status={status}"))
+                }
+                _ => None,
+            };
+            return Err(error);
+        }
+        ExistingBindingState::ServerChanged {
+            configured,
+            requested,
+        } => {
+            if interactive {
+                eprintln!("[setup] configured_server: {configured}");
+                eprintln!("[setup] requested_server: {requested}");
+                recover_changed_server = ask_yes_no(
+                    "Server changed. Recover the existing Host identity on the requested Server?",
+                    false,
+                )
+                .map_err(|error| error.at_step("pairing"))?;
+            } else {
+                recover_changed_server = args.has("--input-stdin");
+            }
+            if !recover_changed_server {
+                return Err(fail(5, "server_change_confirmation_required").at_step("pairing"));
+            }
+            false
+        }
+        ExistingBindingState::ConcurrentlyChanged => {
+            return Err(fail(6, "pairing_binding_changed_during_check").at_step("pairing"));
         }
         ExistingBindingState::ProtocolUnsupported {
             received,
@@ -674,11 +822,15 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         json!({"committed":true,"already_active":true})
     } else {
         let service_status = service_api
-            .status(args.timeout)
+            .status(deadline.remaining("service_quiesce")?)
             .map_err(|error| error.at_step("service_quiesce"))?;
         if service_status["state"] == "running" {
             let stopped = service_api
-                .change(&setup_service_args(args), "stop", &path)
+                .change(
+                    &setup_service_args(args, deadline.remaining("service_quiesce")?),
+                    "stop",
+                    &path,
+                )
                 .map_err(|error| error.at_step("service_quiesce"))?;
             if stopped["state"] == "running" {
                 return Err(fail(11, "service_state_unconfirmed").at_step("service_quiesce"));
@@ -689,7 +841,9 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
             && !has_protected_input
             && args.get("--server").is_none()
             && !args.has("--non-interactive");
-        let pair_words = if matches!(&binding_state, ExistingBindingState::Unauthorized) {
+        let pair_words = if matches!(&binding_state, ExistingBindingState::Unauthorized)
+            || recover_changed_server
+        {
             vec!["pair".into(), "recover".into()]
         } else if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
             vec!["pair".into(), "replace".into()]
@@ -700,6 +854,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         };
         let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
         let mut pair_args = setup_args(args, pair_words, interactive);
+        pair_args.timeout = deadline.remaining("pairing")?;
         if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
             let binding = host_monitor::client_identity::load(&c.state_dir)
                 .map_err(|error| storage_error(error).at_step("pairing"))?;
@@ -748,7 +903,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         (default_enable, default_start, default_start)
     };
     let registered = service_api
-        .verified_status(args.timeout, &path)
+        .verified_status(deadline.remaining("service_registration")?, &path)
         .map_err(|error| setup_failure(error, &pairing, "service_registration"))?;
     record_setup_step(
         &mut steps,
@@ -759,7 +914,11 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     );
     let policy_action = if enable { "enable" } else { "disable" };
     let policy_status = service_api
-        .change(&setup_service_args(args), policy_action, &path)
+        .change(
+            &setup_service_args(args, deadline.remaining("startup_policy")?),
+            policy_action,
+            &path,
+        )
         .map_err(|error| setup_failure(error, &pairing, "startup_policy"))?;
     if !startup_policy_matches(&policy_status, enable) {
         return Err(setup_failure(
@@ -777,7 +936,11 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     );
     let service_result = if start {
         let status = service_api
-            .change(&setup_service_args(args), "start", &path)
+            .change(
+                &setup_service_args(args, deadline.remaining("service_runtime")?),
+                "start",
+                &path,
+            )
             .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?;
         if status["state"] != "running" {
             return Err(setup_failure(
@@ -796,11 +959,15 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         status
     } else {
         let current = service_api
-            .verified_status(args.timeout, &path)
+            .verified_status(deadline.remaining("service_runtime")?, &path)
             .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?;
         let status = if current["state"] == "running" {
             service_api
-                .change(&setup_service_args(args), "stop", &path)
+                .change(
+                    &setup_service_args(args, deadline.remaining("service_runtime")?),
+                    "stop",
+                    &path,
+                )
                 .map_err(|error| setup_failure(error, &pairing, "service_runtime"))?
         } else {
             current
@@ -822,7 +989,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 "connection",
             ));
         }
-        match wait_for_healthy(&config, args.timeout, interactive).await {
+        match wait_for_healthy(&config, deadline.remaining("connection")?, interactive).await {
             Ok(status) => {
                 record_setup_step(
                     &mut steps,
@@ -1359,6 +1526,38 @@ mod setup_tests {
             child
                 .validate_options(&["--interactive", "--input-stdin", "--server"])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn requested_new_server_is_selected_before_any_old_binding_probe() {
+        let existing = pairing::LocalPairingStatus {
+            progress: None,
+            active_report_endpoint: Some(
+                "https://offline.example/api/v2/host-monitor/report".into(),
+            ),
+        };
+        let state = requested_server_change(
+            &existing,
+            Some("https://host.sarmg.org/api/v2/host-monitor/report"),
+        );
+        assert!(matches!(
+            state,
+            Some(ExistingBindingState::ServerChanged { configured, requested })
+                if configured.contains("offline.example") && requested.contains("host.sarmg.org")
+        ));
+    }
+
+    #[test]
+    fn setup_deadline_never_grants_each_phase_a_fresh_timeout() {
+        let deadline = SetupDeadline::new(Duration::from_secs(60));
+        assert!(deadline.remaining("pairing").unwrap() <= Duration::from_secs(60));
+        let expired = SetupDeadline {
+            expires_at: Instant::now(),
+        };
+        assert_eq!(
+            expired.remaining("connection").unwrap_err().code,
+            "setup_deadline_exceeded"
         );
     }
 

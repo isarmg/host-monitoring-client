@@ -77,7 +77,7 @@ mod tests {
             pairing_endpoint: config.pairing_endpoint(),
             report_endpoint: config.endpoint.clone(),
             bearer_secret: std::sync::Arc::new(sarmg_client_secret::SecretString::new(
-                "original-private-credential".into(),
+                "a".repeat(64),
             )),
         };
         persist_state_unlocked(&transaction, &activating).unwrap();
@@ -113,7 +113,7 @@ mod tests {
             crate::transport::read_secret(&transaction, "test credential")
                 .unwrap()
                 .expose(),
-            "original-private-credential"
+            "a".repeat(64)
         );
         for file in [
             StateFile::Identity,
@@ -1669,7 +1669,7 @@ mod tests {
         ));
         let config = test_config(directory.clone());
         crate::private_fs::ensure_private_directory(&directory).unwrap();
-        write_private_fixture(directory.join("client-token"), "current-long-lived-token").unwrap();
+        write_private_fixture(directory.join("client-token"), "b".repeat(64)).unwrap();
         let active_generation = Uuid::new_v4();
         let active_request_id = Uuid::new_v4();
         let active_instance_id = Uuid::new_v4();

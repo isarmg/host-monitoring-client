@@ -151,6 +151,7 @@ fn commit_activating_unlocked(
     };
     // Validate all durable identity components before replacing any credential.
     validate_active_binding(config, &binding)?;
+    crate::transport::validate_current_token(bearer_secret.expose())?;
     store.write(StateFile::Credential, bearer_secret.expose())?;
     store.write(StateFile::Identity, &instance_id.to_string())?;
     persist_active_binding_unlocked(config, store, &binding)?;
