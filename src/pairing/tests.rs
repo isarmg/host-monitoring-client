@@ -2,7 +2,6 @@
 mod tests {
     use std::{
         io::{Read, Write},
-        net::TcpListener,
         path::PathBuf,
         sync::mpsc,
         thread,
@@ -258,21 +257,19 @@ mod tests {
         assert!(format!("{error:#}").contains("browser pairing requires HTTPS"));
     }
 
-    fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
+    fn one_shot_pairing_server() -> (String, PathBuf, thread::JoinHandle<()>) {
         one_shot_pairing_server_with_activation_url(|request_id| format!("/activate/{request_id}"))
     }
 
     fn one_shot_pairing_server_with_activation_url(
         activation_url: impl FnOnce(Uuid) -> String + Send + 'static,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
+    ) -> (String, PathBuf, thread::JoinHandle<()>) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
         let request_id = Uuid::new_v4();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
+            let mut stream = server.accept();
             let mut request = [0_u8; 16 * 1024];
             let read = stream.read(&mut request).unwrap();
             assert!(
@@ -296,7 +293,7 @@ mod tests {
             stream.write_all(&body).unwrap();
             stream.flush().unwrap();
         });
-        (format!("http://{address}"), handle)
+        (origin, ca_path, handle)
     }
 
     #[tokio::test]
@@ -306,12 +303,14 @@ mod tests {
             Uuid::new_v4()
         ));
         crate::private_fs::ensure_private_directory(&directory).unwrap();
-        let (server, server_thread) = one_shot_pairing_server_with_activation_url(|request_id| {
-            format!("https://attacker.example/activate/{request_id}")
-        });
+        let (server, ca_path, server_thread) =
+            one_shot_pairing_server_with_activation_url(|request_id| {
+                format!("https://attacker.example/activate/{request_id}")
+            });
         let config = ClientConfig {
             endpoint: format!("{server}/api/v2/host-monitor/report"),
             pairing_endpoint: Some(format!("{server}/api/v2/host-monitor/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
             state_dir: directory.clone(),
             ..ClientConfig::default()
         };
@@ -336,16 +335,15 @@ mod tests {
         mpsc::Receiver<()>,
         mpsc::Sender<()>,
         thread::JoinHandle<()>,
+        PathBuf,
     ) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
         let (seen_tx, seen_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
+            let mut stream = server.accept();
             let mut request = [0_u8; 16 * 1024];
             let read = stream.read(&mut request).unwrap();
             assert!(
@@ -371,7 +369,7 @@ mod tests {
             stream.write_all(&body).unwrap();
             stream.flush().unwrap();
         });
-        (format!("http://{address}"), seen_rx, release_tx, handle)
+        (origin, seen_rx, release_tx, handle, ca_path)
     }
 
     fn delayed_activation_server(
@@ -381,16 +379,15 @@ mod tests {
         mpsc::Receiver<()>,
         mpsc::Sender<()>,
         thread::JoinHandle<()>,
+        PathBuf,
     ) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
         let (seen_tx, seen_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
+            let mut stream = server.accept();
             let mut request = [0_u8; 16 * 1024];
             let read = stream.read(&mut request).unwrap();
             assert!(
@@ -416,7 +413,7 @@ mod tests {
             stream.write_all(&body).unwrap();
             stream.flush().unwrap();
         });
-        (format!("http://{address}"), seen_rx, release_tx, handle)
+        (origin, seen_rx, release_tx, handle, ca_path)
     }
 
     #[test]
@@ -748,7 +745,7 @@ mod tests {
             StatusCode::FORBIDDEN,
             StatusCode::BAD_GATEWAY,
         ] {
-            let response = sarmg_client_secure_http::BoundedResponse {
+            let response = crate::transport::HttpResponse {
                 status,
                 headers: Default::default(),
                 body: b"reflected-pairing-secret".to_vec(),
@@ -859,20 +856,14 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            resolve_activation_url(
-                "http://127.0.0.1:8081/api/v2/host-monitor/pairing-requests",
-                "/activate/00000000-0000-4000-8000-000000000001",
-            )
-            .is_ok()
-        );
-        assert!(
-            resolve_activation_url(
-                "http://[::1]:8081/api/v2/host-monitor/pairing-requests",
-                "/activate/00000000-0000-4000-8000-000000000001",
-            )
-            .is_ok()
-        );
+        assert!(resolve_activation_url(
+            "http://127.0.0.1:8081/api/v2/host-monitor/pairing-requests",
+            "/activate/00000000-0000-4000-8000-000000000001",
+        ).is_err());
+        assert!(resolve_activation_url(
+            "http://[::1]:8081/api/v2/host-monitor/pairing-requests",
+            "/activate/00000000-0000-4000-8000-000000000001",
+        ).is_err());
     }
 
     #[test]
@@ -910,13 +901,14 @@ mod tests {
         ));
         crate::private_fs::ensure_private_directory(&directory).unwrap();
         let instance_id = Uuid::new_v4();
-        let (server, request_seen, release_response, server_thread) =
+        let (server, request_seen, release_response, server_thread, ca_path) =
             delayed_activation_server(instance_id);
         let generation = Uuid::new_v4();
         let request_id = Uuid::new_v4();
         let config = ClientConfig {
             endpoint: format!("{server}/api/v2/host-monitor/report"),
             pairing_endpoint: Some(format!("{server}/api/v2/host-monitor/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
             state_dir: directory.clone(),
             ..ClientConfig::default()
         };
@@ -1225,11 +1217,12 @@ mod tests {
                 "host-monitoring-confirmed-replace-{old_state}-{}",
                 Uuid::new_v4()
             ));
-            let (server, server_thread) = one_shot_pairing_server();
+            let (server, ca_path, server_thread) = one_shot_pairing_server();
             let mut config = ClientConfig {
                 endpoint: format!("{server}/api/v2/host-monitor/report"),
                 state_dir: directory.clone(),
                 replace_pending_pairing: true,
+                tls_ca_pem: Some(ca_path),
                 ..ClientConfig::default()
             };
             config.pairing_endpoint =
@@ -1281,7 +1274,7 @@ mod tests {
             std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("host-monitoring-delayed-active-{}", Uuid::new_v4()));
         crate::private_fs::ensure_private_directory(&directory).unwrap();
         let old_instance_id = Uuid::new_v4();
-        let (old_server, request_seen, release_response, old_thread) =
+        let (old_server, request_seen, release_response, old_thread, old_ca_path) =
             delayed_active_server(old_instance_id);
         let old_config_path = directory.join("config.json");
         let old_pairing_endpoint = format!("{old_server}/api/v2/host-monitor/pairing-requests");
@@ -1291,6 +1284,7 @@ mod tests {
             pairing_endpoint: Some(old_pairing_endpoint.clone()),
             state_dir: directory.clone(),
             config_path: Some(old_config_path.clone()),
+            tls_ca_pem: Some(old_ca_path),
             ..ClientConfig::default()
         };
         let old_config_bytes = serde_json::to_vec(&old_config).unwrap();
@@ -1319,13 +1313,14 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
 
-        let (new_server, new_thread) = one_shot_pairing_server();
+        let (new_server, new_ca_path, new_thread) = one_shot_pairing_server();
         let new_config = ClientConfig {
             endpoint: format!("{new_server}/api/v2/host-monitor/report"),
             pairing_endpoint: Some(format!("{new_server}/api/v2/host-monitor/pairing-requests")),
             state_dir: directory.clone(),
             config_path: Some(old_config_path.clone()),
             replace_pending_pairing: true,
+            tls_ca_pem: Some(new_ca_path),
             ..ClientConfig::default()
         };
         let new_session = start_or_resume(&new_config, &test_host()).await.unwrap();

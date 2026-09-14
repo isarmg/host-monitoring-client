@@ -19,8 +19,8 @@ mod tests {
         );
         fs::create_dir(&directory.0).unwrap();
         fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let https = crate::test_https::TestHttpsServer::new();
+        let origin = https.origin.clone();
         let endpoint = format!("{origin}/api/v2/host-monitor/report");
         let generation = Uuid::new_v4();
         let request_id = Uuid::new_v4();
@@ -64,6 +64,7 @@ mod tests {
         config.state_dir = directory.0.clone();
         config.jitter_percent = 0;
         config.request_timeout_seconds = 3;
+        config.tls_ca_pem = Some(https.ca_path.clone());
         let reporter = Reporter::new(&config).unwrap();
         let host = load_host_identity(&directory.0).unwrap();
         let spool = Spool::open(&directory.0, 1024 * 1024).unwrap();
@@ -77,26 +78,7 @@ mod tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            listener.set_nonblocking(true).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("fixture accept: {error}"),
-                }
-            };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
+            let mut stream = https.accept();
             let mut request = Vec::new();
             let mut chunk = [0; 4096];
             let read_deadline = Instant::now() + Duration::from_secs(3);

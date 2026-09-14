@@ -19,7 +19,7 @@ use host_protocol::{
     ClientPairingStatusResponse as PairingStatusResponse, HOST_PAIRING_PROTOCOL_VERSION,
     PairingStatus,
 };
-use sarmg_client_secure_http::{StatusCode, header};
+use reqwest::{StatusCode, header};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ use crate::{
     config::ClientConfig,
     model::HostIdentity,
     state_store::{StateFile, StateReader, StateTransaction},
-    transport::{Reporter, build_client},
+    transport::{Reporter, build_client, post_bounded},
 };
 
 mod activation;

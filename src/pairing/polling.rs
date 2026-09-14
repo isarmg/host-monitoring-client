@@ -43,8 +43,7 @@ pub async fn poll_existing(config: &ClientConfig) -> anyhow::Result<Option<Pairi
             header::AUTHORIZATION,
             pairing_authorization(&polling_secret)?,
     );
-    let response = client
-        .post_client(endpoint.as_str(), headers, Vec::new())
+    let response = post_bounded(&client, endpoint.as_str(), headers, Vec::new())
         .await
         .context("failed to poll browser pairing status")?;
     let status = response.status;
@@ -141,10 +140,10 @@ pub async fn poll_existing(config: &ClientConfig) -> anyhow::Result<Option<Pairi
 fn pairing_status_endpoint(
     pairing_endpoint: &str,
     request_id: Uuid,
-) -> anyhow::Result<sarmg_client_secure_http::Url> {
+) -> anyhow::Result<url::Url> {
     crate::config::validate_pairing_endpoint(pairing_endpoint)
         .context("stored pairing endpoint is unsafe")?;
-    let mut endpoint = sarmg_client_secure_http::Url::parse(pairing_endpoint)
+    let mut endpoint = url::Url::parse(pairing_endpoint)
         .context("stored pairing endpoint is not a valid URL")?;
     if endpoint.query().is_some() || endpoint.fragment().is_some() {
         bail!("stored pairing endpoint must not contain a query or fragment");

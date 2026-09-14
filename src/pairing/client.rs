@@ -1,5 +1,5 @@
+use reqwest::{StatusCode, header};
 use sarmg_client_secret::{SecretKey, SecretString};
-use sarmg_client_secure_http::{StatusCode, header};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -44,9 +44,7 @@ pub(super) fn json_headers() -> header::HeaderMap {
     headers
 }
 
-pub(super) fn pairing_response_content_type(
-    response: &sarmg_client_secure_http::BoundedResponse,
-) -> String {
+pub(super) fn pairing_response_content_type(response: &crate::transport::HttpResponse) -> String {
     let raw = response
         .headers
         .get(header::CONTENT_TYPE)
@@ -73,7 +71,7 @@ pub(super) fn pairing_content_type_for_diagnostics(content_type: &str) -> String
 }
 
 pub(super) fn pairing_origin_for_diagnostics(endpoint: &str) -> String {
-    sarmg_client_secure_http::Url::parse(endpoint)
+    url::Url::parse(endpoint)
         .ok()
         .map(|url| url.origin().ascii_serialization())
         .filter(|origin| origin != "null")

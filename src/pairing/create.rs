@@ -156,15 +156,19 @@ async fn finish_create_request(
         .context("stored report endpoint is unsafe")?;
     let client = build_client(config)?;
     let mode = inferred_mode(config, &host);
-    let response = client
-        .post_client(&pairing_endpoint, json_headers(), serde_json::to_vec(&CreatePairingRequest {
+    let response = post_bounded(
+        &client,
+        &pairing_endpoint,
+        json_headers(),
+        serde_json::to_vec(&CreatePairingRequest {
             protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
             mode,
             host: host.clone(),
             token_hash: sha256_hex(&bearer_secret),
             polling_secret_hash: sha256_hex(&polling_secret),
-        })?)
-        .await
+        })?,
+    )
+    .await
         .context("failed to create a browser pairing request")?;
     let status = response.status;
     let content_type = pairing_response_content_type(&response);

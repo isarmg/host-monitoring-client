@@ -72,7 +72,7 @@ fn otlp_test_config(endpoint: String) -> (ClientConfig, std::path::PathBuf, Uuid
 
 #[test]
 fn otlp_fixture_satisfies_the_current_active_binding_contract() {
-    let (config, state_dir, _) = otlp_test_config("http://127.0.0.1:4318/v1/metrics".into());
+    let (config, state_dir, _) = otlp_test_config("https://127.0.0.1:4318/v1/metrics".into());
     Reporter::new(&config).expect("current OTLP fixture must construct a reporter");
     std::fs::remove_dir_all(state_dir).expect("remove OTLP test state directory");
 }

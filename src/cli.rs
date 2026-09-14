@@ -1357,7 +1357,9 @@ fn execute(args: &Args) -> Result<Value> {
                     return Err(fail(2, "invalid_network_diagnostic"));
                 }
                 let config = load(&path)?;
-                return host_monitor::transport::network_probe(&config)
+                return tokio::runtime::Runtime::new()
+                    .map_err(storage_error)?
+                    .block_on(host_monitor::transport::network_probe(&config))
                     .map_err(|_| fail(6, "server_unavailable_or_untrusted"));
             }
             let mut normalized = vec![command.to_string()];

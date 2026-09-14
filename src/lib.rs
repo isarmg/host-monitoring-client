@@ -33,6 +33,8 @@ pub mod spool;
 mod state_lock;
 #[cfg(feature = "desktop")]
 mod state_store;
+#[cfg(test)]
+mod test_https;
 #[cfg(feature = "desktop")]
 mod tls_input;
 #[cfg(feature = "desktop")]
@@ -43,6 +45,9 @@ pub use collectors::SystemSampler;
 #[cfg(feature = "desktop")]
 pub use config::{ClientCommand, ClientConfig, OutputMode};
 pub use model::*;
+
+#[cfg(feature = "desktop")]
+pub const MAX_TLS_INPUT_BYTES: usize = 1024 * 1024;
 
 #[cfg(feature = "desktop")]
 pub mod maintenance;

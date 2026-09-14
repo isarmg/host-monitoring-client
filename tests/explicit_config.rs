@@ -217,12 +217,12 @@ fn tls_diagnostics_use_real_client_inputs_without_network_writes_or_secret_outpu
     let mut config = host_monitor::ClientConfig::default();
     config.state_dir = fixture.state_dir.clone();
     config.endpoint = format!(
-        "http://{}/api/v2/host-monitor/report",
+        "https://{}/api/v2/host-monitor/report",
         listener.local_addr().unwrap()
     );
     if cfg!(feature = "otlp") {
         config.otlp_endpoint = Some(format!(
-            "http://{}/v1/metrics",
+            "https://{}/v1/metrics",
             listener.local_addr().unwrap()
         ));
         config.otlp_token = Some(Arc::new(sarmg_client_secret::SecretString::new(
@@ -313,7 +313,7 @@ fn tls_diagnostics_use_real_client_inputs_without_network_writes_or_secret_outpu
         .write(true)
         .open(&ca)
         .unwrap()
-        .set_len(sarmg_client_secure_http::MAX_TLS_INPUT_BYTES as u64 + 1)
+        .set_len(host_monitor::MAX_TLS_INPUT_BYTES as u64 + 1)
         .unwrap();
     check(&config, false);
     config.tls_ca_pem = Some(fixture.root.join("missing.pem"));
@@ -495,7 +495,7 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
     let path = fixture.root.join("config.json");
     let mut config = host_monitor::ClientConfig::default();
     config.state_dir = fixture.state_dir.clone();
-    config.endpoint = "http://127.0.0.1:9/api/v2/host-monitor/report".into();
+    config.endpoint = "https://127.0.0.1:9/api/v2/host-monitor/report".into();
     fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     for args in [vec!["run"], vec!["once"], vec!["doctor", "--delivery"]] {

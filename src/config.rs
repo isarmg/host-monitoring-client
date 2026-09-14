@@ -588,7 +588,7 @@ impl ClientConfig {
             {
                 return format!("{base}{}", host_protocol::CLIENT_PAIRING_REQUESTS_PATH);
             }
-            let mut url = sarmg_client_secure_http::Url::parse(&self.endpoint)
+            let mut url = url::Url::parse(&self.endpoint)
                 .expect("endpoint was validated before pairing_endpoint is used");
             url.set_path(host_protocol::CLIENT_PAIRING_REQUESTS_PATH);
             url.set_query(None);
@@ -672,21 +672,22 @@ fn non_empty(value: String) -> Option<String> {
 }
 
 pub(crate) fn validate_endpoint(endpoint: &str) -> anyhow::Result<()> {
-    let url = sarmg_client_secure_http::Url::parse(endpoint)
-        .with_context(|| format!("invalid telemetry endpoint {endpoint}"))?;
-    sarmg_client_secure_http::client_network_policy(&url)
-        .map(|_| ())
-        .with_context(|| {
-            format!("telemetry endpoint violates Foundation network policy: {endpoint}")
-        })
+    let url = url::Url::parse(endpoint).context("invalid telemetry endpoint")?;
+    anyhow::ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+            && url.port_or_known_default().is_some(),
+        "telemetry endpoint must use trusted HTTPS"
+    );
+    Ok(())
 }
 
 pub(crate) fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
-    validate_endpoint(endpoint).context(
-        "browser pairing requires HTTPS except when the endpoint is on the local loopback host",
-    )?;
-    let url =
-        sarmg_client_secure_http::Url::parse(endpoint).expect("validate_endpoint accepted the URL");
+    validate_endpoint(endpoint).context("browser pairing requires HTTPS")?;
+    let url = url::Url::parse(endpoint).expect("validate_endpoint accepted the URL");
     if url.query().is_some() || url.fragment().is_some() {
         bail!(
             "pairing_endpoint must not contain a query or fragment because request-specific paths \
@@ -794,7 +795,7 @@ fn print_help() {
          Pairing example:\n\
            host-monitor pair --server https://host-monitoring.example.com\n\n\
          Common options: --config PATH [--endpoint REPORT_URL] [--output human|json]\n\
-         Production delivery requires HTTPS; HTTP is restricted to loopback development.\n\
+         Delivery requires HTTPS.\n\
          Doctor delivery opt-in: --delivery (sends one report and may drain queued reports)\n\
          Pair options: [--server URL | --endpoint REPORT_URL]\n\
            [--replace-pending-pairing]\n\
@@ -809,7 +810,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn installer_default_is_valid_under_release_network_policy() {
+    fn installer_default_is_valid_under_release_https_policy() {
         let config = super::ClientConfig::default();
         assert!(config.endpoint.starts_with("https://"));
         config.validate(super::ClientCommand::Run).unwrap();
@@ -1142,8 +1143,8 @@ mod tests {
     #[test]
     fn rejects_remote_plaintext_by_default() {
         assert!(validate_endpoint("http://192.0.2.10/report").is_err());
-        assert!(validate_endpoint("http://127.0.0.1/report").is_ok());
-        assert!(validate_endpoint("http://[::1]/report").is_ok());
+        assert!(validate_endpoint("http://127.0.0.1/report").is_err());
+        assert!(validate_endpoint("http://[::1]/report").is_err());
         assert!(validate_endpoint("https://telemetry.example/report").is_ok());
     }
 
@@ -1162,10 +1163,7 @@ mod tests {
                 .validate(ClientCommand::Run)
                 .expect_err("pairing request paths cannot be appended after a query or fragment");
             let message = format!("{error:#}");
-            assert!(
-                message.contains("query or fragment")
-                    || message.contains("Foundation network policy")
-            );
+            assert!(message.contains("query or fragment") || message.contains("trusted HTTPS"));
         }
 
         assert!(validate_endpoint("https://telemetry.example/report?tenant=one").is_ok());

@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::fs;
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{error::Error as _, sync::Arc, time::Duration};
 
 #[cfg(feature = "otlp")]
 use std::io::Write;
@@ -8,13 +8,11 @@ use std::io::Write;
 use anyhow::{Context, bail};
 #[cfg(feature = "otlp")]
 use flate2::{Compression, write::GzEncoder};
+use reqwest::{Certificate, Identity, Request, StatusCode, header};
 use sarmg_client_error::ErrorEnvelope;
 use sarmg_client_runtime::{ClientIdentity, CredentialSnapshot, CredentialStore};
 use sarmg_client_secret::{SecretBytes, SecretString};
-use sarmg_client_secure_http::{Certificate, Identity, StatusCode, header};
-#[cfg(test)]
-use sarmg_client_secure_http::{NetworkPolicy, Url};
-use sarmg_client_secure_http::{ResponseBudget, SecureHttpClient, TlsConfig, TrustMode};
+use url::Url;
 use uuid::Uuid;
 
 use host_protocol::{
@@ -28,26 +26,15 @@ pub enum RemoteBindingStatus {
     ProtocolUnsupported { received: u16, supported: Vec<u16> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForbiddenAddressClass {
-    FakeIpBenchmark,
-    PrivateOrReserved,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteBindingFailure {
     InvalidEndpoint,
     LocalCredentialCorrupt,
-    DnsResolutionFailed,
-    DnsResolutionEmpty,
-    DnsResolutionTooLarge,
-    ForbiddenAddress(ForbiddenAddressClass),
     ConnectionFailed,
     Timeout,
     TlsValidationFailed,
     ResponseTooLarge,
     HttpTransportFailed,
-    RuntimeFailed,
     ServerUpgradeRequired,
     ReverseProxyMisconfigured,
     RateLimited,
@@ -62,21 +49,11 @@ impl RemoteBindingFailure {
         match self {
             Self::InvalidEndpoint => "pairing_invalid_endpoint",
             Self::LocalCredentialCorrupt => "local_credential_corrupt",
-            Self::DnsResolutionFailed | Self::DnsResolutionEmpty | Self::DnsResolutionTooLarge => {
-                "pairing_dns_resolution_failed"
-            }
-            Self::ForbiddenAddress(ForbiddenAddressClass::FakeIpBenchmark) => {
-                "pairing_dns_fake_ip_rejected"
-            }
-            Self::ForbiddenAddress(ForbiddenAddressClass::PrivateOrReserved) => {
-                "pairing_forbidden_address"
-            }
             Self::ConnectionFailed => "pairing_connection_failed",
             Self::Timeout => "pairing_connection_timeout",
             Self::TlsValidationFailed => "pairing_tls_untrusted",
             Self::ResponseTooLarge => "pairing_response_too_large",
             Self::HttpTransportFailed => "pairing_http_transport_failed",
-            Self::RuntimeFailed => "pairing_http_runtime_failed",
             Self::ServerUpgradeRequired => "pairing_server_upgrade_required",
             Self::ReverseProxyMisconfigured => "pairing_reverse_proxy_misconfigured",
             Self::RateLimited => "pairing_rate_limited",
@@ -96,6 +73,120 @@ use crate::{
 };
 
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HttpTransportError {
+    #[error("connection failed")]
+    Connection,
+    #[error("connection timed out")]
+    Timeout,
+    #[error("TLS validation failed")]
+    Tls,
+    #[error("response exceeds size limit")]
+    ResponseTooLarge,
+    #[error("HTTP transport failed")]
+    Transport,
+}
+
+pub(crate) struct HttpResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: header::HeaderMap,
+    pub(crate) body: Vec<u8>,
+}
+
+fn classify_reqwest_error(error: &reqwest::Error) -> HttpTransportError {
+    if error.is_timeout() {
+        return HttpTransportError::Timeout;
+    }
+    let mut source = error.source();
+    while let Some(current) = source {
+        let message = current.to_string().to_ascii_lowercase();
+        if ["certificate", "tls", "ssl", "handshake"]
+            .iter()
+            .any(|marker| message.contains(marker))
+        {
+            return HttpTransportError::Tls;
+        }
+        source = current.source();
+    }
+    if error.is_connect() {
+        HttpTransportError::Connection
+    } else {
+        HttpTransportError::Transport
+    }
+}
+
+pub(crate) async fn execute_bounded(
+    client: &reqwest::Client,
+    request: Request,
+    maximum: usize,
+) -> Result<HttpResponse, HttpTransportError> {
+    if request.body().is_some_and(|body| {
+        body.as_bytes()
+            .is_none_or(|bytes| bytes.len() > MAX_REQUEST_BYTES)
+    }) {
+        return Err(HttpTransportError::Transport);
+    }
+    let response = client
+        .execute(request)
+        .await
+        .map_err(|error| classify_reqwest_error(&error))?;
+    let header_bytes = response
+        .headers()
+        .iter()
+        .try_fold(0usize, |total, (name, value)| {
+            total
+                .checked_add(name.as_str().len())?
+                .checked_add(value.as_bytes().len())
+        });
+    if header_bytes.is_none_or(|size| size > MAX_HEADER_BYTES)
+        || response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(HttpTransportError::ResponseTooLarge);
+    }
+    let status = response.status();
+    let headers = response.headers().clone();
+    let mut body = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| classify_reqwest_error(&error))?
+    {
+        if body
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|length| length > maximum)
+        {
+            return Err(HttpTransportError::ResponseTooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+pub(crate) async fn post_bounded(
+    client: &reqwest::Client,
+    url: &str,
+    headers: header::HeaderMap,
+    body: Vec<u8>,
+) -> Result<HttpResponse, HttpTransportError> {
+    let request = client
+        .post(url)
+        .headers(headers)
+        .body(body)
+        .build()
+        .map_err(|_| HttpTransportError::Transport)?;
+    execute_bounded(client, request, MAX_ERROR_RESPONSE_BYTES).await
+}
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "transport/tls_tests.rs"]
@@ -104,7 +195,7 @@ mod tls_tests;
 #[derive(Clone)]
 pub struct Reporter {
     identity: ClientIdentity,
-    client: SecureHttpClient,
+    client: reqwest::Client,
     endpoint: String,
     token: Arc<SecretString>,
     credential_revision: (Uuid, Uuid),
@@ -113,8 +204,6 @@ pub struct Reporter {
     otlp_endpoint: Option<String>,
     #[cfg_attr(not(feature = "otlp"), allow(dead_code))]
     otlp_token: Option<Arc<SecretString>>,
-    #[cfg(test)]
-    network_policy_override: Option<NetworkPolicy>,
 }
 
 impl Reporter {
@@ -154,14 +243,7 @@ impl Reporter {
     }
 
     pub async fn verify_remote_binding(&self) -> Result<RemoteBindingStatus, RemoteBindingFailure> {
-        let reporter = self.clone();
-        tokio::task::spawn_blocking(move || reporter.verify_remote_binding_blocking())
-            .await
-            .map_err(|_| RemoteBindingFailure::RuntimeFailed)?
-    }
-
-    fn verify_remote_binding_blocking(&self) -> Result<RemoteBindingStatus, RemoteBindingFailure> {
-        let mut url = match sarmg_client_secure_http::Url::parse(&self.endpoint) {
+        let mut url = match Url::parse(&self.endpoint) {
             Ok(url) => url,
             Err(_) => return Err(RemoteBindingFailure::InvalidEndpoint),
         };
@@ -172,9 +254,14 @@ impl Reporter {
             Ok(headers) => headers,
             Err(_) => return Err(RemoteBindingFailure::LocalCredentialCorrupt),
         };
-        let response = match self.client.get_client_blocking(url.as_str(), headers) {
+        let request = match self.client.get(url).headers(headers).build() {
+            Ok(request) => request,
+            Err(_) => return Err(RemoteBindingFailure::InvalidEndpoint),
+        };
+        let response = match execute_bounded(&self.client, request, MAX_ERROR_RESPONSE_BYTES).await
+        {
             Ok(response) => response,
-            Err(error) => return Err(classify_secure_http_error(error)),
+            Err(error) => return Err(classify_http_error(error)),
         };
         let content_type = response
             .headers
@@ -196,7 +283,7 @@ impl Reporter {
 
     fn with_client_and_credential(
         config: &ClientConfig,
-        client: SecureHttpClient,
+        client: reqwest::Client,
         credential: CredentialSnapshot<(Uuid, Uuid)>,
     ) -> anyhow::Result<Self> {
         if credential.secret.expose().trim().is_empty() {
@@ -215,8 +302,6 @@ impl Reporter {
             credential_revision: credential.revision,
             otlp_endpoint: config.otlp_endpoint.clone(),
             otlp_token: config.otlp_token.clone(),
-            #[cfg(test)]
-            network_policy_override: None,
         })
     }
 
@@ -236,19 +321,8 @@ impl Reporter {
         let headers = authenticated_headers(&self.token, "application/json")
             .map_err(|_| SendError::Transient("invalid host authorization header".into()))
             .inspect_err(record_delivery_failure)?;
-        #[cfg(test)]
-        let response = if let Some(policy) = self.network_policy_override {
-            let url = Url::parse(&self.endpoint)
-                .map_err(|_| SendError::Transient("invalid report endpoint".into()))?;
-            self.client
-                .post_with_policy(policy, url, headers, body)
-                .await
-        } else {
-            self.client.post_client(&self.endpoint, headers, body).await
-        };
-        #[cfg(not(test))]
-        let response = self.client.post_client(&self.endpoint, headers, body).await;
-        let response = response
+        let response = post_bounded(&self.client, &self.endpoint, headers, body)
+            .await
             .map_err(|error| {
                 SendError::Transient(format!("Host Monitoring request failed: {error}"))
             })
@@ -309,17 +383,7 @@ impl Reporter {
             header::CONTENT_ENCODING,
             header::HeaderValue::from_static("gzip"),
         );
-        #[cfg(test)]
-        let response = if let Some(policy) = self.network_policy_override {
-            let url = Url::parse(endpoint)?;
-            self.client
-                .post_with_policy(policy, url, headers, body)
-                .await?
-        } else {
-            self.client.post_client(endpoint, headers, body).await?
-        };
-        #[cfg(not(test))]
-        let response = self.client.post_client(endpoint, headers, body).await?;
+        let response = post_bounded(&self.client, endpoint, headers, body).await?;
         Ok(ensure_generic_success(response.status, "OTLP")?)
     }
 
@@ -412,37 +476,14 @@ fn classify_credential_status_response(
     }
 }
 
-fn classify_secure_http_error(error: sarmg_client_secure_http::Error) -> RemoteBindingFailure {
-    use sarmg_client_secure_http::Error;
+fn classify_http_error(error: HttpTransportError) -> RemoteBindingFailure {
     match error {
-        Error::UnsafeUrl | Error::UnsafeScheme | Error::HttpsRequired | Error::DevelopmentOnly => {
-            RemoteBindingFailure::InvalidEndpoint
-        }
-        Error::ForbiddenAddress(address) => {
-            RemoteBindingFailure::ForbiddenAddress(if is_fake_ip_benchmark(address) {
-                ForbiddenAddressClass::FakeIpBenchmark
-            } else {
-                ForbiddenAddressClass::PrivateOrReserved
-            })
-        }
-        Error::Resolve => RemoteBindingFailure::DnsResolutionFailed,
-        Error::ResolveEmpty => RemoteBindingFailure::DnsResolutionEmpty,
-        Error::ResolveTooLarge => RemoteBindingFailure::DnsResolutionTooLarge,
-        Error::Connect => RemoteBindingFailure::ConnectionFailed,
-        Error::Tls => RemoteBindingFailure::TlsValidationFailed,
-        Error::Timeout => RemoteBindingFailure::Timeout,
-        Error::ResponseTooLarge => RemoteBindingFailure::ResponseTooLarge,
-        Error::Http => RemoteBindingFailure::HttpTransportFailed,
-        Error::Runtime => RemoteBindingFailure::RuntimeFailed,
-        Error::InvalidBudget | Error::RequestTooLarge => RemoteBindingFailure::RuntimeFailed,
+        HttpTransportError::Connection => RemoteBindingFailure::ConnectionFailed,
+        HttpTransportError::Timeout => RemoteBindingFailure::Timeout,
+        HttpTransportError::Tls => RemoteBindingFailure::TlsValidationFailed,
+        HttpTransportError::ResponseTooLarge => RemoteBindingFailure::ResponseTooLarge,
+        HttpTransportError::Transport => RemoteBindingFailure::HttpTransportFailed,
     }
-}
-
-fn is_fake_ip_benchmark(address: IpAddr) -> bool {
-    matches!(address, IpAddr::V4(value) if {
-        let [first, second, ..] = value.octets();
-        first == 198 && matches!(second, 18 | 19)
-    })
 }
 
 fn record_delivery_failure(error: &SendError) {
@@ -507,15 +548,28 @@ pub fn stored_credential_is_nonempty(config: &ClientConfig) -> std::io::Result<b
     Ok(true)
 }
 
-pub(crate) fn build_client(config: &ClientConfig) -> anyhow::Result<SecureHttpClient> {
+pub(crate) fn build_client(config: &ClientConfig) -> anyhow::Result<reqwest::Client> {
     build_client_with_timeout(config, config.request_timeout())
 }
 
 fn build_client_with_timeout(
     config: &ClientConfig,
     timeout: Duration,
-) -> anyhow::Result<SecureHttpClient> {
-    let mut tls = TlsConfig::default();
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(timeout.min(Duration::from_secs(10)))
+        .redirect(reqwest::redirect::Policy::none())
+        .http2_max_header_list_size(MAX_HEADER_BYTES as u32)
+        .user_agent(format!("host-monitor/{}", env!("CARGO_PKG_VERSION")));
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        builder = builder.tls_backend_native();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        builder = builder.tls_backend_rustls();
+    }
     if config.tls_identity_password.is_some() && config.tls_identity_pkcs12.is_none() {
         bail!("tls_identity_password requires tls_identity_pkcs12");
     }
@@ -529,8 +583,8 @@ fn build_client_with_timeout(
         }
         if let Some(path) = &config.tls_identity_pem {
             let bytes = crate::tls_input::read(path, crate::tls_input::TlsInput::Identity)
-                .with_context(|| format!("failed to read TLS identity {}", path.display()))?;
-            tls.identity = Some(
+                .context("failed to read TLS identity")?;
+            builder = builder.identity(
                 Identity::from_pem(bytes.expose())
                     .map_err(|_| anyhow::anyhow!("invalid TLS PEM identity"))?,
             );
@@ -545,8 +599,8 @@ fn build_client_with_timeout(
         }
         if let Some(path) = &config.tls_identity_pkcs12 {
             let bytes = crate::tls_input::read(path, crate::tls_input::TlsInput::Identity)
-                .with_context(|| format!("failed to read TLS identity {}", path.display()))?;
-            tls.identity = Some(
+                .context("failed to read TLS identity")?;
+            builder = builder.identity(
                 Identity::from_pkcs12_der(
                     bytes.expose(),
                     config
@@ -561,24 +615,16 @@ fn build_client_with_timeout(
     }
     if let Some(path) = &config.tls_ca_pem {
         let bytes = crate::tls_input::read(path, crate::tls_input::TlsInput::TrustAnchor)
-            .with_context(|| format!("failed to read TLS CA {}", path.display()))?;
+            .context("failed to read TLS CA")?;
         let certificates = Certificate::from_pem_bundle(bytes.expose())
             .map_err(|_| anyhow::anyhow!("invalid TLS CA certificate"))?;
         anyhow::ensure!(
             !certificates.is_empty(),
             "TLS CA input contains no certificates"
         );
-        tls.trust = TrustMode::CustomOnly(certificates);
+        builder = builder.tls_certs_merge(certificates);
     }
-    Ok(SecureHttpClient::new(
-        timeout,
-        ResponseBudget {
-            max_header_bytes: 64 * 1024,
-            max_body_bytes: MAX_ERROR_RESPONSE_BYTES,
-        },
-        tls,
-        format!("host-monitor/{}", env!("CARGO_PKG_VERSION")),
-    )?)
+    Ok(builder.build()?)
 }
 
 pub(crate) fn read_secret(store: &StateReader, kind: &str) -> anyhow::Result<SecretString> {
@@ -801,12 +847,14 @@ fn ensure_generic_success(status: StatusCode, target: &str) -> Result<(), SendEr
 }
 
 /// Explicit unauthenticated network diagnostic using the configured protected TLS inputs.
-pub fn network_probe(config: &ClientConfig) -> anyhow::Result<serde_json::Value> {
-    let mut url = sarmg_client_secure_http::Url::parse(&config.endpoint)?;
+pub async fn network_probe(config: &ClientConfig) -> anyhow::Result<serde_json::Value> {
+    let mut url = Url::parse(&config.endpoint)?;
     url.set_path("/health/live");
     url.set_query(None);
     url.set_fragment(None);
-    let response = build_client(config)?.get_client_blocking(url.as_str(), Default::default())?;
+    let client = build_client(config)?;
+    let request = client.get(url).build()?;
+    let response = execute_bounded(&client, request, MAX_ERROR_RESPONSE_BYTES).await?;
     anyhow::ensure!(
         response.status.is_success(),
         "public health endpoint unavailable"
@@ -940,17 +988,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fake_ip_and_other_forbidden_addresses_have_distinct_stable_codes() {
-        let fake = classify_secure_http_error(sarmg_client_secure_http::Error::ForbiddenAddress(
-            "198.18.0.56".parse().unwrap(),
-        ));
-        assert_eq!(fake.stable_code(), "pairing_dns_fake_ip_rejected");
-        let private = classify_secure_http_error(
-            sarmg_client_secure_http::Error::ForbiddenAddress("192.168.1.10".parse().unwrap()),
-        );
-        assert_eq!(private.stable_code(), "pairing_forbidden_address");
-    }
     use crate::model::{ClientHealth, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot};
 
     pub(super) fn report() -> ClientReport {

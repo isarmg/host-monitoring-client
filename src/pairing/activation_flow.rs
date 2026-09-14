@@ -70,12 +70,16 @@ pub async fn activate_pending_with_code(
     let request_id_text = request_id.to_string();
     let mut headers = json_headers();
     headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
-    let response = client
-        .post_client(endpoint.as_str(), headers, serde_json::to_vec(&ActivatePairingRequest {
+    let response = post_bounded(
+        &client,
+        endpoint.as_str(),
+        headers,
+        serde_json::to_vec(&ActivatePairingRequest {
             request_id: &request_id_text,
             activation_code,
-        })?)
-        .await
+        })?,
+    )
+    .await
         .context("failed to submit the one-time authorization key")?;
     let status = response.status;
     let content_type = pairing_response_content_type(&response);

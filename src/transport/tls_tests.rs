@@ -248,7 +248,7 @@ async fn real_tls_and_mtls_verify_peer_identity_before_report_delivery() {
             config.validate_for_diagnostics().unwrap();
             validate_local_tls(&config).unwrap();
             let report = super::tests::report();
-            let mut reporter = Reporter::with_client_and_credential(
+            let reporter = Reporter::with_client_and_credential(
                 &config,
                 build_client(&config).unwrap(),
                 CredentialSnapshot {
@@ -258,10 +258,6 @@ async fn real_tls_and_mtls_verify_peer_identity_before_report_delivery() {
                 },
             )
             .unwrap();
-            reporter.network_policy_override = Some(NetworkPolicy::PrivateDevice {
-                allow_loopback: true,
-                allow_link_local: false,
-            });
             let result = reporter.send_host_monitoring(&report).await;
             assert_eq!(
                 result.is_ok(),
@@ -308,7 +304,7 @@ async fn otlp_uses_the_same_verified_mtls_transport() {
             ..ClientConfig::default()
         };
         let report = super::tests::report();
-        let mut reporter = Reporter::with_client_and_credential(
+        let reporter = Reporter::with_client_and_credential(
             &config,
             build_client(&config).unwrap(),
             CredentialSnapshot {
@@ -318,10 +314,6 @@ async fn otlp_uses_the_same_verified_mtls_transport() {
             },
         )
         .unwrap();
-        reporter.network_policy_override = Some(NetworkPolicy::PrivateDevice {
-            allow_loopback: true,
-            allow_link_local: false,
-        });
         let result = reporter.send_otlp(&report).await;
         assert_eq!(
             result.is_ok(),

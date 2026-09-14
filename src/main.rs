@@ -1,5 +1,7 @@
 mod cli;
 mod monitor_app;
+#[cfg(test)]
+mod test_https;
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]
     if host_monitor::service::windows_service_requested(std::env::args_os()) {

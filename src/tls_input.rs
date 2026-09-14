@@ -1,10 +1,11 @@
-//! Product TLS file selection; safety and the byte ceiling belong to Foundation.
+//! Product TLS file selection with a local, bounded input ceiling.
 
 #[cfg(unix)]
 use anyhow::Context;
 use sarmg_client_secret::SecretBytes;
-use sarmg_client_secure_http::MAX_TLS_INPUT_BYTES;
 use std::path::Path;
+
+use crate::MAX_TLS_INPUT_BYTES;
 
 #[derive(Clone, Copy)]
 pub(crate) enum TlsInput {
