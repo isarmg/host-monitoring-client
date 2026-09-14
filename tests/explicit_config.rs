@@ -416,7 +416,7 @@ impl Drop for Fixture {
     }
 }
 
-fn assert_pair_rejects_config_before_state_changes(config_path: &Path) {
+fn assert_pair_rejects_config_before_state_changes(config_path: &Path, expected_code: &str) {
     let fixture = Fixture::new();
     let output = fixture
         .command()
@@ -433,7 +433,7 @@ fn assert_pair_rejects_config_before_state_changes(config_path: &Path) {
         .unwrap();
     assert!(!output.status.success());
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["error"]["code"], "unsafe_or_corrupt_state");
+    assert_eq!(result["error"]["code"], expected_code);
     assert!(
         !fixture.state_dir.exists(),
         "pairing touched state before rejecting the explicit config"
@@ -447,8 +447,8 @@ fn pair_rejects_missing_and_directory_configs_before_state_changes() {
     let directory = fixture.root.join("directory-config");
     fs::create_dir(&directory).unwrap();
 
-    assert_pair_rejects_config_before_state_changes(&missing);
-    assert_pair_rejects_config_before_state_changes(&directory);
+    assert_pair_rejects_config_before_state_changes(&missing, "config_missing");
+    assert_pair_rejects_config_before_state_changes(&directory, "state_read_failed");
 }
 
 #[test]

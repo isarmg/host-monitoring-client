@@ -251,16 +251,16 @@ impl sarmg_client_runtime::ClientDeliveryDriver for HostDeliveryDriver {
         match pairing::mark_reauth_required_if_current(
             &self.config,
             self.reporter.credential_revision(),
-            format!("the host credential was rejected with HTTP 401: {error}"),
+            format!("delivery requires authorization recovery: {}", error.stable_code()),
         ) {
             Ok(false) => {
-                warn!("ignored a stale 401 from a reporter superseded by newer pairing state");
+                warn!("ignored a stale authorization failure from a superseded reporter");
                 DeliveryResponse::RetryAfterRecovery
             }
             Ok(true) => {
                 error!(
                     client_state = "reauth_required",
-                    "the paired credential is no longer accepted. Run `host-monitor pair --server <url>`: {error}"
+                    "the paired credential or protocol is no longer accepted. Run `host-monitor pair recover --interactive`: {error}"
                 );
                 DeliveryResponse::AuthorizationRequired
             }

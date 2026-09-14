@@ -2,6 +2,15 @@ pub async fn start_or_resume(
     config: &ClientConfig,
     host: &HostIdentity,
 ) -> anyhow::Result<PairingSession> {
+    start_or_resume_with_mode(config, host, PairMode::Fresh).await
+}
+
+pub async fn start_or_resume_with_mode(
+    config: &ClientConfig,
+    host: &HostIdentity,
+    mode: PairMode,
+) -> anyhow::Result<PairingSession> {
+    validate_requested_mode(config, host, mode)?;
     match prepare_start(config, host)? {
         PairingStart::Waiting(session) => Ok(session),
         PairingStart::Create(state) => finish_create_request(config, *state).await,
@@ -146,8 +155,11 @@ async fn finish_create_request(
         .validate_durable_report_endpoint(&report_endpoint)
         .context("stored report endpoint is unsafe")?;
     let client = build_client(config)?;
+    let mode = inferred_mode(config, &host);
     let response = client
         .post_client(&pairing_endpoint, json_headers(), serde_json::to_vec(&CreatePairingRequest {
+            protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
+            mode,
             host: host.clone(),
             token_hash: sha256_hex(&bearer_secret),
             polling_secret_hash: sha256_hex(&polling_secret),
@@ -157,8 +169,10 @@ async fn finish_create_request(
     let status = response.status;
     let content_type = pairing_response_content_type(&response);
     let body = response.body;
-    ensure_pairing_status(
+    ensure_pairing_response(
         status,
+        &content_type,
+        &body,
         &[StatusCode::OK, StatusCode::CREATED],
         "create pairing request",
     )?;
@@ -212,4 +226,24 @@ async fn finish_create_request(
         expires_at,
         poll_interval: created.poll_interval,
     })
+}
+
+fn inferred_mode(config: &ClientConfig, host: &HostIdentity) -> PairMode {
+    match crate::client_identity::load(&config.state_dir) {
+        Ok(identity) if identity.instance_id() == host.id => PairMode::RecoverIdentity,
+        _ => PairMode::Fresh,
+    }
+}
+
+fn validate_requested_mode(
+    config: &ClientConfig,
+    host: &HostIdentity,
+    requested: PairMode,
+) -> anyhow::Result<()> {
+    let inferred = inferred_mode(config, host);
+    anyhow::ensure!(
+        requested == inferred,
+        "pairing mode does not match the selected durable Host identity"
+    );
+    Ok(())
 }

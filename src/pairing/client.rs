@@ -110,6 +110,49 @@ pub(super) fn ensure_pairing_status(
     let _ = operation;
     Err(super::PairingHttpError {
         status: status.as_u16(),
+        code: None,
+        received: None,
+        supported: Vec::new(),
+    }
+    .into())
+}
+
+pub(super) fn ensure_pairing_response(
+    status: StatusCode,
+    content_type: &str,
+    body: &[u8],
+    allowed: &[StatusCode],
+    operation: &str,
+) -> anyhow::Result<()> {
+    if allowed.contains(&status) {
+        return Ok(());
+    }
+    let _ = operation;
+    let envelope = (pairing_content_type_for_diagnostics(content_type) == "application/json")
+        .then(|| serde_json::from_slice::<sarmg_client_error::ErrorEnvelope>(body).ok())
+        .flatten();
+    let protocol = envelope.as_ref().filter(|error| {
+        status == StatusCode::BAD_REQUEST
+            && error.code.as_str() == "unsupported_client_protocol"
+            && !error.retryable
+    });
+    let received = protocol
+        .and_then(|error| error.details.get("received"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+    let supported: Vec<u16> = protocol
+        .and_then(|error| error.details.get("supported"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_u64().and_then(|v| u16::try_from(v).ok()))
+        .collect();
+    Err(super::PairingHttpError {
+        status: status.as_u16(),
+        code: (received.is_some() && !supported.is_empty())
+            .then_some("unsupported_client_protocol"),
+        received,
+        supported,
     }
     .into())
 }

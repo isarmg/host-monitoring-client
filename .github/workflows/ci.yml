@@ -60,6 +60,11 @@ jobs:
       - name: Test
         # Linux tests generate ephemeral keys and run a loopback Python TLS peer.
         run: cargo test --locked -p host-monitor
+      - name: Validate current pairing JSON against latest Server
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 https://github.com/isarmg/host-monitoring-server.git "$RUNNER_TEMP/host-monitoring-server"
+          cargo run --locked --quiet --manifest-path "$RUNNER_TEMP/host-monitoring-server/Cargo.toml" -p host-monitoring-server --example validate-client-pairing < contracts/host-pairing-v1.json
       - name: Check without optional features
         run: cargo check --locked -p host-monitor --no-default-features --all-targets
       - name: Check OTLP only

@@ -17,7 +17,17 @@ use sarmg_client_secure_http::{NetworkPolicy, Url};
 use sarmg_client_secure_http::{ResponseBudget, SecureHttpClient, TlsConfig, TrustMode};
 use uuid::Uuid;
 
-use host_protocol::ClientReportAck;
+use host_protocol::{
+    ClientReportAck, CredentialStatus, CredentialStatusResponse, HOST_PAIRING_PROTOCOL_VERSION,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteBindingStatus {
+    Authorized { host_id: String },
+    Unauthorized,
+    ProtocolUnsupported { received: u16, supported: Vec<u16> },
+    ServerUnavailable,
+}
 
 use crate::{
     config::ClientConfig,
@@ -78,6 +88,41 @@ impl Reporter {
         &self.identity
     }
 
+    pub async fn verify_remote_binding(&self) -> RemoteBindingStatus {
+        let reporter = self.clone();
+        tokio::task::spawn_blocking(move || reporter.verify_remote_binding_blocking())
+            .await
+            .unwrap_or(RemoteBindingStatus::ServerUnavailable)
+    }
+
+    fn verify_remote_binding_blocking(&self) -> RemoteBindingStatus {
+        let mut url = match sarmg_client_secure_http::Url::parse(&self.endpoint) {
+            Ok(url) => url,
+            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+        };
+        url.set_path(host_protocol::CLIENT_CREDENTIAL_STATUS_PATH);
+        url.set_query(None);
+        url.set_fragment(None);
+        let headers = match authenticated_headers(&self.token, "application/json") {
+            Ok(headers) => headers,
+            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+        };
+        let response = match self.client.get_client_blocking(url.as_str(), headers) {
+            Ok(response) => response,
+            Err(_) => return RemoteBindingStatus::ServerUnavailable,
+        };
+        let content_type = response
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        classify_credential_status_response(
+            self.identity.instance_id(),
+            response.status,
+            content_type,
+            &response.body,
+        )
+    }
+
     fn validate_report_identity(&self, report: &ClientReport) -> anyhow::Result<()> {
         self.identity
             .ensure_matches(&crate::client_identity::for_instance(&report.host.id)?)?;
@@ -111,14 +156,21 @@ impl Reporter {
     }
 
     pub async fn send_host_monitoring(&self, report: &ClientReport) -> Result<(), SendError> {
+        crate::runtime_status::observe(
+            "last_delivery_attempt_at",
+            serde_json::json!(chrono::Utc::now().timestamp()),
+        );
         let (bounded, body) = report_contract::encode_report_body(report)
-            .map_err(|error| SendError::Permanent(format!("invalid Client report: {error}")))?;
+            .map_err(|error| SendError::Permanent(format!("invalid Client report: {error}")))
+            .inspect_err(record_delivery_failure)?;
         // A different valid identity is not an ACK or permanent content rejection.
         // Keep the record and current credential; never send it with another identity's token.
         self.validate_report_identity(&bounded)
-            .map_err(|_| SendError::IdentityMismatch)?;
+            .map_err(|_| SendError::IdentityMismatch)
+            .inspect_err(record_delivery_failure)?;
         let headers = authenticated_headers(&self.token, "application/json")
-            .map_err(|_| SendError::Transient("invalid host authorization header".into()))?;
+            .map_err(|_| SendError::Transient("invalid host authorization header".into()))
+            .inspect_err(record_delivery_failure)?;
         #[cfg(test)]
         let response = if let Some(policy) = self.network_policy_override {
             let url = Url::parse(&self.endpoint)
@@ -131,9 +183,12 @@ impl Reporter {
         };
         #[cfg(not(test))]
         let response = self.client.post_client(&self.endpoint, headers, body).await;
-        let response = response.map_err(|error| {
-            SendError::Transient(format!("Host Monitoring request failed: {error}"))
-        })?;
+        let response = response
+            .map_err(|error| {
+                SendError::Transient(format!("Host Monitoring request failed: {error}"))
+            })
+            .inspect_err(record_delivery_failure)?;
+        let response_status = response.status.as_u16();
         let content_type = response
             .headers
             .get(header::CONTENT_TYPE)
@@ -144,6 +199,19 @@ impl Reporter {
             crate::runtime_status::observe(
                 "last_ack_at",
                 serde_json::json!(chrono::Utc::now().timestamp()),
+            );
+            crate::runtime_status::observe("last_delivery_result", serde_json::json!("accepted"));
+            crate::runtime_status::observe("last_http_status", serde_json::json!(202));
+            crate::runtime_status::observe("last_error_code", serde_json::Value::Null);
+        } else if let Err(error) = &result {
+            crate::runtime_status::observe("last_delivery_result", serde_json::json!("rejected"));
+            crate::runtime_status::observe(
+                "last_http_status",
+                serde_json::Value::from(response_status),
+            );
+            crate::runtime_status::observe(
+                "last_error_code",
+                serde_json::json!(error.stable_code()),
             );
         }
         result
@@ -184,6 +252,82 @@ impl Reporter {
     pub async fn send_otlp(&self, _report: &ClientReport) -> anyhow::Result<()> {
         Ok(())
     }
+}
+
+fn classify_credential_status_response(
+    expected_host_id: &str,
+    status_code: StatusCode,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> RemoteBindingStatus {
+    if status_code == StatusCode::OK && content_type.is_some_and(is_application_json) {
+        let Ok(status) = serde_json::from_slice::<CredentialStatusResponse>(body) else {
+            return RemoteBindingStatus::ServerUnavailable;
+        };
+        let CredentialStatus::Authorized = status.status;
+        if status.protocol_version != HOST_PAIRING_PROTOCOL_VERSION {
+            return RemoteBindingStatus::ProtocolUnsupported {
+                received: HOST_PAIRING_PROTOCOL_VERSION,
+                supported: vec![status.protocol_version],
+            };
+        }
+        if status.host_id == status.instance_id && status.host_id == expected_host_id {
+            return RemoteBindingStatus::Authorized {
+                host_id: status.host_id,
+            };
+        }
+        return RemoteBindingStatus::Unauthorized;
+    }
+    let envelope = content_type
+        .filter(|value| is_application_json(value))
+        .and_then(|_| serde_json::from_slice::<ErrorEnvelope>(body).ok());
+    if status_code == StatusCode::UNAUTHORIZED
+        && envelope
+            .as_ref()
+            .is_some_and(|error| error.code.as_str() == "unauthorized" && !error.retryable)
+    {
+        return RemoteBindingStatus::Unauthorized;
+    }
+    if status_code == StatusCode::BAD_REQUEST
+        && let Some(error) = envelope
+        && error.code.as_str() == "unsupported_client_protocol"
+        && !error.retryable
+    {
+        let received = error
+            .details
+            .get("received")
+            .and_then(|value| value.as_u64());
+        let supported = error
+            .details
+            .get("supported")
+            .and_then(|value| value.as_array());
+        if let (Some(received), Some(supported)) = (received, supported)
+            && let Ok(received) = u16::try_from(received)
+        {
+            let supported: Vec<u16> = supported
+                .iter()
+                .filter_map(|value| value.as_u64().and_then(|v| u16::try_from(v).ok()))
+                .collect();
+            if !supported.is_empty() {
+                return RemoteBindingStatus::ProtocolUnsupported {
+                    received,
+                    supported,
+                };
+            }
+        }
+    }
+    RemoteBindingStatus::ServerUnavailable
+}
+
+fn record_delivery_failure(error: &SendError) {
+    crate::runtime_status::observe("last_delivery_result", serde_json::json!("rejected"));
+    crate::runtime_status::observe(
+        "last_http_status",
+        error
+            .http_status()
+            .map_or(serde_json::Value::Null, serde_json::Value::from),
+    );
+    crate::runtime_status::observe("last_error_code", serde_json::json!(error.stable_code()));
 }
 
 fn authenticated_headers(
@@ -338,6 +482,9 @@ pub enum SendError {
     /// 或替换凭据。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
+    /// The authenticated Server returned the stable current protocol-mismatch envelope.
+    #[error("{0}")]
+    UnsupportedProtocol(String),
     /// 网络故障或服务端暂时不可用，保留记录并退避重试。
     #[error("{0}")]
     Transient(String),
@@ -350,7 +497,25 @@ impl SendError {
 
     /// 凭据已失效，需要创建新实例并再次配对后才可能成功。
     pub fn is_unauthorized(&self) -> bool {
-        matches!(self, Self::Unauthorized(_))
+        matches!(self, Self::Unauthorized(_) | Self::UnsupportedProtocol(_))
+    }
+
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::Permanent(_) => "invalid_report",
+            Self::Unauthorized(_) => "unauthorized",
+            Self::UnsupportedProtocol(_) => "unsupported_client_protocol",
+            Self::Transient(_) => "server_unavailable",
+        }
+    }
+
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Unauthorized(_) => Some(401),
+            Self::UnsupportedProtocol(_) => Some(400),
+            _ => None,
+        }
     }
 }
 
@@ -417,6 +582,7 @@ pub fn classify_host_monitoring_response(
         Some("payload_too_large") => "payload_too_large",
         Some("unauthorized") => "unauthorized",
         Some("client_host_mismatch") => "client_host_mismatch",
+        Some("unsupported_client_protocol") => "unsupported_client_protocol",
         _ => "unrecognized error response",
     };
     let message = format!("Host Monitoring rejected telemetry with HTTP {status}: {detail}");
@@ -424,6 +590,11 @@ pub fn classify_host_monitoring_response(
     // 同一份报文仍可能被接受。
     match status {
         StatusCode::BAD_REQUEST => match envelope.as_ref() {
+            Some(error)
+                if error.code.as_str() == "unsupported_client_protocol" && !error.retryable =>
+            {
+                Err(SendError::UnsupportedProtocol(message))
+            }
             Some(error) if error.code.as_str() == "bad_request" && !error.retryable => {
                 Err(SendError::Permanent(message))
             }
@@ -544,6 +715,56 @@ mod tests {
         )
         .unwrap_err();
         assert!(!format!("{error:?}/{error}").contains("private-credential"));
+    }
+
+    #[test]
+    fn credential_status_requires_the_strict_contract_and_matching_identity() {
+        let host_id = Uuid::new_v4().to_string();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "status": "authorized",
+            "host_id": host_id,
+            "instance_id": host_id,
+            "protocol_version": HOST_PAIRING_PROTOCOL_VERSION,
+        }))
+        .unwrap();
+        assert_eq!(
+            classify_credential_status_response(
+                &host_id,
+                StatusCode::OK,
+                Some("application/json"),
+                &body,
+            ),
+            RemoteBindingStatus::Authorized {
+                host_id: host_id.clone()
+            }
+        );
+        assert_eq!(
+            classify_credential_status_response(
+                &Uuid::new_v4().to_string(),
+                StatusCode::OK,
+                Some("application/json"),
+                &body,
+            ),
+            RemoteBindingStatus::Unauthorized
+        );
+        assert_eq!(
+            classify_credential_status_response(
+                &host_id,
+                StatusCode::UNAUTHORIZED,
+                Some("application/json"),
+                br#"{"code":"unauthorized","message":"denied","retryable":false}"#,
+            ),
+            RemoteBindingStatus::Unauthorized
+        );
+        assert_eq!(
+            classify_credential_status_response(
+                &host_id,
+                StatusCode::UNAUTHORIZED,
+                Some("text/html"),
+                b"unauthorized",
+            ),
+            RemoteBindingStatus::ServerUnavailable
+        );
     }
     use crate::model::{ClientHealth, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot};
 
@@ -801,6 +1022,20 @@ mod tests {
                 .expect_err("the current server contract rejected the report permanently");
             assert!(error.is_permanent());
         }
+    }
+
+    #[test]
+    fn stable_protocol_mismatch_requires_reauthorization_and_preserves_version_details() {
+        let error = classify_host_monitoring_response(
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            br#"{"code":"unsupported_client_protocol","message":"unsupported","retryable":false,"details":{"received":2,"supported":[1]}}"#,
+        )
+        .expect_err("the explicit protocol rejection must not be treated as report content loss");
+        assert!(matches!(error, SendError::UnsupportedProtocol(_)));
+        assert!(error.is_unauthorized());
+        assert_eq!(error.stable_code(), "unsupported_client_protocol");
+        assert_eq!(error.http_status(), Some(400));
     }
 
     #[test]

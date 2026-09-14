@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "mode": "fresh",
+  "host": {
+    "id": "018f1f4b-7a5d-7b5f-8d31-123456789abc",
+    "os": "windows",
+    "os_version": null,
+    "kernel_version": null,
+    "arch": "x86_64",
+    "client_version": "0.9.999"
+  },
+  "token_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "polling_secret_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

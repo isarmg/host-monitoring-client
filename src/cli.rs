@@ -24,9 +24,44 @@ fn service() -> Service {
 }
 fn load(path: &Path) -> Result<ClientConfig> {
     let (mut c, _) = ClientConfig::load_selected_config(Some(path), ClientCommand::Probe)
-        .map_err(storage_error)?;
+        .map_err(state_read_error)?;
     c.config_path = Some(path.to_owned());
     Ok(c)
+}
+
+fn state_read_error(error: anyhow::Error) -> Failure {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    }) {
+        return fail(4, "config_missing");
+    }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    }) {
+        return fail(3, "administrator_privileges_required");
+    }
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+    {
+        return fail(8, "state_read_failed");
+    }
+    storage_error(error)
+}
+
+fn config_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(fail(3, "administrator_privileges_required"))
+        }
+        Err(_) => Err(fail(8, "state_read_failed")),
+    }
 }
 fn revision_of(c: &ClientConfig) -> Result<String> {
     Ok(revision(&serde_json::to_vec(c).map_err(storage_error)?))
@@ -48,6 +83,90 @@ fn queue(c: &ClientConfig) -> Result<Value> {
         }
         Err(e) => Err(storage_error(e)),
     }
+}
+
+fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive path is not a physical directory",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(path)?;
+        }
+        Err(error) => return Err(error),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn archive_queue(c: &ClientConfig, reason: &str) -> Result<Value> {
+    if reason != "server-state-lost" {
+        return Err(fail(2, "unsupported_archive_reason"));
+    }
+    let snapshot = queue(c)?;
+    if snapshot["pending_batches"] == 0 && snapshot["quarantined"] == 0 {
+        return Err(fail(4, "queue_empty"));
+    }
+    let identity = host_monitor::client_identity::load(&c.state_dir).map_err(storage_error)?;
+    let spool = c.state_dir.join("spool");
+    let spool_metadata = std::fs::symlink_metadata(&spool).map_err(storage_error)?;
+    if spool_metadata.file_type().is_symlink() || !spool_metadata.is_dir() {
+        return Err(fail(8, "unsafe_or_corrupt_state"));
+    }
+    let retired = c.state_dir.join("retired-bindings");
+    ensure_private_directory(&retired).map_err(storage_error)?;
+    let host = retired.join(identity.instance_id());
+    ensure_private_directory(&host).map_err(storage_error)?;
+    let archive_id = format!(
+        "{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.6fZ"),
+        uuid::Uuid::new_v4().simple()
+    );
+    let destination = host.join(archive_id);
+    ensure_private_directory(&destination).map_err(storage_error)?;
+    let archived_spool = destination.join("spool");
+    std::fs::rename(&spool, &archived_spool).map_err(storage_error)?;
+    let manifest = json!({
+        "format": 1,
+        "reason": reason,
+        "host_id": identity.instance_id(),
+        "archived_at": chrono::Utc::now(),
+        "queue": snapshot,
+    });
+    let manifest_path = destination.join("manifest.json");
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&manifest_path)?;
+        serde_json::to_writer_pretty(&mut file, &manifest).map_err(std::io::Error::other)?;
+        file.write_all(b"\n")?;
+        file.sync_all()
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::rename(&archived_spool, &spool);
+        let _ = std::fs::remove_dir(&destination);
+        return Err(storage_error(error));
+    }
+    Ok(json!({
+        "archived": true,
+        "host_id": identity.instance_id(),
+        "archive": destination,
+        "queue": snapshot,
+    }))
 }
 fn local_status(c: &ClientConfig) -> Result<Value> {
     let mut value =
@@ -88,6 +207,14 @@ impl Drop for PairInput {
 }
 fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Failure {
     if let Some(http) = error.downcast_ref::<pairing::PairingHttpError>() {
+        if http.code == Some("unsupported_client_protocol") {
+            let mut failure = fail(10, "pairing_protocol_unsupported");
+            failure.detail = Some(format!(
+                "client_protocol={:?};server_supported={:?}",
+                http.received, http.supported
+            ));
+            return failure;
+        }
         return match http.status {
             401 | 403 => fail(7, "pairing_authorization_rejected"),
             408 | 429 | 500..=599 => fail(6, "pairing_server_unavailable"),
@@ -108,6 +235,7 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
         .map_err(|_| fail(2, "invalid_configuration"))?;
     let resume = args.words.get(1).is_some_and(|s| s == "resume");
     let replace = args.words.get(1).is_some_and(|s| s == "replace");
+    let recover = args.words.get(1).is_some_and(|s| s == "recover");
     if resume && (args.has("--input-stdin") || args.has("--interactive") || args.has("--server")) {
         return Err(fail(2, "resume_uses_existing_transaction"));
     }
@@ -146,7 +274,7 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
     if resume && existing.progress.is_none() {
         return Err(fail(4, "no_pairing_transaction"));
     }
-    if existing.active_report_endpoint.is_some() && !resume && !replace {
+    if existing.active_report_endpoint.is_some() && !resume && !replace && !recover {
         return Err(fail(5, "binding_already_active_use_pair_replace"));
     }
     if replace {
@@ -164,7 +292,7 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
         }
         c.replace_pending_pairing = true;
     }
-    if !resume {
+    if !resume && !recover {
         let pending = queue(&c)?;
         if pending["pending_batches"] != 0 || pending["quarantined"] != 0 {
             return Err(fail(5, "old_binding_queue_not_empty"));
@@ -172,8 +300,22 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
     }
     let operation = async {
         if !resume {
-            let host = host_monitor::collectors::transient_host_identity(uuid::Uuid::new_v4());
-            let session = pairing::start_or_resume(&c, &host)
+            let (host, mode) = if recover {
+                (
+                    host_monitor::collectors::load_host_identity(&c.state_dir)
+                        .map_err(storage_error)?,
+                    pairing::PairMode::RecoverIdentity,
+                )
+            } else {
+                (
+                    host_monitor::collectors::transient_host_identity(uuid::Uuid::new_v4()),
+                    pairing::PairMode::Fresh,
+                )
+            };
+            if recover {
+                c.replace_pending_pairing = true;
+            }
+            let session = pairing::start_or_resume_with_mode(&c, &host, mode)
                 .await
                 .map_err(|e| pairing_failure(e, 6, "pairing_create_unconfirmed"))?;
             if let Some(i) = &input {
@@ -330,11 +472,45 @@ fn startup_policy_matches(status: &Value, enabled: bool) -> bool {
     }
 }
 
-fn can_reuse_pairing(
+#[derive(Debug)]
+enum ExistingBindingState {
+    None,
+    LocalOnly,
+    RemoteVerified { host_id: String },
+    Unauthorized,
+    ServerUnavailable,
+    ProtocolUnsupported { received: u16, supported: Vec<u16> },
+}
+
+async fn existing_binding_state(
+    c: &ClientConfig,
     existing: &pairing::LocalPairingStatus,
-    reauthorization_required: bool,
-) -> bool {
-    existing.active_report_endpoint.is_some() && !reauthorization_required
+) -> ExistingBindingState {
+    if existing.active_report_endpoint.is_none() {
+        return ExistingBindingState::None;
+    }
+    let reporter = match host_monitor::transport::Reporter::new(c) {
+        Ok(reporter) => reporter,
+        Err(_) => return ExistingBindingState::LocalOnly,
+    };
+    match reporter.verify_remote_binding().await {
+        host_monitor::transport::RemoteBindingStatus::Authorized { host_id } => {
+            ExistingBindingState::RemoteVerified { host_id }
+        }
+        host_monitor::transport::RemoteBindingStatus::Unauthorized => {
+            ExistingBindingState::Unauthorized
+        }
+        host_monitor::transport::RemoteBindingStatus::ServerUnavailable => {
+            ExistingBindingState::ServerUnavailable
+        }
+        host_monitor::transport::RemoteBindingStatus::ProtocolUnsupported {
+            received,
+            supported,
+        } => ExistingBindingState::ProtocolUnsupported {
+            received,
+            supported,
+        },
+    }
 }
 
 fn record_setup_step(
@@ -350,17 +526,61 @@ fn record_setup_step(
     steps.push(json!({"step":step,"status":status,"evidence":evidence}));
 }
 
-async fn wait_for_healthy(c: &ClientConfig, timeout: std::time::Duration) -> Result<Value> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let status = local_status(c)?;
-        if status["health"] == "healthy" {
-            return Ok(status);
+async fn wait_for_healthy(
+    c: &ClientConfig,
+    timeout: std::time::Duration,
+    interactive: bool,
+) -> Result<Value> {
+    let started = tokio::time::Instant::now();
+    let total = timeout.as_secs();
+    let config = c.clone();
+    let operation = async move {
+        let mut last_progress = 0;
+        loop {
+            let snapshot_config = config.clone();
+            let status = tokio::task::spawn_blocking(move || local_status(&snapshot_config))
+                .await
+                .map_err(storage_error)??;
+            if status["health"] == "healthy" {
+                return Ok(status);
+            }
+            let elapsed = started.elapsed().as_secs();
+            if interactive && elapsed >= last_progress + 5 {
+                last_progress = elapsed;
+                eprintln!(
+                    "[setup] connection: waiting ({}/{total} seconds)",
+                    elapsed.min(total)
+                );
+                if let Some(code) = status["runtime"]["last_error_code"].as_str() {
+                    eprintln!("[setup] connection: last_failure={code}");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(fail(9, "connection_unconfirmed"));
+    };
+    tokio::select! {
+        result = tokio::time::timeout(timeout, operation) => match result {
+            Ok(result) => result,
+            Err(_) => {
+                let mut error = fail(9, "connection_unconfirmed");
+                if let Ok(identity) = host_monitor::client_identity::load(&c.state_dir)
+                    && let Some(runtime) = host_monitor::runtime_status::read(
+                        &c.state_dir,
+                        Some(identity.instance_id()),
+                    )
+                {
+                    let code = runtime["last_error_code"].as_str().unwrap_or("no_acknowledgement");
+                    let status = runtime["last_http_status"].as_u64();
+                    error.detail = Some(format!("last_error_code={code};last_http_status={status:?}"));
+                }
+                Err(error)
+            }
+        },
+        _ = tokio::signal::ctrl_c() => {
+            let mut error = fail(130, "interrupted_connection_wait");
+            error.detail = Some("pairing remains committed; rerun status --check to verify later".into());
+            Err(error)
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
@@ -384,7 +604,49 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         .is_some_and(|state| {
             state.status == sarmg_client_runtime::CredentialAuthorization::ReauthorizationRequired
         });
-    if can_reuse_pairing(&existing, reauthorization_required) {
+    if existing.active_report_endpoint.is_some() && interactive {
+        eprintln!("[setup] pairing: local_binding_found");
+    }
+    let mut binding_state = existing_binding_state(&c, &existing).await;
+    if reauthorization_required && matches!(binding_state, ExistingBindingState::ServerUnavailable)
+    {
+        binding_state = ExistingBindingState::Unauthorized;
+    }
+    let reuse_pairing = match &binding_state {
+        ExistingBindingState::RemoteVerified { host_id } => {
+            if interactive {
+                eprintln!("[setup] pairing: remotely_verified ({host_id})");
+                ask_yes_no("Reuse this remotely verified binding?", true)
+                    .map_err(|error| error.at_step("pairing"))?
+            } else {
+                true
+            }
+        }
+        ExistingBindingState::None => false,
+        ExistingBindingState::Unauthorized => {
+            if interactive {
+                eprintln!("[setup] pairing: stale_binding");
+            }
+            false
+        }
+        ExistingBindingState::LocalOnly => {
+            return Err(fail(8, "local_binding_incomplete").at_step("pairing"));
+        }
+        ExistingBindingState::ServerUnavailable => {
+            return Err(fail(6, "pairing_server_unavailable").at_step("pairing"));
+        }
+        ExistingBindingState::ProtocolUnsupported {
+            received,
+            supported,
+        } => {
+            let mut error = fail(10, "pairing_protocol_unsupported").at_step("pairing");
+            error.detail = Some(format!(
+                "client_protocol={received};server_supported={supported:?}"
+            ));
+            return Err(error);
+        }
+    };
+    if reuse_pairing {
         if args.has("--input-stdin") {
             return Err(
                 fail(5, "active_setup_input_requires_pair_replace").at_step("configuration")
@@ -408,7 +670,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         "verified",
         json!({"path":path,"service_path_matches":true}),
     );
-    let pairing = if can_reuse_pairing(&existing, reauthorization_required) {
+    let pairing = if reuse_pairing {
         json!({"committed":true,"already_active":true})
     } else {
         let service_status = service_api
@@ -427,7 +689,9 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
             && !has_protected_input
             && args.get("--server").is_none()
             && !args.has("--non-interactive");
-        let pair_words = if reauthorization_required {
+        let pair_words = if matches!(&binding_state, ExistingBindingState::Unauthorized) {
+            vec!["pair".into(), "recover".into()]
+        } else if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
             vec!["pair".into(), "replace".into()]
         } else if resume {
             vec!["pair".into(), "resume".into()]
@@ -436,7 +700,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         };
         let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
         let mut pair_args = setup_args(args, pair_words, interactive);
-        if reauthorization_required {
+        if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
             let binding = host_monitor::client_identity::load(&c.state_dir)
                 .map_err(|error| storage_error(error).at_step("pairing"))?;
             pair_args
@@ -558,7 +822,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 "connection",
             ));
         }
-        match wait_for_healthy(&config, args.timeout).await {
+        match wait_for_healthy(&config, args.timeout, interactive).await {
             Ok(status) => {
                 record_setup_step(
                     &mut steps,
@@ -599,6 +863,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
         &[
             "--file",
             "--server",
+            "--reason",
             "--expected-revision",
             "--expected-binding",
         ],
@@ -607,6 +872,18 @@ pub fn entry(raw: Vec<String>) -> u8 {
         Ok(a) => a,
         Err(e) => return emit("host-monitor", "parse", parse_format, &Err(e)),
     };
+    // Informational commands must never trigger UAC, even if setup appears in
+    // the remaining words of a malformed invocation.
+    if args.has("--help") {
+        println!(
+            "host-monitor: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace|recover]; queue status|inspect|drain|archive; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. `pair recover` preserves the current Host UUID and queued reports. `queue archive --reason server-state-lost` atomically retires an old binding queue. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
+        );
+        return 0;
+    }
+    if (args.has("--version") || args.words == ["version"]) && args.format == "human" {
+        println!("host-monitor {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
     #[cfg(windows)]
     if args.words == ["setup"] {
         let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
@@ -633,18 +910,8 @@ pub fn entry(raw: Vec<String>) -> u8 {
             Err(error) => return emit("host-monitor", "setup", &args.format, &Err(error)),
         }
     }
-    if args.has("--help") {
-        println!(
-            "host-monitor: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace]; queue status|inspect|drain; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. setup completes pairing, service startup policy and connection verification. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
-        );
-        return 0;
-    }
     if args.words.is_empty() && !args.has("--version") {
         return no_args(&args);
-    }
-    if (args.has("--version") || args.words == ["version"]) && args.format == "human" {
-        println!("host-monitor {}", env!("CARGO_PKG_VERSION"));
-        return 0;
     }
     if args.has("--follow") {
         if args.words != ["logs"] || args.format != "ndjson" {
@@ -727,7 +994,7 @@ fn execute(args: &Args) -> Result<Value> {
                 "--installer-session",
                 "--elevated-setup-child",
             ])?;
-            let c = if path.exists() || args.has("--config") {
+            let c = if config_exists(&path)? || args.has("--config") {
                 load(&path).map_err(|error| error.at_step("configuration"))?
             } else {
                 new_config(path.clone())
@@ -746,7 +1013,7 @@ fn execute(args: &Args) -> Result<Value> {
 
         ["config", "init"] => {
             args.validate_options(&["--interactive"])?;
-            if path.exists() {
+            if config_exists(&path)? {
                 return Err(fail(5, "configuration_already_exists"));
             }
             let mut c = new_config(path);
@@ -847,7 +1114,7 @@ fn execute(args: &Args) -> Result<Value> {
             redact(&mut v);
             Ok(json!({"config":v,"stored_revision":revision_of(&c)?}))
         }
-        ["pair"] | ["pair", "resume"] | ["pair", "replace"] => {
+        ["pair"] | ["pair", "resume"] | ["pair", "replace"] | ["pair", "recover"] => {
             args.validate_options(&[
                 "--interactive",
                 "--input-stdin",
@@ -855,7 +1122,7 @@ fn execute(args: &Args) -> Result<Value> {
                 "--expected-binding",
                 "--confirm-replace",
             ])?;
-            let c = if path.exists() || args.has("--config") {
+            let c = if config_exists(&path)? || args.has("--config") {
                 load(&path)?
             } else {
                 new_config(path)
@@ -867,7 +1134,7 @@ fn execute(args: &Args) -> Result<Value> {
         ["status"] | ["pair", "status"] | ["queue", "status"] | ["queue", "inspect"] => {
             args.validate_options(&["--watch", "--check"])?;
             let mut selected = vec!["status".into(), "--output".into(), "json".into()];
-            if path.exists() || args.has("--config") {
+            if config_exists(&path)? || args.has("--config") {
                 selected.extend(["--config".into(), path.to_string_lossy().into_owned()]);
             }
             let (c, _) = ClientConfig::load_from_iter(selected).map_err(input_error)?;
@@ -910,6 +1177,12 @@ fn execute(args: &Args) -> Result<Value> {
                     .map_err(|_| fail(9, "queue_drain_timeout"))?
                 })
         }
+        ["queue", "archive"] => {
+            args.validate_options(&["--reason"])?;
+            let c = load(&path)?;
+            let _guard = Guard::acquire(&c.state_dir).map_err(runtime_error)?;
+            archive_queue(&c, args.require("--reason")?)
+        }
         [command] if ["run", "once", "probe", "doctor"].contains(command) => {
             args.validate_options(&["--delivery", "--network"])?;
             if args.has("--network") {
@@ -921,7 +1194,7 @@ fn execute(args: &Args) -> Result<Value> {
                     .map_err(|_| fail(6, "server_unavailable_or_untrusted"));
             }
             let mut normalized = vec![command.to_string()];
-            if path.exists() || args.has("--config") {
+            if config_exists(&path)? || args.has("--config") {
                 normalized.extend(["--config".into(), path.to_string_lossy().into_owned()]);
             }
             normalized.extend([
@@ -1061,16 +1334,7 @@ mod setup_tests {
     }
 
     #[test]
-    fn setup_does_not_reuse_rejected_credentials_and_filters_installer_flags() {
-        let active = pairing::LocalPairingStatus {
-            progress: None,
-            active_report_endpoint: Some(
-                "https://host-monitoring.example/api/v2/host-monitor/report".into(),
-            ),
-        };
-        assert!(can_reuse_pairing(&active, false));
-        assert!(!can_reuse_pairing(&active, true));
-
+    fn setup_filters_installer_flags_from_nested_commands() {
         let parsed = Args::parse(
             vec![
                 "setup".into(),
@@ -1096,5 +1360,59 @@ mod setup_tests {
                 .validate_options(&["--interactive", "--input-stdin", "--server"])
                 .is_ok()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn queue_archive_preserves_original_report_bytes_and_writes_a_binding_manifest() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("host-queue-archive-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let host_id = uuid::Uuid::new_v4();
+        fs::write(root.join("host-id"), format!("{host_id}\n")).unwrap();
+        fs::set_permissions(root.join("host-id"), fs::Permissions::from_mode(0o600)).unwrap();
+        let mut config = ClientConfig::default();
+        config.state_dir = root.clone();
+        {
+            let spool = host_monitor::spool::Spool::open(&root, config.spool_max_bytes).unwrap();
+            let report = host_monitor::SystemSampler::new().collect(
+                host_monitor::collectors::transient_host_identity(host_id),
+                config.interval_seconds,
+                0,
+            );
+            spool.enqueue(&report).unwrap();
+            assert_eq!(spool.pending_count().unwrap(), 1);
+        }
+        let archived = archive_queue(&config, "server-state-lost").unwrap();
+        let destination = PathBuf::from(archived["archive"].as_str().unwrap());
+        assert!(!root.join("spool").exists());
+        assert!(destination.join("spool").is_dir());
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(destination.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["host_id"], host_id.to_string());
+        assert_eq!(manifest["reason"], "server-state-lost");
+        assert_eq!(manifest["queue"]["pending_batches"], 1);
+        assert_eq!(queue(&config).unwrap()["pending_batches"], 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn protected_state_read_errors_keep_not_found_permission_and_io_distinct() {
+        let missing =
+            state_read_error(std::io::Error::new(std::io::ErrorKind::NotFound, "missing").into());
+        assert_eq!(missing.code, "config_missing");
+        let denied = state_read_error(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into(),
+        );
+        assert_eq!(denied.code, "administrator_privileges_required");
+        let failed = state_read_error(
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "short read").into(),
+        );
+        assert_eq!(failed.code, "state_read_failed");
     }
 }

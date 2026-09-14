@@ -521,19 +521,74 @@ mod tests {
         let bearer_secret = random_secret();
         let polling_secret = random_secret();
         let value = serde_json::to_value(CreatePairingRequest {
+            protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
+            mode: PairMode::Fresh,
             host,
             token_hash: sha256_hex(&bearer_secret),
             polling_secret_hash: sha256_hex(&polling_secret),
         })
         .unwrap();
         let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 3);
+        assert_eq!(object.len(), 5);
+        assert_eq!(object["protocol_version"], HOST_PAIRING_PROTOCOL_VERSION);
         assert!(object.contains_key("host"));
         assert_eq!(object["token_hash"], sha256_hex(&bearer_secret));
         assert_eq!(object["polling_secret_hash"], sha256_hex(&polling_secret));
         let serialized = serde_json::to_string(&value).unwrap();
         assert!(!serialized.contains(bearer_secret.expose()));
         assert!(!serialized.contains(polling_secret.expose()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_mode_is_derived_only_from_the_existing_durable_host_identity() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("host-recovery-mode-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(directory.clone());
+        let old_host_id = Uuid::new_v4();
+        write_private_fixture(directory.join("host-id"), format!("{old_host_id}\n")).unwrap();
+        let recovered = crate::collectors::transient_host_identity(old_host_id);
+        let fresh = crate::collectors::transient_host_identity(Uuid::new_v4());
+        assert_eq!(inferred_mode(&config, &recovered), PairMode::RecoverIdentity);
+        assert_eq!(inferred_mode(&config, &fresh), PairMode::Fresh);
+        assert!(validate_requested_mode(&config, &recovered, PairMode::RecoverIdentity).is_ok());
+        assert!(validate_requested_mode(&config, &recovered, PairMode::Fresh).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn checked_in_pairing_fixture_is_emitted_by_the_current_client_serializer() {
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../../contracts/host-pairing-v1.json")).unwrap();
+        let actual = serde_json::to_value(CreatePairingRequest {
+            protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
+            mode: PairMode::Fresh,
+            host: HostIdentity {
+                id: "018f1f4b-7a5d-7b5f-8d31-123456789abc".into(),
+                os: "windows".into(),
+                os_version: None,
+                kernel_version: None,
+                arch: "x86_64".into(),
+                client_version: "0.9.999".into(),
+            },
+            token_hash: "a".repeat(64),
+            polling_secret_hash: "b".repeat(64),
+        })
+        .unwrap();
+        assert_eq!(actual, expected);
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../compatibility.json")).unwrap();
+        assert_eq!(manifest["host_pairing_protocol"], HOST_PAIRING_PROTOCOL_VERSION);
+        assert_eq!(
+            manifest["host_report_schema"],
+            host_protocol::CLIENT_REPORT_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -729,6 +784,23 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn pairing_protocol_error_retains_only_bounded_machine_version_details() {
+        let body = br#"{"code":"unsupported_client_protocol","message":"Client pairing protocol is unsupported","retryable":false,"details":{"received":2,"supported":[1]}}"#;
+        let error = ensure_pairing_response(
+            StatusCode::BAD_REQUEST,
+            "application/json",
+            body,
+            &[StatusCode::OK, StatusCode::CREATED],
+            "create pairing request",
+        )
+        .unwrap_err();
+        let http = error.downcast_ref::<PairingHttpError>().unwrap();
+        assert_eq!(http.code, Some("unsupported_client_protocol"));
+        assert_eq!(http.received, Some(2));
+        assert_eq!(http.supported, vec![1]);
     }
 
     #[test]

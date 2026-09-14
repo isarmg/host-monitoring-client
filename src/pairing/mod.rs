@@ -15,10 +15,12 @@ use chrono::{TimeDelta, Utc};
 use host_protocol::{
     ActivateClientRequestRef as ActivatePairingRequest,
     ActivateClientResponse as ActivatePairingResponse, ActivatePairingStatus,
-    ClientPairingRequest as CreatePairingRequest, ClientPairingResponse as CreatePairingResponse,
-    ClientPairingStatusResponse as PairingStatusResponse, PairingStatus,
+    ClientPairingResponse as CreatePairingResponse,
+    ClientPairingStatusResponse as PairingStatusResponse, HOST_PAIRING_PROTOCOL_VERSION,
+    PairingStatus,
 };
 use sarmg_client_secure_http::{StatusCode, header};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
@@ -44,6 +46,20 @@ use commit::*;
 use state::*;
 pub use state::{LocalAuthState, LocalPairingStatus, PairingProgress, PairingSession};
 
+pub use host_protocol::ClientPairingMode as PairMode;
+
+/// Pairing compatibility is explicit and independent from both the application
+/// release string and the telemetry report schema.
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreatePairingRequest {
+    protocol_version: u16,
+    mode: PairMode,
+    host: HostIdentity,
+    token_hash: String,
+    polling_secret_hash: String,
+}
+
 // Flow fragments stay in this module scope so the state machine retains its
 // existing private visibility and compare-and-swap transaction invariants.
 include!("create.rs");
@@ -58,6 +74,9 @@ include!("state_storage.rs");
 #[error("pairing endpoint returned HTTP {status}; inspect the saved transaction before retrying")]
 pub struct PairingHttpError {
     pub status: u16,
+    pub code: Option<&'static str>,
+    pub received: Option<u16>,
+    pub supported: Vec<u16>,
 }
 
 pub use state::PERSISTED_STATE_FORMAT;

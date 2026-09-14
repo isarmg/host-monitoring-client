@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "host-monitor"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "anyhow",
  "chrono",
@@ -675,8 +675,8 @@ dependencies = [
 
 [[package]]
 name = "host-protocol"
-version = "0.9.3"
-source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=ca41b7cdbdd662d2a4a5b28ace7be74cd7fded6c#ca41b7cdbdd662d2a4a5b28ace7be74cd7fded6c"
+version = "0.9.13"
+source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=ae766a9d13ba49a434b0fa8ae19d038eebc4f17c#ae766a9d13ba49a434b0fa8ae19d038eebc4f17c"
 dependencies = [
  "chrono",
  "serde",
