@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=host-monitor.service
-package_version=0.9.18
+package_version=0.9.19
 
 systemd_is_running() {
   [ -d /run/systemd/system ]

@@ -83,9 +83,9 @@ jobs:
         run: >-
           cargo build --locked --release -p host-monitor --target x86_64-pc-windows-msvc
           --bin host-monitor --bin host-monitor-maintenance
-      - name: Validate installer defaults with release network policy
+      - name: Validate installer defaults with release HTTPS policy
         if: runner.os == 'Windows'
-        run: cargo test --locked --release -p host-monitor --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_network_policy
+        run: cargo test --locked --release -p host-monitor --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_https_policy
       - name: Verify native Windows PE subsystems
         if: runner.os == 'Windows'
         shell: powershell

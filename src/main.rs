@@ -1,6 +1,6 @@
 mod cli;
 mod monitor_app;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod test_https;
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]

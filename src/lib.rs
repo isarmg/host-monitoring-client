@@ -33,7 +33,7 @@ pub mod spool;
 mod state_lock;
 #[cfg(feature = "desktop")]
 mod state_store;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 mod test_https;
 #[cfg(feature = "desktop")]
 mod tls_input;
