@@ -1359,12 +1359,18 @@ fn execute(args: &Args) -> Result<Value> {
             let _guard = Guard::acquire(&c.state_dir).map_err(runtime_error)?;
             let spool = host_monitor::spool::Spool::open(&c.state_dir, c.spool_max_bytes)
                 .map_err(|_| fail(5, "delivery_busy"))?;
-            let snapshot = pairing::existing_reporter_for_run(&c)
-                .map_err(storage_error)?
-                .ok_or_else(|| fail(4, "awaiting_pairing"))?;
             let mut host = host_monitor::collectors::load_host_identity(&c.state_dir)
                 .map_err(storage_error)?;
-            let reporter = snapshot.apply(&mut c, &mut host);
+            let reporter = if let Some(reporter) =
+                pairing::reporter_for_current_active_state(&c).map_err(storage_error)?
+            {
+                reporter
+            } else {
+                pairing::existing_reporter_for_run(&c)
+                    .map_err(storage_error)?
+                    .ok_or_else(|| fail(4, "awaiting_pairing"))?
+                    .apply(&mut c, &mut host)
+            };
             tokio::runtime::Runtime::new()
                 .map_err(storage_error)?
                 .block_on(async {

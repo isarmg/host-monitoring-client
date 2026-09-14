@@ -341,3 +341,34 @@ async fn startup_uses_bound_identity_and_endpoint_during_an_incomplete_replaceme
     assert_eq!(old_host.id, instance_id.to_string());
     assert_eq!(config.endpoint, endpoint);
 }
+
+#[tokio::test]
+async fn startup_uses_the_current_completed_pairing_without_waiting() {
+    let fixture = Fixture::new();
+    let active = fixture.activate(&fixture.0.endpoint, &"a".repeat(64)).await;
+    let PairingProgress::Active {
+        generation,
+        request_id,
+        instance_id,
+        ..
+    } = active
+    else {
+        panic!("expected Active");
+    };
+    let mut host = load_host_identity(&fixture.0.state_dir).unwrap();
+    let mut config = fixture.0.clone();
+    let (_sender, shutdown) = shutdown_channel();
+
+    let reporter = tokio::time::timeout(
+        Duration::from_secs(1),
+        prepare_reporter(&mut config, &mut host, ClientCommand::Run, &shutdown),
+    )
+    .await
+    .expect("a completed pairing must not enter the 60-second waiting loop")
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(reporter.credential_revision(), (generation, request_id));
+    assert_eq!(reporter.identity().instance_id(), instance_id.to_string());
+    assert_eq!(host.id, instance_id.to_string());
+}

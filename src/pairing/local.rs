@@ -203,7 +203,7 @@ pub fn existing_reporter_for_run(config: &ClientConfig) -> anyhow::Result<Option
 
 /// Build a low-level transport only when every durable identity component is
 /// bound to the current package's completed pairing transaction.
-pub(crate) fn reporter_for_current_active_state(
+pub fn reporter_for_current_active_state(
     config: &ClientConfig,
 ) -> anyhow::Result<Option<Reporter>> {
     let transaction = lock_state(config)?;
