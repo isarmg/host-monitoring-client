@@ -27,7 +27,15 @@ impl TestHttpsServer {
             .with_single_cert(vec![cert.der().clone()], key.into())
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let ca_path = directory.path().join("test-root.pem");
+        // macOS reports its temporary directory through `/var`, which is a
+        // symlink to `/private/var`. The production TLS reader deliberately
+        // rejects paths that traverse symlinks, so keep the fixture's CA path
+        // in its canonical, physical form.
+        let ca_path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("test-root.pem");
         std::fs::write(&ca_path, cert.pem()).unwrap();
         #[cfg(unix)]
         {
