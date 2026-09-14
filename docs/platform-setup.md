@@ -1,6 +1,6 @@
 # 按平台安装、配置与升级
 
-适用于 0.9.20，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务，随后使用 `setup` 完成配对、服务策略和连接验证。
+适用于 0.9.21，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务，随后使用 `setup` 完成配对、服务策略和连接验证。
 
 ## Windows 11 x64
 
@@ -8,8 +8,8 @@
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"
-Get-FileHash .\host-monitor-0.9.20-x64.msi -Algorithm SHA256
-msiexec.exe /i .\host-monitor-0.9.20-x64.msi /norestart
+Get-FileHash .\host-monitor-0.9.21-x64.msi -Algorithm SHA256
+msiexec.exe /i .\host-monitor-0.9.21-x64.msi /norestart
 $client = "$env:ProgramFiles\host-monitor\host-monitor.exe"
 & $client doctor --network
 ```
@@ -23,21 +23,21 @@ MSI 只安装程序并登记 Manual/Stopped 服务，不启动配对，也不读
 手动强制修复同一 MSI：
 
 ```powershell
-msiexec.exe /i "$PWD\host-monitor-0.9.20-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
+msiexec.exe /i "$PWD\host-monitor-0.9.21-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
 ```
 
-原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.20.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点或删除未知数据。
+原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.21.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点或删除未知数据。
 
 ## Linux x86_64
 
 Debian/Ubuntu 下载 DEB；使用 APT 处理依赖并覆盖旧包：
 
 ```sh
-sudo apt install ./host-monitor_0.9.20_amd64.deb
+sudo apt install ./host-monitor_0.9.21_amd64.deb
 sudo host-monitor setup
 ```
 
-RPM 系统使用 `sudo dnf install ./host-monitor-0.9.20.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.20.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.20_amd64.deb`。不要添加忽略依赖的参数。
+RPM 系统使用 `sudo dnf install ./host-monitor-0.9.21.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.21.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.21_amd64.deb`。不要添加忽略依赖的参数。
 
 配置在 `/etc/host-monitor/config.json`，服务账户为 `host-monitor`。安装器会保留已有配置和身份；安装后运行 `sudo host-monitor setup`，按提示选择启动策略并验证连接。兼容旧版账户所有权标记会被识别；包管理器保留修改过的配置，不会清除身份和待发送队列。
 
@@ -48,7 +48,7 @@ RPM 系统使用 `sudo dnf install ./host-monitor-0.9.20.x86_64.rpm`；同版损
 只提供 arm64；不支持 Intel Mac。在 Release 下载 unsigned PKG；安装包尚未签名、公证，可在系统允许的安装确认界面批准该已校验文件。
 
 ```sh
-sudo installer -pkg ./host-monitor-0.9.20-macos-arm64-unsigned.pkg -target /
+sudo installer -pkg ./host-monitor-0.9.21-macos-arm64-unsigned.pkg -target /
 sudo /usr/local/bin/host-monitor setup
 ```
 
@@ -63,7 +63,7 @@ sudo /usr/local/bin/host-monitor setup
 Server 必须使用系统信任的 HTTPS 证书；证书过期、名称不匹配或企业 CA 未装入系统信任库时，先修复证书。
 每个实例的授权码长期有效，只有管理员显式轮换授权码或取消实例时才失效；轮换后旧 Client credential 会被
 撤销，必须使用新授权码重新运行配对。一次配对请求自身有短期事务超时，这不等于实例授权码过期；网络中断后
-再次运行 `setup` 会核对并恢复仍有效的同一事务，也可用 `pair status`、`pair resume` 精确检查。Server 数据库重建且旧凭据失效时，使用 `pair recover --interactive` 输入新授权码；它保留原 Host UUID 和待发送队列，Server 仅在该 UUID 不存在时允许恢复。若管理员明确放弃旧身份，先运行 `queue archive --reason server-state-lost` 原子归档旧队列，再使用 `pair replace`，不得删除队列或把旧报告改属新 UUID。`status`
+再次运行 `setup` 会核对并恢复仍有效的同一事务，也可用 `pair status`、`pair resume` 精确检查。Server 数据库重建且旧凭据失效时，`setup` 会自动选择 `pair recover` 并提示输入新授权码；该流程保留原 Host UUID 和待发送队列，Server 仅在该 UUID 不存在时允许恢复。也可显式运行 `pair recover --interactive`。若管理员明确放弃旧身份，先运行 `queue archive --reason server-state-lost` 原子归档旧队列，再使用 `pair replace`，不得删除队列或把旧报告改属新 UUID。`status`
 显示未配对时不应反复安装或删除身份文件。
 
 强制覆盖仅替换安装器管理的程序和服务文件，不绕过状态格式、路径所有权或配置校验；不需要用 `PURGE=1` 解决普通安装问题。

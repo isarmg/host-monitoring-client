@@ -439,6 +439,52 @@ fn setup_args(args: &Args, words: Vec<String>, interactive: bool) -> Args {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupPairAction {
+    Fresh,
+    Resume,
+    Replace,
+    Recover,
+}
+
+impl SetupPairAction {
+    fn words(self) -> Vec<String> {
+        match self {
+            Self::Fresh => vec!["pair".into()],
+            Self::Resume => vec!["pair".into(), "resume".into()],
+            Self::Replace => vec!["pair".into(), "replace".into()],
+            Self::Recover => vec!["pair".into(), "recover".into()],
+        }
+    }
+
+    fn requires_protected_input(self) -> bool {
+        !matches!(self, Self::Resume)
+    }
+}
+
+fn setup_pair_action(
+    binding_state: &ExistingBindingState,
+    recover_changed_server: bool,
+    resume_existing_transaction: bool,
+) -> SetupPairAction {
+    if matches!(binding_state, ExistingBindingState::Unauthorized) || recover_changed_server {
+        SetupPairAction::Recover
+    } else if matches!(binding_state, ExistingBindingState::RemoteVerified { .. }) {
+        SetupPairAction::Replace
+    } else if resume_existing_transaction {
+        SetupPairAction::Resume
+    } else {
+        SetupPairAction::Fresh
+    }
+}
+
+fn setup_pair_args(args: &Args, action: SetupPairAction) -> Args {
+    let interactive = action.requires_protected_input()
+        && !args.has("--input-stdin")
+        && !args.has("--non-interactive");
+    setup_args(args, action.words(), interactive)
+}
+
 fn setup_service_args(args: &Args, timeout: Duration) -> Args {
     let options = args
         .options
@@ -836,26 +882,19 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 return Err(fail(11, "service_state_unconfirmed").at_step("service_quiesce"));
             }
         }
-        let has_protected_input = args.has("--input-stdin") || args.has("--interactive");
-        let resume = existing.progress.is_some()
-            && !has_protected_input
+        let resume_existing_transaction = existing.progress.is_some()
+            && !args.has("--input-stdin")
+            && !args.has("--interactive")
             && args.get("--server").is_none()
             && !args.has("--non-interactive");
-        let pair_words = if matches!(&binding_state, ExistingBindingState::Unauthorized)
-            || recover_changed_server
-        {
-            vec!["pair".into(), "recover".into()]
-        } else if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
-            vec!["pair".into(), "replace".into()]
-        } else if resume {
-            vec!["pair".into(), "resume".into()]
-        } else {
-            vec!["pair".into()]
-        };
-        let interactive = !resume && !args.has("--input-stdin") && !args.has("--non-interactive");
-        let mut pair_args = setup_args(args, pair_words, interactive);
+        let pair_action = setup_pair_action(
+            &binding_state,
+            recover_changed_server,
+            resume_existing_transaction,
+        );
+        let mut pair_args = setup_pair_args(args, pair_action);
         pair_args.timeout = deadline.remaining("pairing")?;
-        if matches!(&binding_state, ExistingBindingState::RemoteVerified { .. }) {
+        if pair_action == SetupPairAction::Replace {
             let binding = host_monitor::client_identity::load(&c.state_dir)
                 .map_err(|error| storage_error(error).at_step("pairing"))?;
             pair_args
@@ -1043,7 +1082,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
     // the remaining words of a malformed invocation.
     if args.has("--help") {
         println!(
-            "host-monitor: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace|recover]; queue status|inspect|drain|archive; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup/pair uses --interactive or --input-stdin JSON containing server and authorization_code. `pair recover` preserves the current Host UUID and queued reports. `queue archive --reason server-state-lost` atomically retires an old binding queue. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
+            "host-monitor: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace|recover]; queue status|inspect|drain|archive; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup is interactive by default; direct pair commands use --interactive. Protected automation uses --input-stdin JSON containing server and authorization_code. `pair recover` preserves the current Host UUID and queued reports. `queue archive --reason server-state-lost` atomically retires an old binding queue. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
         );
         return 0;
     }
@@ -1529,6 +1568,45 @@ mod setup_tests {
                 .validate_options(&["--interactive", "--input-stdin", "--server"])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn setup_pair_action_keeps_action_and_protected_input_mode_consistent() {
+        let default_setup = Args::parse(
+            vec!["setup".into()],
+            &[
+                "--file",
+                "--server",
+                "--expected-revision",
+                "--expected-binding",
+            ],
+            &["--network", "--delivery", "--confirm-replace"],
+        )
+        .unwrap();
+
+        let recover = setup_pair_action(&ExistingBindingState::Unauthorized, false, true);
+        assert_eq!(recover, SetupPairAction::Recover);
+        let recover_args = setup_pair_args(&default_setup, recover);
+        assert_eq!(recover_args.words, ["pair", "recover"]);
+        assert!(recover_args.has("--interactive"));
+
+        let replace = setup_pair_action(
+            &ExistingBindingState::RemoteVerified {
+                host_id: "test-host".into(),
+            },
+            false,
+            true,
+        );
+        assert_eq!(replace, SetupPairAction::Replace);
+        assert!(setup_pair_args(&default_setup, replace).has("--interactive"));
+
+        let resume = setup_pair_action(&ExistingBindingState::None, false, true);
+        assert_eq!(resume, SetupPairAction::Resume);
+        assert!(!setup_pair_args(&default_setup, resume).has("--interactive"));
+
+        let fresh = setup_pair_action(&ExistingBindingState::None, false, false);
+        assert_eq!(fresh, SetupPairAction::Fresh);
+        assert!(setup_pair_args(&default_setup, fresh).has("--interactive"));
     }
 
     #[test]
