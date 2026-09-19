@@ -23,6 +23,19 @@ command -v plutil >/dev/null 2>&1 || {
 }
 plutil -lint "$packaging_dir/org.sarmg.hostmonitor.plist"
 plutil -lint "$packaging_dir/org.sarmg.hostmonitor.logrotate.plist"
+python3 - "$packaging_dir/Distribution.xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+document = ET.parse(sys.argv[1]).getroot()
+options = document.find("options")
+declared = "" if options is None else options.get("hostArchitectures", "")
+architectures = {item.strip() for item in declared.split(",") if item.strip()}
+if architectures != {"arm64"}:
+    raise SystemExit(
+        f"Distribution hostArchitectures must be exactly arm64; found {declared!r}"
+    )
+PY
 sh "$script_dir/account-safety-test.sh"
 sh "$script_dir/postinstall-failure-test.sh"
 sh "$script_dir/uninstall-proof-test.sh"

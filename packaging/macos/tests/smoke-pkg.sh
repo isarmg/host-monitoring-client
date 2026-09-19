@@ -26,6 +26,59 @@ if [[ -z $package ]]; then
 fi
 [[ -n $package && -f $package ]]
 
+verify_native_package() {
+  local package_path=$1 check_dir
+  check_dir=$(mktemp -d)
+  if ! pkgutil --expand-full "$package_path" "$check_dir/expanded"; then
+    rm -rf "$check_dir"
+    echo "could not expand macOS installer package" >&2
+    return 1
+  fi
+  if ! python3 - "$check_dir/expanded" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+root = Path(sys.argv[1])
+options = ET.parse(root / "Distribution").getroot().find("options")
+declared = "" if options is None else options.get("hostArchitectures", "")
+architectures = {item.strip() for item in declared.split(",") if item.strip()}
+if architectures != {"arm64"}:
+    raise SystemExit(
+        f"installer hostArchitectures must be exactly arm64; found {declared!r}"
+    )
+
+main_executables = []
+for path in root.rglob("*"):
+    if path.is_symlink() or not path.is_file():
+        continue
+    kind = subprocess.check_output(["/usr/bin/file", "-b", str(path)], text=True)
+    if "Mach-O" not in kind:
+        continue
+    actual = subprocess.check_output(
+        ["/usr/bin/lipo", "-archs", str(path)], text=True
+    ).strip()
+    if actual != "arm64":
+        raise SystemExit(f"non-arm64 Mach-O payload: {path}: {actual}")
+    if path.name == "host-monitor":
+        main_executables.append(path)
+
+if len(main_executables) != 1:
+    raise SystemExit(
+        f"expected one arm64 host-monitor payload; found {main_executables}"
+    )
+print("verified arm64 installer declaration and Mach-O payloads")
+PY
+  then
+    rm -rf "$check_dir"
+    return 1
+  fi
+  rm -rf "$check_dir"
+}
+
+verify_native_package "$package"
+
 assert_no_extended_acl() {
   local path=$1
   path_has_no_extended_acl "$path" || {

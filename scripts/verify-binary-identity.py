@@ -10,6 +10,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 if platform.system() == "Windows":
     binary = ROOT / "target/x86_64-pc-windows-msvc/release/host-monitor.exe"
+elif platform.system() == "Darwin":
+    binary = ROOT / "target/aarch64-apple-darwin/release/host-monitor"
 else:
     binary = ROOT / "target/release/host-monitor"
 

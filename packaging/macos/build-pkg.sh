@@ -26,6 +26,12 @@ component_count="$(printf '%s\n' "$VERSION" | awk -F. '{ print NF }')"
 
 [ -f "$BINARY" ] || die "BINARY is not a regular file: $BINARY"
 [ -x "$BINARY" ] || die "BINARY is not executable: $BINARY"
+command -v lipo >/dev/null 2>&1 ||
+  die "lipo is required to verify the macOS binary architecture"
+binary_architectures="$(lipo -archs "$BINARY")" ||
+  die "BINARY is not a readable Mach-O binary"
+[ "$binary_architectures" = "arm64" ] ||
+  die "BINARY must contain only arm64; found: $binary_architectures"
 binary_version="$("$BINARY" --version)" || die "could not read the Client binary version"
 [ "$binary_version" = "host-monitor $VERSION" ] ||
   die "BINARY version '$binary_version' does not match frozen configuration format 0.9.4"

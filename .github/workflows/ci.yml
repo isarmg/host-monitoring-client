@@ -32,6 +32,9 @@ jobs:
           persist-credentials: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal --component clippy
+      - name: Install explicit Apple Silicon desktop target
+        if: runner.os == 'macOS'
+        run: rustup target add --toolchain 1.98.0 aarch64-apple-darwin
       - name: Verify release inputs
         run: python scripts/collect-release.py --check
       - name: Resolve Windows MSI version from Cargo metadata
@@ -116,9 +119,14 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: sh packaging/macos/tests/validate-packaging.sh
-      - name: Build native Unix executable
-        if: runner.os != 'Windows'
+      - name: Build native Linux executable
+        if: runner.os == 'Linux'
         run: cargo build --locked --release -p host-monitor --bin host-monitor
+      - name: Build native Apple Silicon executable
+        if: runner.os == 'macOS'
+        run: >-
+          cargo build --locked --release -p host-monitor
+          --target aarch64-apple-darwin --bin host-monitor
       - name: Verify executable source identity
         run: python scripts/verify-binary-identity.py
       - name: Build Linux DEB and RPM
@@ -137,7 +145,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
-          BINARY="$PWD/target/release/host-monitor" VERSION="$VERSION" OUTPUT="$PWD/dist/host-monitor-$VERSION-macos-$(uname -m)-unsigned.pkg" sh packaging/macos/build-pkg.sh
+          BINARY="$PWD/target/aarch64-apple-darwin/release/host-monitor" VERSION="$VERSION" OUTPUT="$PWD/dist/host-monitor-$VERSION-macos-arm64-unsigned.pkg" sh packaging/macos/build-pkg.sh
       - name: Exercise native macOS install, preserved state, reinstall and purge
         if: runner.os == 'macOS'
         shell: bash
