@@ -72,6 +72,9 @@ impl ProductErrorCatalog for HostErrorCatalog {
             "important_state_incompatible" => Some(
                 "Important saved Host collection data is incompatible or unreadable and was preserved.",
             ),
+            "connection_unconfirmed" => Some(
+                "The running Host service did not produce a new verified Server acknowledgement before the Setup deadline.",
+            ),
             _ => None,
         }
     }
@@ -113,6 +116,9 @@ impl ProductErrorCatalog for HostErrorCatalog {
                 "Do not delete or replace the reported spool; restore it with a compatible Client or archive it for operator review."
                     .into(),
             ),
+            "connection_unconfirmed" => Some(format!(
+                "Run `{product} service status`, then `{product} status --format json` and `{product} logs`; the error detail identifies the acknowledgement condition that was not met."
+            )),
             _ => None,
         }
     }
@@ -892,10 +898,68 @@ fn record_setup_step(
     steps.push(json!({"step":step,"status":status,"evidence":evidence}));
 }
 
-async fn wait_for_healthy(
+fn connection_blockers(status: &Value, not_before: i64) -> Vec<&'static str> {
+    let runtime = &status["runtime"];
+    let mut blockers = Vec::new();
+    if runtime["available"] != true {
+        blockers.push("runtime_status_unavailable");
+    }
+    match runtime["last_ack_at"].as_i64() {
+        None => blockers.push("acknowledgement_missing"),
+        Some(at) if at < not_before => blockers.push("acknowledgement_stale"),
+        Some(_) => {}
+    }
+    if runtime["last_delivery_result"] != "accepted" {
+        blockers.push("delivery_not_accepted");
+    }
+    if runtime["last_http_status"].as_u64() != Some(202) {
+        blockers.push("http_status_not_accepted");
+    }
+    if !runtime["last_error_code"].is_null() {
+        blockers.push("delivery_error_present");
+    }
+    blockers
+}
+
+fn business_health_blockers(status: &Value) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if status["config"]["restart_required"] != false {
+        blockers.push("configuration_restart_required");
+    }
+    if status["spool_invalid_batches"].as_u64().unwrap_or_default() > 0 {
+        blockers.push("spool_contains_invalid_batches");
+    }
+    if status["status"] != "configured" {
+        blockers.push("local_status_not_configured");
+    }
+    blockers
+}
+
+fn connection_acknowledged(status: &Value, not_before: i64) -> bool {
+    connection_blockers(status, not_before).is_empty()
+}
+
+fn connection_evidence(status: &Value, not_before: i64) -> Value {
+    let runtime = &status["runtime"];
+    json!({
+        "acknowledgement": if connection_acknowledged(status, not_before) { "verified" } else { "unconfirmed" },
+        "verification_not_before": not_before,
+        "last_ack_at": runtime["last_ack_at"],
+        "last_delivery_result": runtime["last_delivery_result"],
+        "last_http_status": runtime["last_http_status"],
+        "last_error_code": runtime["last_error_code"],
+        "runtime_available": runtime["available"],
+        "connection_blockers": connection_blockers(status, not_before),
+        "business_health": status["health"],
+        "business_health_blockers": business_health_blockers(status),
+    })
+}
+
+async fn wait_for_acknowledgement(
     c: &ClientConfig,
     timeout: std::time::Duration,
     interactive: bool,
+    not_before: i64,
 ) -> Result<Value> {
     let started = tokio::time::Instant::now();
     let total = timeout.as_secs();
@@ -908,7 +972,7 @@ async fn wait_for_healthy(
                 tokio::task::spawn_blocking(move || local_runtime_status(&snapshot_config))
                     .await
                     .map_err(storage_error)??;
-            if status["health"] == "healthy" {
+            if connection_acknowledged(&status, not_before) {
                 return Ok(status);
             }
             let elapsed = started.elapsed().as_secs();
@@ -930,15 +994,17 @@ async fn wait_for_healthy(
             Ok(result) => result,
             Err(_) => {
                 let mut error = fail(9, "connection_unconfirmed");
-                if let Ok(identity) = host_monitor::client_identity::load(&c.state_dir)
-                    && let Some(runtime) = host_monitor::runtime_status::read(
-                        &c.state_dir,
-                        Some(identity.instance_id()),
-                    )
-                {
-                    let code = runtime["last_error_code"].as_str().unwrap_or("no_acknowledgement");
-                    let status = runtime["last_http_status"].as_u64();
-                    error.detail = Some(format!("last_error_code={code};last_http_status={status:?}"));
+                match local_runtime_status(c) {
+                    Ok(status) => {
+                        error.detail = Some(connection_evidence(&status, not_before).to_string())
+                    }
+                    Err(_) => {
+                        error.detail = Some(json!({
+                            "acknowledgement":"unconfirmed",
+                            "verification_not_before":not_before,
+                            "connection_blockers":["local_status_unavailable"]
+                        }).to_string())
+                    }
                 }
                 Err(error)
             }
@@ -1243,6 +1309,10 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         "verified",
         json!({"requested":if enable {"enabled"} else {"disabled"},"observed":policy_status["startup"]}),
     );
+    // Runtime acknowledgement timestamps have second resolution. Capture this
+    // boundary before requesting the service state so an acknowledgement that
+    // races with the verified start result is still considered current.
+    let connection_not_before = chrono::Utc::now().timestamp();
     let service_result = if start {
         let status = service_api
             .change(
@@ -1298,14 +1368,21 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 "connection",
             ));
         }
-        match wait_for_healthy(&config, deadline.remaining("connection")?, interactive).await {
+        match wait_for_acknowledgement(
+            &config,
+            deadline.remaining("connection")?,
+            interactive,
+            connection_not_before,
+        )
+        .await
+        {
             Ok(status) => {
                 record_setup_step(
                     &mut steps,
                     interactive,
                     "connection",
                     "verified",
-                    json!({"health":status["health"]}),
+                    connection_evidence(&status, connection_not_before),
                 );
                 status
             }
@@ -2065,6 +2142,80 @@ mod setup_tests {
             Some(ExistingBindingState::ServerChanged { configured, requested })
                 if configured.contains("offline.example") && requested.contains("host.sarmg.org")
         ));
+    }
+
+    fn connection_status(
+        last_ack_at: Option<i64>,
+        delivery_result: Option<&str>,
+        http_status: Option<u16>,
+        last_error_code: Option<&str>,
+    ) -> Value {
+        json!({
+            "runtime": {
+                "available": true,
+                "last_ack_at": last_ack_at,
+                "last_delivery_result": delivery_result,
+                "last_http_status": http_status,
+                "last_error_code": last_error_code,
+            },
+            "config": {"restart_required": true},
+            "spool_invalid_batches": 2,
+            "status": "degraded",
+            "health": "unknown",
+        })
+    }
+
+    #[test]
+    fn setup_connection_accepts_a_fresh_strict_ack_independently_of_business_health() {
+        let status = connection_status(Some(101), Some("accepted"), Some(202), None);
+        assert!(connection_acknowledged(&status, 100));
+        assert!(connection_blockers(&status, 100).is_empty());
+        assert_eq!(
+            business_health_blockers(&status),
+            [
+                "configuration_restart_required",
+                "spool_contains_invalid_batches",
+                "local_status_not_configured"
+            ]
+        );
+        let evidence = connection_evidence(&status, 100);
+        assert_eq!(evidence["acknowledgement"], "verified");
+        assert_eq!(evidence["last_http_status"], 202);
+        assert_eq!(evidence["last_error_code"], Value::Null);
+        assert_eq!(evidence["business_health"], "unknown");
+    }
+
+    #[test]
+    fn setup_connection_rejects_a_stale_ack_even_when_the_last_request_was_accepted() {
+        let status = connection_status(Some(99), Some("accepted"), Some(202), None);
+        assert!(!connection_acknowledged(&status, 100));
+        assert_eq!(connection_blockers(&status, 100), ["acknowledgement_stale"]);
+        let evidence = connection_evidence(&status, 100).to_string();
+        assert!(evidence.contains("acknowledgement_stale"));
+        assert!(!evidence.contains("no_acknowledgement"));
+    }
+
+    #[test]
+    fn setup_connection_reports_the_actual_delivery_failure() {
+        let status = connection_status(
+            None,
+            Some("rejected"),
+            Some(503),
+            Some("server_unavailable"),
+        );
+        assert!(!connection_acknowledged(&status, 100));
+        assert_eq!(
+            connection_blockers(&status, 100),
+            [
+                "acknowledgement_missing",
+                "delivery_not_accepted",
+                "http_status_not_accepted",
+                "delivery_error_present"
+            ]
+        );
+        let evidence = connection_evidence(&status, 100);
+        assert_eq!(evidence["last_error_code"], "server_unavailable");
+        assert_eq!(evidence["last_http_status"], 503);
     }
 
     #[test]
