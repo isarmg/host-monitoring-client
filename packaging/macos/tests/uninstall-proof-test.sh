@@ -407,8 +407,10 @@ assert_incomplete "$case_root"
 case_root="$test_root/invalid-marker-package-version"
 make_case "$case_root"
 write_marker "$case_root" 1 1
-sed -i 's/last_package_version=@HOST_MONITOR_PACKAGE_VERSION@/last_package_version=0.0.0/' \
-  "$case_root/var/db/host-monitor/account-ownership"
+invalid_marker="$case_root/var/db/host-monitor/account-ownership.invalid"
+sed 's/last_package_version=@HOST_MONITOR_PACKAGE_VERSION@/last_package_version=0.0.0/' \
+  "$case_root/var/db/host-monitor/account-ownership" >"$invalid_marker"
+mv "$invalid_marker" "$case_root/var/db/host-monitor/account-ownership"
 run_case "$case_root"
 assert_incomplete "$case_root"
 [ ! -e "$case_root/dscl-deletes" ] ||
