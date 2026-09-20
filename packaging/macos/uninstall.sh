@@ -128,6 +128,19 @@ ownership_directory_contains_only_marker() {
   [ "$ownership_entry_count" -eq 1 ]
 }
 
+is_package_version() {
+  candidate_package_version="$1"
+  [ "$candidate_package_version" = "$package_version" ] && return 0
+  case "$candidate_package_version" in
+    0.9.*) candidate_patch_version="${candidate_package_version#0.9.}" ;;
+    *) return 1 ;;
+  esac
+  case "$candidate_patch_version" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 for argument in "$@"; do
   case "$argument" in
     --purge) purge=1 ;;
@@ -190,16 +203,35 @@ load_ownership_marker() {
   marker_group_gid="-"
   seen_user=0
   seen_group=0
-  seen_format=0
+  seen_legacy_format=0
+  seen_marker_format=0
+  seen_last_package_version=0
+  seen_state_format=0
   seen_user_uid=0
   seen_user_primary_gid=0
   seen_group_gid=0
   marker_invalid=0
   while IFS= read -r marker_line; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
-        [ "$seen_format" -eq 0 ] || marker_invalid=1
-        seen_format=1
+      format=*)
+        [ "$seen_legacy_format" -eq 0 ] || marker_invalid=1
+        legacy_package_version="${marker_line#format=}"
+        is_package_version "$legacy_package_version" || marker_invalid=1
+        seen_legacy_format=1
+        ;;
+      marker_format=1)
+        [ "$seen_marker_format" -eq 0 ] || marker_invalid=1
+        seen_marker_format=1
+        ;;
+      last_package_version=*)
+        [ "$seen_last_package_version" -eq 0 ] || marker_invalid=1
+        marker_package_version="${marker_line#last_package_version=}"
+        is_package_version "$marker_package_version" || marker_invalid=1
+        seen_last_package_version=1
+        ;;
+      state_format=0.9.4)
+        [ "$seen_state_format" -eq 0 ] || marker_invalid=1
+        seen_state_format=1
         ;;
       user_created=0|user_created=1)
         [ "$seen_user" -eq 0 ] || marker_invalid=1
@@ -229,7 +261,14 @@ load_ownership_marker() {
       *) marker_invalid=1 ;;
     esac
   done < "$ownership_marker"
-  if [ "$marker_invalid" -eq 1 ] || [ "$seen_format" -ne 1 ] ||
+  if [ "$seen_legacy_format" -eq 1 ]; then
+    [ "$seen_marker_format" -eq 0 ] && [ "$seen_last_package_version" -eq 0 ] &&
+      [ "$seen_state_format" -eq 0 ] || marker_invalid=1
+  else
+    [ "$seen_marker_format" -eq 1 ] && [ "$seen_last_package_version" -eq 1 ] &&
+      [ "$seen_state_format" -eq 1 ] || marker_invalid=1
+  fi
+  if [ "$marker_invalid" -eq 1 ] ||
     [ "$seen_user" -ne 1 ] || [ "$seen_group" -ne 1 ] ||
     [ "$seen_user_uid" -ne 1 ] || [ "$seen_user_primary_gid" -ne 1 ] ||
     [ "$seen_group_gid" -ne 1 ]; then
@@ -661,7 +700,7 @@ write_ownership_marker() {
   if ! (
     umask 077
     set -C
-    printf 'format=%s\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
+    printf 'marker_format=1\nlast_package_version=%s\nstate_format=0.9.4\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
       "$package_version" "$user_created" "$created_user_uid" \
       "$created_user_primary_gid" "$group_created" "$created_group_gid" \
       > "$marker_temporary"

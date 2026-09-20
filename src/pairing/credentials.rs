@@ -26,7 +26,8 @@ impl<'a> HostCredentials<'a> {
         if let StoredPairingState::Active { .. } = state {
             let expected = binding_from_active_state(&state)?;
             if binding.as_ref() != Some(&expected) {
-                bail!("active credential binding does not match the pairing journal");
+                return Err(corrupt_pairing_state("active-binding"))
+                    .context("active credential binding does not match the pairing journal");
             }
         }
         Ok(binding)

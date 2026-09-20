@@ -164,7 +164,7 @@ fn identity_quarantine_is_reported_by_read_only_cli_without_disclosing_or_modify
                 .find(|check| check["id"] == "spool")
                 .unwrap()
         };
-        assert_eq!(check["code"], "spool_identity_mismatch");
+        assert_eq!(check["code"], "important_state_incompatible");
         assert_eq!(check["status"], "error");
         assert_eq!(local_tree_snapshot(&fixture.root), before);
     }

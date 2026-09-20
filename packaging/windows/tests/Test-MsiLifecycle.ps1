@@ -192,7 +192,7 @@ function Read-AndRemoveMaintenanceDiagnostic {
         "prepare-install", "apply-install", "rollback-install", "commit-install",
         "preflight-uninstall", "rollback-uninstall-preflight", "preserve-state",
         "rollback-uninstall", "commit-uninstall", "prepare-purge", "rollback-purge",
-        "commit-purge"
+        "commit-purge", "reset-configuration", "reset-data"
     )
     if ($fields.Count -ne 4 -or
         $fields[0] -cne "format=host-monitor-maintenance-diagnostic-v1" -or
@@ -663,13 +663,13 @@ if (@(Get-HostMonitorArpEntries).Count -ne 0) {
 Assert-PreservedStateAcl $installedServiceSid
 
 # Preserve an older compatible ownership marker during reinstall.
-Rename-Item -LiteralPath (Join-Path $stateRoot $stateMarker) -NewName '.host-monitor-managed-0.9.4'
-[IO.File]::WriteAllText((Join-Path $stateRoot '.host-monitor-managed-0.9.4'), "host-monitor-windows-state-0.9.4`r`n", [Text.UTF8Encoding]::new($false))
-$stateMarker = '.host-monitor-managed-0.9.4'
+Rename-Item -LiteralPath (Join-Path $stateRoot $stateMarker) -NewName '.host-monitor-managed-0.9.27'
+[IO.File]::WriteAllText((Join-Path $stateRoot '.host-monitor-managed-0.9.27'), "host-monitor-windows-state-0.9.27`r`n", [Text.UTF8Encoding]::new($false))
+$stateMarker = '.host-monitor-managed-0.9.27'
 Invoke-Msi /i $currentMsi "reinstall"
 $expectedExeHash = (Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash
 Set-Content -LiteralPath (Join-Path $installedRoot 'host-monitor.exe') -Value 'damaged payload'
-& (Join-Path $PSScriptRoot "../install-host-monitor.ps1") -Msi $currentMsi
+& (Join-Path $PSScriptRoot "../install-host-monitor.ps1") -Msi $currentMsi -Quiet
 if ((Get-FileHash (Join-Path $installedRoot 'host-monitor.exe')).Hash -ne $expectedExeHash) { throw 'Repair did not force replacement of damaged executable' }
 if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Repair changed device identity' }
 
@@ -686,6 +686,29 @@ Invoke-Msi /x $currentMsi "purge-uninstall" "PURGE=1"
 Assert-ClientCompletelyAbsent
 Assert-MaintenanceDiagnosticAbsent "After MSI lifecycle smoke test"
 
+# A non-default program directory must flow through MSI, SCM and every native
+# maintenance validation without weakening the fixed ProgramData state root.
+$customInstallRoot = Join-Path $env:ProgramFiles "host-monitor-custom-$ProductVersion"
+Invoke-Msi /i $currentMsi "custom-path-install" "INSTALLFOLDER=`"$customInstallRoot`""
+if (-not (Test-Path -LiteralPath (Join-Path $customInstallRoot 'host-monitor.exe') -PathType Leaf)) {
+    throw 'Custom installation directory did not receive the Client executable.'
+}
+$customImagePath = (Get-CimInstance Win32_Service -Filter "Name='host-monitor'").PathName
+if (-not $customImagePath.StartsWith("`"$customInstallRoot\host-monitor.exe`"", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Service ImagePath did not use the selected installation directory: $customImagePath"
+}
+Set-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Value $fixtureIdentity -NoNewline
+Invoke-Msi /x $currentMsi "custom-path-preserve-uninstall"
+Invoke-Msi /i $currentMsi "custom-path-clean-state" "INSTALLFOLDER=`"$customInstallRoot`" ADDLOCAL=ClientFeature"
+if ((Test-Path (Join-Path $stateRoot 'config.json')) -or (Test-Path (Join-Path $stateRoot 'host-id'))) {
+    throw 'Deselected host-monitor configuration or Client data was retained.'
+}
+Invoke-Msi /x $currentMsi "custom-path-purge" "PURGE=1"
+if (Test-Path -LiteralPath $customInstallRoot) {
+    throw 'Custom installation directory survived uninstall.'
+}
+Assert-ClientCompletelyAbsent
+
 # Exercise a real published package upgrade, including the old helper's uninstall
 # ACL transition while MSI keeps the SCM handle alive across MajorUpgrade.
 $priorMsi = Join-Path $logs 'host-monitor-0.9.7-x64.msi'
@@ -694,7 +717,7 @@ if ((Get-FileHash $priorMsi -Algorithm SHA256).Hash.ToLowerInvariant() -ne '8dad
 Invoke-Msi /i $priorMsi 'install-published-0.9.7'
 $stateMarker = '.host-monitor-managed-0.9.7'
 [IO.File]::WriteAllText((Join-Path $stateRoot 'host-id'), $fixtureIdentity, [Text.UTF8Encoding]::new($false))
-& (Join-Path $PSScriptRoot '../install-host-monitor.ps1') -Msi $currentMsi
+& (Join-Path $PSScriptRoot '../install-host-monitor.ps1') -Msi $currentMsi -Quiet
 Assert-ArpVersion $ProductVersion
 Assert-MachinePathInstalled
 Assert-StateAcl

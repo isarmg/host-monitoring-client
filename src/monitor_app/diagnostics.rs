@@ -227,11 +227,7 @@ fn inspect_spool(config: &ClientConfig) -> SpoolInspection {
             check: Some(DiagnosticCheck::new(
                 "spool",
                 if health.healthy { "ok" } else { "error" },
-                if health.identity_mismatch_entries > 0 {
-                    Some("spool_identity_mismatch")
-                } else {
-                    (!health.healthy).then_some("spool_quarantined")
-                },
+                (!health.healthy).then_some("important_state_incompatible"),
                 format!(
                     "{} pending, {} quarantined ({} identity mismatches), {} bytes; inventory only, payloads not verified",
                     health.spool_entries,
@@ -263,7 +259,7 @@ fn inspect_spool(config: &ClientConfig) -> SpoolInspection {
             check: Some(DiagnosticCheck::new(
                 "spool",
                 "error",
-                Some("spool_unreadable"),
+                Some("important_state_incompatible"),
                 format!("failed to inspect {}: {error}", path.display()),
                 Some(
                     "retry if the client is writing; otherwise check private directory safety, capacity, and disk health",
@@ -292,6 +288,20 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
 
     let pairing_result = pairing::local_status(config);
     let authorization_result = pairing::local_auth_state(config);
+    let pairing_incompatible = pairing_result.as_ref().err().is_some_and(|error| {
+        error.chain().any(|cause| {
+            cause
+                .downcast_ref::<pairing::PairingStateCompatibilityError>()
+                .is_some()
+        })
+    });
+    let authorization_incompatible = authorization_result.as_ref().err().is_some_and(|error| {
+        error.chain().any(|cause| {
+            cause
+                .downcast_ref::<pairing::PairingStateCompatibilityError>()
+                .is_some()
+        })
+    });
     let pairing_error = pairing_result.as_ref().err().map(ToString::to_string);
     let authorization_error = authorization_result.as_ref().err().map(ToString::to_string);
     let pairing_status = pairing_result.ok();
@@ -354,14 +364,18 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
             "there is no Active pairing endpoint to inspect".into(),
         )
     };
-    let next_action = match overall_state {
-        "degraded" => "repair the failed local check, then run `host-monitor doctor`",
-        "reauth_required" => {
-            "create a new authorization code in Host Monitoring, then run `host-monitor pair recover --interactive`"
+    let next_action = if pairing_incompatible || authorization_incompatible {
+        "preserve the local queue, create a new Host authorization code, then run `host-monitor pair recover --interactive`; incompatible account files will be archived"
+    } else {
+        match overall_state {
+            "degraded" => "repair the failed local check, then run `host-monitor doctor`",
+            "reauth_required" => {
+                "create a new authorization code in Host Monitoring, then run `host-monitor pair recover --interactive`"
+            }
+            "pairing" => "complete or resume the saved browser pairing request",
+            "unconfigured" => "run `host-monitor pair --server https://your-console`",
+            _ => "run `host-monitor doctor --delivery` for an explicit end-to-end delivery test",
         }
-        "pairing" => "complete or resume the saved browser pairing request",
-        "unconfigured" => "run `host-monitor pair --server https://your-console`",
-        _ => "run `host-monitor doctor --delivery` for an explicit end-to-end delivery test",
     };
     let checks = serde_json::json!({
         "configuration": config_check,
@@ -371,17 +385,17 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
         "spool": spool_check,
         "pairing": {
             "status": if pairing_error.is_some() { "error" } else { "ok" },
-            "code": pairing_error.as_ref().map(|_| "pairing_state_invalid"),
+            "code": pairing_error.as_ref().map(|_| if pairing_incompatible { "pairing_state_incompatible" } else { "pairing_state_invalid" }),
             "message": pairing_error
         },
         "active_binding": {
             "status": binding_status,
-            "code": binding_code,
+            "code": if pairing_incompatible { Some("pairing_state_incompatible") } else { binding_code },
             "message": binding_message
         },
         "authorization": {
             "status": if authorization_error.is_some() { "error" } else { "ok" },
-            "code": authorization_error.as_ref().map(|_| "authorization_state_invalid"),
+            "code": authorization_error.as_ref().map(|_| if authorization_incompatible { "pairing_state_incompatible" } else { "authorization_state_invalid" }),
             "message": authorization_error
         }
     });
@@ -604,7 +618,10 @@ mod tests {
         assert_eq!(inspection.pending_batches, 0);
         assert_eq!(inspection.invalid_batches, 1);
         assert!(inspection.total_bytes > 1);
-        assert_eq!(inspection.check.unwrap().code, Some("spool_quarantined"));
+        assert_eq!(
+            inspection.check.unwrap().code,
+            Some("important_state_incompatible")
+        );
         assert_eq!(spool.doctor().unwrap().quarantined_entries, 1);
         let id = spool
             .enqueue(
@@ -651,7 +668,7 @@ mod tests {
         assert_eq!(inspection.identity_mismatch_batches, 1);
         assert_eq!(
             inspection.check.unwrap().code,
-            Some("spool_identity_mismatch")
+            Some("important_state_incompatible")
         );
         assert_eq!(snapshot(), before);
         drop(spool);

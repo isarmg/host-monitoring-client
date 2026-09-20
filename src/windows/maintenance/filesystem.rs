@@ -807,13 +807,14 @@ fn write_or_validate_state_marker(paths: &FixedPaths) -> anyhow::Result<()> {
 // marker unchanged so repair rollback and preserved-state reinstall are lossless.
 fn existing_state_marker(paths: &FixedPaths) -> anyhow::Result<Option<PathBuf>> {
     let mut found = None;
-    for version in ["0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", env!("CARGO_PKG_VERSION")] {
-        let marker = paths.state_root.join(format!(".host-monitor-managed-{version}"));
-        if marker.try_exists()? {
+    for entry in fs::read_dir(&paths.state_root).context("failed to enumerate state markers")? {
+        let marker = entry?.path();
+        let Some(name) = marker.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(".host-monitor-managed-") {
             validate_marker_file(&marker)?;
-            if found.as_ref().is_some_and(|previous| previous != &marker) {
-                bail!("multiple conflicting state ownership markers");
-            }
+            ensure!(found.is_none(), "multiple conflicting state ownership markers");
             found = Some(marker);
         }
     }
@@ -839,10 +840,39 @@ fn validate_marker_file(marker: &Path) -> anyhow::Result<()> {
         file_link_count(marker)? == 1,
         "state marker has multiple hard links"
     );
+    let name = marker
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("state marker name is not valid Unicode")?;
+    let version = name
+        .strip_prefix(".host-monitor-managed-")
+        .context("state marker name is invalid")?;
+    let parse_version = |value: &str| -> anyhow::Result<(u64, u64, u64)> {
+        let mut fields = value.split('.');
+        let parsed = (
+            fields.next().context("state marker version is incomplete")?.parse()?,
+            fields.next().context("state marker version is incomplete")?.parse()?,
+            fields.next().context("state marker version is incomplete")?.parse()?,
+        );
+        ensure!(
+            fields.next().is_none(),
+            "state marker version has extra fields"
+        );
+        Ok(parsed)
+    };
+    let marker_version = parse_version(version).context("state marker version is invalid")?;
+    let current_version =
+        parse_version(env!("CARGO_PKG_VERSION")).context("package version is invalid")?;
     ensure!(
-        ["0.9.4", "0.9.5", "0.9.6", "0.9.7", "0.9.8", env!("CARGO_PKG_VERSION")].iter().any(|version| {
-            marker.file_name().is_some_and(|name| name == format!(".host-monitor-managed-{version}").as_str())
-                && fs::read(marker).is_ok_and(|bytes| bytes == format!("host-monitor-windows-state-{version}\r\n").as_bytes())
+        marker_version.0 == 0
+            && marker_version.1 == 9
+            && marker_version.2 >= 4
+            && marker_version <= current_version,
+        "state marker version is not a supported host-monitor Windows state format"
+    );
+    ensure!(
+        fs::read(marker).is_ok_and(|bytes| {
+            bytes == format!("host-monitor-windows-state-{version}\r\n").as_bytes()
         }),
         "state marker content is invalid"
     );

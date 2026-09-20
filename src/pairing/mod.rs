@@ -45,7 +45,10 @@ use activation::*;
 use client::*;
 use commit::*;
 use state::*;
-pub use state::{LocalAuthState, LocalPairingStatus, PairingProgress, PairingSession};
+pub use state::{
+    LocalAuthState, LocalPairingStatus, PairingProgress, PairingSession,
+    PairingStateCompatibilityError,
+};
 
 pub use host_protocol::ClientPairingMode as PairMode;
 

@@ -54,9 +54,13 @@ pub fn local_status(config: &ClientConfig) -> anyhow::Result<LocalPairingStatus>
         }
         match binding? {
             Some(binding) if binding == expected => {}
-            Some(_) => bail!("active binding does not match the current Active pairing state"),
+            Some(_) => {
+                return Err(corrupt_pairing_state("active-binding"))
+                    .context("active binding does not match the current Active pairing state");
+            }
             None => {
-                bail!("active binding is missing; purge local state and pair host-monitor again")
+                return Err(corrupt_pairing_state("active-binding"))
+                    .context("active binding is missing; pair the Host again");
             }
         }
         return Ok(LocalPairingStatus {
@@ -156,11 +160,13 @@ pub fn refresh_reporter_snapshot(
         return Ok(None);
     }
     let binding = load_active_binding(config, &transaction)?
+        .ok_or_else(|| corrupt_pairing_state("active-binding"))
         .context("authorized credential binding is missing")?;
     if matches!(state, StoredPairingState::Active { .. })
         && binding_from_active_state(&state)? != binding
     {
-        bail!("active credential binding does not match the pairing journal");
+        return Err(corrupt_pairing_state("active-binding"))
+            .context("active credential binding does not match the pairing journal");
     }
     if (binding.generation, binding.request_id) == revision {
         return Ok(None);
@@ -193,9 +199,8 @@ pub fn existing_reporter_for_run(config: &ClientConfig) -> anyhow::Result<Option
             | StoredPairingState::Expired { .. },
         ) => match load_active_binding(config, store)? {
             Some(binding) => reporter_for_active_binding_unlocked(config, store, &binding),
-            None => {
-                bail!("active binding is missing; purge local state and pair host-monitor again")
-            }
+            None => Err(corrupt_pairing_state("active-binding"))
+                .context("active binding is missing; pair the Host again"),
         },
         _ => Ok(None),
     }
@@ -338,9 +343,7 @@ pub fn local_auth_state(config: &ClientConfig) -> anyhow::Result<Option<LocalAut
 fn local_auth_state_unlocked(store: &StateReader) -> anyhow::Result<Option<LocalAuthState>> {
     let path = store.path(StateFile::Authorization);
     match store.read(StateFile::Authorization) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("auth state {} is invalid", path.display()))
-            .map(Some),
+        Ok(bytes) => decode_pairing_document(&bytes, "authorization-state").map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }

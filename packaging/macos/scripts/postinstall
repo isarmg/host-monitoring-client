@@ -30,6 +30,7 @@ uninstall_helper="$share_dir/uninstall.sh"
 launch_daemon_dir="${client_plist%/*}"
 library_root="${launch_daemon_dir%/*}"
 package_version="@HOST_MONITOR_PACKAGE_VERSION@"
+persistent_state_format="0.9.4"
 user_created=0
 group_created=0
 ownership_marker_present=0
@@ -286,7 +287,7 @@ validate_launch_payload() {
   require_regular_payload "$logrotate_plist" "log-rotation LaunchDaemon plist" 644
   require_regular_payload "$newsyslog_config" "newsyslog configuration" 644
   require_regular_payload "$package_config" "package config" 644
-  require_current_config "$package_config"
+  require_supported_config "$package_config"
   require_regular_payload "$uninstall_helper" "uninstall helper" 755
   sh -n "$uninstall_helper" || {
     echo "host-monitor uninstall helper has invalid shell syntax" >&2
@@ -321,10 +322,10 @@ validate_launch_payload() {
   require_no_extended_acl "$client_command" "command link" || exit 1
 }
 
-current_config_has_package_version() {
+config_has_supported_state_format() {
   current_config_path="$1"
   config_version_marker="$(
-    awk -v expected="0.9.4" '
+    awk -v expected="$persistent_state_format" '
       {
         remaining = $0
         while (match(remaining, /"application_version"[[:space:]]*:/)) {
@@ -351,12 +352,25 @@ is_reserved_service_id() {
   esac
 }
 
-require_current_config() {
+require_supported_config() {
   current_config_path="$1"
-  current_config_has_package_version "$current_config_path" || {
-    echo "$current_config_path is not the current $package_version package config" >&2
+  config_has_supported_state_format "$current_config_path" || {
+    echo "Unsupported configuration format in $current_config_path; expected $persistent_state_format" >&2
     exit 1
   }
+}
+
+is_package_version() {
+  candidate_package_version="$1"
+  [ "$candidate_package_version" = "$package_version" ] && return 0
+  case "$candidate_package_version" in
+    0.9.*) candidate_patch_version="${candidate_package_version#0.9.}" ;;
+    *) return 1 ;;
+  esac
+  case "$candidate_patch_version" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 reregister_stopped_jobs() {
@@ -479,15 +493,40 @@ if [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
   require_no_extended_acl "$ownership_marker" "account ownership marker" || exit 1
   seen_user=0
   seen_group=0
-  seen_format=0
+  seen_legacy_format=0
+  seen_marker_format=0
+  seen_last_package_version=0
+  seen_state_format=0
   seen_user_uid=0
   seen_user_primary_gid=0
   seen_group_gid=0
   while IFS= read -r marker_line; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
-        [ "$seen_format" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
-        seen_format=1
+      format=*)
+        [ "$seen_legacy_format" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        legacy_package_version="${marker_line#format=}"
+        is_package_version "$legacy_package_version" || {
+          echo "Invalid legacy ownership marker package version" >&2
+          exit 1
+        }
+        seen_legacy_format=1
+        ;;
+      marker_format=1)
+        [ "$seen_marker_format" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        seen_marker_format=1
+        ;;
+      last_package_version=*)
+        [ "$seen_last_package_version" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        marker_package_version="${marker_line#last_package_version=}"
+        is_package_version "$marker_package_version" || {
+          echo "Invalid ownership marker package version" >&2
+          exit 1
+        }
+        seen_last_package_version=1
+        ;;
+      state_format=0.9.4)
+        [ "$seen_state_format" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
+        seen_state_format=1
         ;;
       user_created=0|user_created=1)
         [ "$seen_user" -eq 0 ] || { echo "Duplicate Client ownership marker field" >&2; exit 1; }
@@ -520,7 +559,20 @@ if [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
         ;;
     esac
   done < "$ownership_marker"
-  [ "$seen_format" -eq 1 ] && [ "$seen_user" -eq 1 ] && [ "$seen_group" -eq 1 ] && [ "$seen_user_uid" -eq 1 ] &&
+  if [ "$seen_legacy_format" -eq 1 ]; then
+    [ "$seen_marker_format" -eq 0 ] && [ "$seen_last_package_version" -eq 0 ] &&
+      [ "$seen_state_format" -eq 0 ] || {
+      echo "Mixed legacy and current host-monitor ownership marker schemas" >&2
+      exit 1
+    }
+  else
+    [ "$seen_marker_format" -eq 1 ] && [ "$seen_last_package_version" -eq 1 ] &&
+      [ "$seen_state_format" -eq 1 ] || {
+      echo "Unsupported or incomplete host-monitor ownership marker schema" >&2
+      exit 1
+    }
+  fi
+  [ "$seen_user" -eq 1 ] && [ "$seen_group" -eq 1 ] && [ "$seen_user_uid" -eq 1 ] &&
     [ "$seen_user_primary_gid" -eq 1 ] && [ "$seen_group_gid" -eq 1 ] || {
     echo "Incomplete host-monitor account ownership marker" >&2
     exit 1
@@ -585,7 +637,7 @@ write_ownership_marker() {
   if ! (
     umask 077
     set -C
-    printf 'format=%s\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
+    printf 'marker_format=1\nlast_package_version=%s\nstate_format=0.9.4\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
       "$package_version" "$user_created" "$created_user_uid" \
       "$created_user_primary_gid" "$group_created" "$created_group_gid" \
       > "$marker_temporary"
@@ -676,7 +728,7 @@ release_verified_state_to_service() {
   read_path_metadata "$config" || return 1
   [ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || return 1
   path_has_no_extended_acl "$config" || return 1
-  current_config_has_package_version "$config" || return 1
+  config_has_supported_state_format "$config" || return 1
 
   [ -f "$log" ] && [ ! -L "$log" ] || return 1
   read_path_metadata "$log" || return 1
@@ -1090,7 +1142,6 @@ else
   fi
   uid="$existing_uid"
 fi
-write_ownership_marker
 
 # 安装与授权刻意分离。未配对时 Client 只低频记录 awaiting_authorization；用户随后执行
 # `host-monitor pair --server https://...`，常驻进程会接续同一个浏览器配对请求。
@@ -1230,7 +1281,7 @@ if [ -e "$config" ] || [ -L "$config" ]; then
     }
   fi
   require_no_extended_acl "$config" "retained config" || exit 1
-  require_current_config "$config"
+  require_supported_config "$config"
   chmod -N "$config" || {
     echo "Could not remove ACLs from the host-monitor config" >&2
     exit 1
@@ -1271,7 +1322,7 @@ else
     exit 1
   }
   require_no_extended_acl "$config_temporary" "temporary config" || exit 1
-  require_current_config "$config_temporary"
+  require_supported_config "$config_temporary"
   ln "$config_temporary" "$config" || {
     echo "Could not publish the host-monitor config without replacing an existing path" >&2
     exit 1
@@ -1289,7 +1340,7 @@ read_path_metadata "$config"
   exit 1
 }
 require_no_extended_acl "$config" "config" || exit 1
-require_current_config "$config"
+require_supported_config "$config"
 
 if [ -e "$log" ] || [ -L "$log" ]; then
   [ -f "$log" ] && [ ! -L "$log" ] || {
@@ -1358,5 +1409,9 @@ Uninstall helper:
 
 EOF
 
+# For an existing account binding, publish the new marker only after every
+# other fallible installation step. Freshly created accounts are recorded
+# earlier so a failed install never leaves an unowned system identity.
+write_ownership_marker
 restart_state_safe=1
 exit 0

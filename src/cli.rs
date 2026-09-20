@@ -63,6 +63,12 @@ impl ProductErrorCatalog for HostErrorCatalog {
             "server_replacement_requires_pair_replace" | "server_change_requires_pair_replace" => {
                 Some("Changing the Host Server requires the explicit pair replace workflow.")
             }
+            "pairing_state_incompatible" => Some(
+                "The stored Host account or pairing data is incompatible or malformed; it was preserved.",
+            ),
+            "important_state_incompatible" => Some(
+                "Important saved Host collection data is incompatible or unreadable and was preserved.",
+            ),
             _ => None,
         }
     }
@@ -94,6 +100,13 @@ impl ProductErrorCatalog for HostErrorCatalog {
             "pairing_server_upgrade_required" | "pairing_protocol_unsupported" => {
                 Some("Upgrade the older Host Client or Server to the same current contract.".into())
             }
+            "pairing_state_incompatible" => Some(format!(
+                "Create a new Host authorization code, then run `{product} pair recover --interactive`; incompatible account files will be archived while the Host identity and queue are preserved."
+            )),
+            "important_state_incompatible" => Some(
+                "Do not delete or replace the reported spool; restore it with a compatible Client or archive it for operator review."
+                    .into(),
+            ),
             _ => None,
         }
     }
@@ -176,8 +189,31 @@ fn queue(c: &ClientConfig) -> Result<Value> {
         {
             Ok(json!({"pending_batches":0,"bytes":0,"quarantined":0,"healthy":true}))
         }
-        Err(e) => Err(storage_error(e)),
+        Err(_) => Err(important_state_error("spool", None)),
     }
+}
+
+fn checked_queue(c: &ClientConfig) -> Result<Value> {
+    let status = queue(c)?;
+    if status["healthy"] == false {
+        return Err(important_state_error(
+            "spool",
+            Some(format!(
+                "pending={};quarantined={};identity_mismatch={}",
+                status["pending_batches"], status["quarantined"], status["identity_mismatch"]
+            )),
+        ));
+    }
+    Ok(status)
+}
+
+fn important_state_error(artifact: &'static str, extra: Option<String>) -> Failure {
+    let mut detail = format!("artifact={artifact};preserved=true");
+    if let Some(extra) = extra {
+        detail.push(';');
+        detail.push_str(&extra);
+    }
+    fail(10, "important_state_incompatible").with_detail(detail)
 }
 
 fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
@@ -299,6 +335,9 @@ struct PairInput {
     authorization_code: Zeroizing<String>,
 }
 fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Failure {
+    if let Some(failure) = pairing_state_failure(&error) {
+        return failure;
+    }
     if let Some(http) = error.downcast_ref::<pairing::PairingHttpError>() {
         if http.code == Some("unsupported_client_protocol") {
             let mut failure = fail(10, "pairing_protocol_unsupported");
@@ -336,6 +375,32 @@ fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Fa
         return fail(3, "permission_denied");
     }
     fail(fallback, code)
+}
+
+fn pairing_state_failure(error: &anyhow::Error) -> Option<Failure> {
+    error.chain().find_map(|cause| {
+        let state = cause.downcast_ref::<pairing::PairingStateCompatibilityError>()?;
+        let detail = match state {
+            pairing::PairingStateCompatibilityError::Unsupported {
+                artifact,
+                detected,
+                supported,
+            } => format!(
+                "artifact={artifact};detected={detected};supported={supported};preserved=true"
+            ),
+            pairing::PairingStateCompatibilityError::Corrupt { artifact } => {
+                format!(
+                    "artifact={artifact};detected=malformed;supported={};preserved=true",
+                    pairing::PERSISTED_STATE_FORMAT
+                )
+            }
+        };
+        Some(fail(4, "pairing_state_incompatible").with_detail(detail))
+    })
+}
+
+fn pairing_state_error(error: anyhow::Error) -> Failure {
+    pairing_state_failure(&error).unwrap_or_else(|| storage_error(error))
 }
 async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
     let deadline = Instant::now() + args.timeout;
@@ -382,7 +447,28 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
         ));
     }
     let _guard = Guard::acquire(&c.state_dir).map_err(runtime_error)?;
-    let existing = pairing::local_status(&c).map_err(storage_error)?;
+    let pairing_status = pairing::local_status(&c);
+    let authorization_status = pairing::local_auth_state(&c);
+    let recover_incompatible = pairing_status
+        .as_ref()
+        .err()
+        .is_some_and(|error| pairing_state_failure(error).is_some())
+        || authorization_status
+            .as_ref()
+            .err()
+            .is_some_and(|error| pairing_state_failure(error).is_some());
+    let existing = if recover && recover_incompatible {
+        checked_queue(&c)?;
+        host_monitor::collectors::load_host_identity(&c.state_dir).map_err(pairing_state_error)?;
+        pairing::archive_incompatible_account_state(&c).map_err(pairing_state_error)?;
+        pairing::LocalPairingStatus {
+            progress: None,
+            active_report_endpoint: None,
+        }
+    } else {
+        authorization_status.map_err(pairing_state_error)?;
+        pairing_status.map_err(pairing_state_error)?
+    };
     if resume && existing.progress.is_none() {
         return Err(fail(4, "no_pairing_transaction"));
     }
@@ -842,10 +928,10 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         .status(deadline.remaining("service_inspection")?)
         .map_err(|error| error.at_step("service_inspection"))?;
     let (default_enable, default_start) = setup_service_intent(&initial_service);
-    let existing =
-        pairing::local_status(&c).map_err(|error| storage_error(error).at_step("configuration"))?;
+    let existing = pairing::local_status(&c)
+        .map_err(|error| pairing_state_error(error).at_step("configuration"))?;
     let reauthorization_required = pairing::local_auth_state(&c)
-        .map_err(|error| storage_error(error).at_step("configuration"))?
+        .map_err(|error| pairing_state_error(error).at_step("configuration"))?
         .is_some_and(|state| {
             state.status == sarmg_client_runtime::CredentialAuthorization::ReauthorizationRequired
         });
@@ -1043,7 +1129,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         Err(error) => return Err(setup_failure(error, &pairing, "pairing")),
     };
     let pairing_status = pairing::local_status(&config)
-        .map_err(|error| setup_failure(storage_error(error), &pairing, "pairing"))?;
+        .map_err(|error| setup_failure(pairing_state_error(error), &pairing, "pairing"))?;
     if pairing_status.active_report_endpoint.is_none() {
         return Err(setup_failure(
             fail(11, "pairing_postcondition_unconfirmed"),
@@ -1385,7 +1471,7 @@ fn execute(args: &Args) -> Result<Value> {
             if candidate.state_dir != current.state_dir {
                 return Err(fail(2, "state_directory_migration_required"));
             }
-            let binding = pairing::local_status(&current).map_err(storage_error)?;
+            let binding = pairing::local_status(&current).map_err(pairing_state_error)?;
             if (binding.active_report_endpoint.is_some() || binding.progress.is_some())
                 && (candidate.endpoint != current.endpoint
                     || candidate.pairing_endpoint != current.pairing_endpoint)
@@ -1421,7 +1507,7 @@ fn execute(args: &Args) -> Result<Value> {
             if candidate.state_dir != current.state_dir {
                 return Err(fail(2, "state_directory_migration_required"));
             }
-            let binding = pairing::local_status(&current).map_err(storage_error)?;
+            let binding = pairing::local_status(&current).map_err(pairing_state_error)?;
             if (binding.active_report_endpoint.is_some() || binding.progress.is_some())
                 && (candidate.endpoint != current.endpoint
                     || candidate.pairing_endpoint != current.pairing_endpoint)
@@ -1484,8 +1570,12 @@ fn execute(args: &Args) -> Result<Value> {
                 return Err(fail(12, "business_health_unconfirmed"));
             }
             if words[0] == "queue" {
-                queue(&c)
+                checked_queue(&c)
             } else {
+                if words.as_slice() == ["pair", "status"] {
+                    pairing::local_status(&c).map_err(pairing_state_error)?;
+                    pairing::local_auth_state(&c).map_err(pairing_state_error)?;
+                }
                 local_status(&c)
             }
         }
@@ -1498,12 +1588,12 @@ fn execute(args: &Args) -> Result<Value> {
             let mut host = host_monitor::collectors::load_host_identity(&c.state_dir)
                 .map_err(storage_error)?;
             let reporter = if let Some(reporter) =
-                pairing::reporter_for_current_active_state(&c).map_err(storage_error)?
+                pairing::reporter_for_current_active_state(&c).map_err(pairing_state_error)?
             {
                 reporter
             } else {
                 pairing::existing_reporter_for_run(&c)
-                    .map_err(storage_error)?
+                    .map_err(pairing_state_error)?
                     .ok_or_else(|| fail(4, "awaiting_pairing"))?
                     .apply(&mut c, &mut host)
             };
@@ -1717,6 +1807,41 @@ mod setup_tests {
             )
             .code,
             "pairing_expired"
+        );
+    }
+
+    #[test]
+    fn account_and_collection_state_have_distinct_recovery_codes() {
+        let account = pairing_state_error(
+            pairing::PairingStateCompatibilityError::Unsupported {
+                artifact: "pairing-state",
+                detected: "0.8.0".into(),
+                supported: pairing::PERSISTED_STATE_FORMAT,
+            }
+            .into(),
+        );
+        assert_eq!(account.exit, 4);
+        assert_eq!(account.code, "pairing_state_incompatible");
+        assert!(
+            account
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("preserved=true")
+        );
+        assert!(
+            HostErrorCatalog
+                .next_step("host-monitor", &account)
+                .unwrap()
+                .contains("pair recover --interactive")
+        );
+
+        let important = important_state_error("spool", None);
+        assert_eq!(important.exit, 10);
+        assert_eq!(important.code, "important_state_incompatible");
+        assert_eq!(
+            important.detail.as_deref(),
+            Some("artifact=spool;preserved=true")
         );
     }
 

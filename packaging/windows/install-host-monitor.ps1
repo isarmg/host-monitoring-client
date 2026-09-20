@@ -1,6 +1,9 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Msi)
+param(
+    [Parameter(Mandatory=$true)][string]$Msi,
+    [switch]$Quiet
+)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $Msi = (Resolve-Path -LiteralPath $Msi).Path
@@ -15,10 +18,11 @@ $version = Read-MsiProperty 'ProductVersion'
 $product = Read-MsiProperty 'ProductCode'
 $logRoot = Join-Path $env:TEMP ('host-monitor-install-' + [guid]::NewGuid())
 $null = New-Item -ItemType Directory -Path $logRoot
-function Invoke-Installer([string]$Arguments,[string]$Name) {
+function Invoke-Installer([string]$Arguments,[string]$Name,[bool]$UseFullUi = $false) {
     $log = Join-Path $logRoot ($Name + '.log')
+    $ui = if ($UseFullUi) { '' } else { ' /qn' }
     for ($attempt = 0; $attempt -lt 12; $attempt++) {
-        $p = Start-Process msiexec.exe -ArgumentList ($Arguments + ' /qn /norestart /l*v "' + $log + '"') -Wait -PassThru
+        $p = Start-Process msiexec.exe -ArgumentList ($Arguments + $ui + ' /norestart /l*v "' + $log + '"') -Wait -PassThru
         if ($p.ExitCode -ne 1618) { break }
         Start-Sleep -Seconds 5
     }
@@ -43,7 +47,9 @@ foreach ($entry in $entries) {
     }
 }
 $repair = if (@($entries | ForEach-Object { $_.PSChildName }) -contains $product) { ' REINSTALL=ALL REINSTALLMODE=amus' } else { '' }
-Invoke-Installer ('/i "' + $Msi + '"' + $repair) 'install'
-& (Join-Path $env:ProgramFiles 'host-monitor\host-monitor.exe') --version
+Invoke-Installer ('/i "' + $Msi + '"' + $repair) 'install' (-not $Quiet)
+$installLocation = (Get-ItemProperty -LiteralPath 'HKLM:\Software\Host Monitoring\host-monitor' -Name InstallLocation).InstallLocation
+if ([string]::IsNullOrWhiteSpace($installLocation)) { throw "Installer did not record its selected installation directory. Logs: $logRoot" }
+& (Join-Path $installLocation 'host-monitor.exe') --version
 if ($LASTEXITCODE -ne 0) { throw "Installed executable verification failed. Logs: $logRoot" }
-Write-Host "Installation/repair complete. Configuration and queue retained. Logs: $logRoot"
+Write-Host "Installation/repair completed successfully. Selected retention choices were applied. Logs: $logRoot"

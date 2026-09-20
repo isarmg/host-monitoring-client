@@ -33,7 +33,9 @@ write_marker() {
     marker_gid=-
   fi
   {
-    printf 'format=@HOST_MONITOR_PACKAGE_VERSION@\n'
+    printf 'marker_format=1\n'
+    printf 'last_package_version=@HOST_MONITOR_PACKAGE_VERSION@\n'
+    printf 'state_format=0.9.4\n'
     printf 'user_created=%s\n' "$marker_user_created"
     printf 'user_uid=%s\n' "$marker_uid"
     printf 'user_primary_gid=%s\n' "$marker_primary_gid"
@@ -401,6 +403,16 @@ assert_incomplete "$case_root"
 [ ! -e "$case_root/dscl-deletes" ] || fail 'writable marker authorized account deletion'
 [ -e "$case_root/var/db/host-monitor/account-ownership" ] ||
   fail 'invalid marker was removed'
+
+case_root="$test_root/invalid-marker-package-version"
+make_case "$case_root"
+write_marker "$case_root" 1 1
+sed -i 's/last_package_version=@HOST_MONITOR_PACKAGE_VERSION@/last_package_version=0.0.0/' \
+  "$case_root/var/db/host-monitor/account-ownership"
+run_case "$case_root"
+assert_incomplete "$case_root"
+[ ! -e "$case_root/dscl-deletes" ] ||
+  fail 'marker from an unrelated package version line authorized account deletion'
 
 case_root="$test_root/invalid-proof-accounts-absent"
 make_case "$case_root"

@@ -821,9 +821,10 @@ write_ownership_marker_ids() {
   marker_uid="$2"
   marker_primary_gid="$3"
   marker_group_gid="$4"
+  marker_package_version="${5:-@HOST_MONITOR_PACKAGE_VERSION@}"
   mkdir -p "$marker_case/var/db/host-monitor"
   {
-    printf 'format=@HOST_MONITOR_PACKAGE_VERSION@\n'
+    printf 'format=%s\n' "$marker_package_version"
     printf 'user_created=1\n'
     printf 'user_uid=%s\n' "$marker_uid"
     printf 'user_primary_gid=%s\n' "$marker_primary_gid"
@@ -1163,6 +1164,32 @@ grep -Fx 'disable system/org.sarmg.hostmonitor' "$case_dir/launch/calls" >/dev/n
   [ ! -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] ||
   fail 'fresh install must leave Client stopped and disabled'
 
+# A package-version marker from any previous release is bookkeeping, not a
+# persistent-state format. Validate its identity binding and replace it with
+# the explicit marker schema instead of maintaining a release whitelist.
+write_ownership_marker_ids "$case_dir" 450 450 450 0.9.23
+start_prior_client
+reset_fault_counters "$case_dir"
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=1 \
+  >"$case_dir/legacy-marker-failure.log" 2>&1; then
+  fail 'legacy marker replacement failure unexpectedly succeeded'
+fi
+grep -Fx 'format=0.9.23' "$case_dir/var/db/host-monitor/account-ownership" >/dev/null ||
+  fail 'failed replacement did not preserve the legacy ownership marker'
+reset_fault_counters "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/legacy-marker-upgrade.log" 2>&1 ||
+  fail 'legacy package-version ownership marker blocked replacement'
+grep -Fx 'marker_format=1' "$case_dir/var/db/host-monitor/account-ownership" >/dev/null ||
+  fail 'legacy ownership marker was not overwritten with marker schema 1'
+grep -Fx 'last_package_version=@HOST_MONITOR_PACKAGE_VERSION@' \
+  "$case_dir/var/db/host-monitor/account-ownership" >/dev/null ||
+  fail 'rewritten ownership marker did not record the installed package version'
+grep -Fx 'state_format=0.9.4' "$case_dir/var/db/host-monitor/account-ownership" >/dev/null ||
+  fail 'rewritten ownership marker did not separate the persistent-state format'
+if grep -E '^format=' "$case_dir/var/db/host-monitor/account-ownership" >/dev/null; then
+  fail 'rewritten ownership marker retained the ambiguous legacy format field'
+fi
+
 assert_recoverable() {
   recovery_case="$1"
   reset_fault_counters "$recovery_case"
@@ -1255,6 +1282,15 @@ ln -s "$case_dir/foreign-marker" "$case_dir/var/db/host-monitor/account-ownershi
 if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
   fail 'symlinked ownership marker unexpectedly succeeded'
 fi
+
+case_dir="$test_root/invalid-marker-package-version"
+make_case "$case_dir"
+write_ownership_marker_ids "$case_dir" 450 450 450 0.0.0
+if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
+  fail 'ownership marker from an unrelated package version line unexpectedly succeeded'
+fi
+grep -F 'Invalid legacy ownership marker package version' "$case_dir/failure.log" >/dev/null ||
+  fail 'invalid legacy marker package version was not diagnosed'
 
 for unsafe_marker_case in uid-zero uid-above-range gid-zero gid-above-range; do
   case_dir="$test_root/unsafe-marker-$unsafe_marker_case"
@@ -1728,8 +1764,9 @@ run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
 start_prior_client
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
-run_preinstall "$case_dir" PKGUTIL_INSTALLED=1 >"$case_dir/preinstall.log" 2>&1 ||
-  fail 'same-version preinstall unexpectedly failed'
+run_preinstall "$case_dir" PKGUTIL_INSTALLED=1 PKGUTIL_VERSION=0.9.23 \
+  >"$case_dir/preinstall.log" 2>&1 ||
+  fail 'replacement preinstall rejected an older package receipt'
 [ -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] ||
   fail 'preinstall stopped the previous Client before payload validation'
 [ -e "$case_dir/launch/loaded.org.sarmg.hostmonitor.logrotate" ] ||

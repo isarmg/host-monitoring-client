@@ -38,8 +38,10 @@ fn load_current_active_binding_unlocked(
 ) -> anyhow::Result<ActiveBinding> {
     match load_active_binding(config, store)? {
         Some(binding) if binding == *expected => Ok(binding),
-        Some(_) => bail!("active binding does not match the current Active pairing state"),
-        None => bail!("active binding is missing; purge local state and pair host-monitor again"),
+        Some(_) => Err(corrupt_pairing_state("active-binding"))
+            .context("active binding does not match the current Active pairing state"),
+        None => Err(corrupt_pairing_state("active-binding"))
+            .context("active binding is missing; pair the Host again"),
     }
 }
 

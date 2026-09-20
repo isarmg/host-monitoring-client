@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <Package
     UpgradeCode="B4A341EC-D4B2-419F-A00B-E8E504DE9798"
@@ -39,6 +40,8 @@
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="PURGE" Secure="yes" />
     <Property Id="HOST_MONITORING_MAINTENANCE_DIAGNOSTICS" Value="1" Secure="yes" />
+    <ui:WixUI Id="WixUI_FeatureTree" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="host-monitor" />
@@ -119,6 +122,18 @@
           Type="string"
           Value="[STATEDIRECTORY]"
           KeyPath="yes" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\Host Monitoring\host-monitor"
+          Name="InstallLocation"
+          Type="string"
+          Value="[INSTALLFOLDER]" />
+      </Component>
+      <Component Id="PreserveConfigurationSelection" Guid="B96080A9-FE74-4748-BB22-4DF9D31181E7" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="Software\Host Monitoring\host-monitor" Name="PreserveConfiguration" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="PreserveDataSelection" Guid="D063EAF7-D49B-4B93-A29F-01C667967DC3" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="Software\Host Monitoring\host-monitor" Name="PreserveData" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
@@ -130,6 +145,12 @@
       AllowAdvertise="no">
       <ComponentRef Id="ClientServiceComponent" />
       <ComponentRef Id="ClientStateDirectoryComponent" />
+      <Feature Id="PreserveConfiguration" Title="Retain existing configuration" Description="Keep config.json. Deselect to remove it and configure the Client again." Level="1" AllowAbsent="yes">
+        <ComponentRef Id="PreserveConfigurationSelection" />
+      </Feature>
+      <Feature Id="PreserveData" Title="Retain existing Client data" Description="Keep pairing identity, credentials and queued telemetry. Deselect to permanently remove them." Level="1" AllowAbsent="yes">
+        <ComponentRef Id="PreserveDataSelection" />
+      </Feature>
     </Feature>
 
 
@@ -140,28 +161,28 @@
     <CustomAction
       Id="RollbackClientInstall"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="rollback-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="rollback-install &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PrepareClientInstall"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="prepare-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="prepare-install &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="ApplyClientInstall"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="apply-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="apply-install &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitClientInstall"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="commit-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="commit-install &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />
@@ -169,59 +190,74 @@
     <CustomAction
       Id="RollbackUninstallPreflight"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="rollback-uninstall-preflight [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="rollback-uninstall-preflight &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreflightClientUninstall"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="preflight-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="preflight-uninstall &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="RollbackPreservedState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="rollback-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="rollback-uninstall &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreserveClientState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="preserve-state [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="preserve-state &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitPreservedState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="commit-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="commit-uninstall &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />
     <CustomAction
       Id="RollbackPurgedState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="rollback-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="rollback-purge &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreparePurgedState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="prepare-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="prepare-purge &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitPurgedState"
       BinaryRef="HostMonitorMaintenance.exe"
-      ExeCommand="commit-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      ExeCommand="commit-purge &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />
+
+    <CustomAction
+      Id="ResetOldConfiguration"
+      BinaryRef="HostMonitorMaintenance.exe"
+      ExeCommand="reset-configuration &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      Execute="commit"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="ResetOldData"
+      BinaryRef="HostMonitorMaintenance.exe"
+      ExeCommand="reset-data &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
+      Execute="commit"
+      Impersonate="no"
+      Return="check" />
 
 
 
@@ -250,6 +286,14 @@
         Action="CommitClientInstall"
         After="ApplyClientInstall"
         Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="ResetOldConfiguration"
+        After="CommitClientInstall"
+        Condition="NOT Installed AND &amp;PreserveConfiguration &lt;&gt; 3" />
+      <Custom
+        Action="ResetOldData"
+        After="ResetOldConfiguration"
+        Condition="NOT Installed AND &amp;PreserveData &lt;&gt; 3" />
       <!--
         Standard MSI service/file removal is name/path based, so it must never run until the
         helper has rejected a replaced service and file/junction/reparse root. Register a narrow

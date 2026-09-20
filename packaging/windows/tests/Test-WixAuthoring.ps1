@@ -100,6 +100,7 @@ function Assert-Contains {
 $namespace = New-Object System.Xml.XmlNamespaceManager($package.NameTable)
 $namespace.AddNamespace("w", "http://wixtoolset.org/schemas/v4/wxs")
 $namespace.AddNamespace("util", "http://wixtoolset.org/schemas/v4/wxs/util")
+$namespace.AddNamespace("ui", "http://wixtoolset.org/schemas/v4/wxs/ui")
 
 function Select-One {
     param([Parameter(Mandatory = $true)][string]$XPath)
@@ -129,6 +130,19 @@ Assert-Equal ($product.GetAttribute("UpgradeCode")) "B4A341EC-D4B2-419F-A00B-E8E
 $infoUrl = Select-One "/w:Wix/w:Package/w:Property[@Id='ARPURLINFOABOUT']"
 Assert-Equal $infoUrl.Value "https://github.com/isarmg/host-monitoring-client" `
     "The Apps & Features project URL must identify the current repository."
+$installerUi = Select-One "//ui:WixUI"
+Assert-Equal $installerUi.Id "WixUI_FeatureTree" `
+    "The installer must visibly present state-retention choices."
+Assert-Equal $installerUi.InstallDirectory "INSTALLFOLDER" `
+    "The installer must allow selection of the program installation directory."
+$installLocation = Select-One "//w:RegistryValue[@Name='InstallLocation']"
+Assert-Equal $installLocation.Value "[INSTALLFOLDER]" `
+    "Post-install commands must discover the selected installation directory."
+foreach ($featureId in @("PreserveConfiguration", "PreserveData")) {
+    $feature = Select-One "//w:Feature[@Id='$featureId']"
+    Assert-Equal $feature.AllowAbsent "yes" `
+        "Retention option $featureId must be an explicit user choice."
+}
 
 $upgrade = Select-One "/w:Wix/w:Package/w:MajorUpgrade"
 Assert-Equal $upgrade.Schedule "afterInstallInitialize" "Upgrade removal must be transactional."
@@ -205,18 +219,20 @@ if (@($package.SelectNodes("//w:DirectoryRef[@Id='STATEDIRECTORY']/w:Component/w
 
 $actions = @($package.SelectNodes("//w:CustomAction", $namespace))
 $expectedActions = [ordered]@{
-    "RollbackClientInstall" = @("rollback-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
-    "PrepareClientInstall" = @("prepare-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
-    "ApplyClientInstall" = @("apply-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
-    "CommitClientInstall" = @("commit-install [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
-    "RollbackUninstallPreflight" = @("rollback-uninstall-preflight [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
-    "PreflightClientUninstall" = @("preflight-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
-    "RollbackPreservedState" = @("rollback-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
-    "PreserveClientState" = @("preserve-state [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
-    "CommitPreservedState" = @("commit-uninstall [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
-    "RollbackPurgedState" = @("rollback-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
-    "PreparePurgedState" = @("prepare-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
-    "CommitPurgedState" = @("commit-purge [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
+    "RollbackClientInstall" = @('rollback-install "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "rollback", "check")
+    "PrepareClientInstall" = @('prepare-install "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "deferred", "check")
+    "ApplyClientInstall" = @('apply-install "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "deferred", "check")
+    "CommitClientInstall" = @('commit-install "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "ignore")
+    "RollbackUninstallPreflight" = @('rollback-uninstall-preflight "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "rollback", "check")
+    "PreflightClientUninstall" = @('preflight-uninstall "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "deferred", "check")
+    "RollbackPreservedState" = @('rollback-uninstall "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "rollback", "check")
+    "PreserveClientState" = @('preserve-state "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "deferred", "check")
+    "CommitPreservedState" = @('commit-uninstall "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "ignore")
+    "RollbackPurgedState" = @('rollback-purge "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "rollback", "check")
+    "PreparePurgedState" = @('prepare-purge "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "deferred", "check")
+    "CommitPurgedState" = @('commit-purge "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "ignore")
+    "ResetOldConfiguration" = @('reset-configuration "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "check")
+    "ResetOldData" = @('reset-data "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "check")
 }
 $nativeActions = @($actions | Where-Object {
     $_.GetAttribute("BinaryRef") -eq "HostMonitorMaintenance.exe"
@@ -280,6 +296,8 @@ $expectedSequence = [ordered]@{
     "PrepareClientInstall" = @("Before", "StopServices", $installCondition)
     "ApplyClientInstall" = @("After", "InstallServices", $installCondition)
     "CommitClientInstall" = @("After", "ApplyClientInstall", $installCondition)
+    "ResetOldConfiguration" = @("After", "CommitClientInstall", 'NOT Installed AND &PreserveConfiguration <> 3')
+    "ResetOldData" = @("After", "ResetOldConfiguration", 'NOT Installed AND &PreserveData <> 3')
     "RollbackUninstallPreflight" = @("Before", "PreflightClientUninstall", $preflightCondition)
     "PreflightClientUninstall" = @("Before", "StopServices", $preflightCondition)
     "RollbackPreservedState" = @("After", "StopServices", $preserveCondition)

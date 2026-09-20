@@ -21,9 +21,9 @@ fn load_active_binding(
                 .with_context(|| format!("failed to read active binding {}", path.display()));
         }
     };
-    let binding: ActiveBinding = serde_json::from_slice(&bytes)
-        .with_context(|| format!("active binding {} is invalid", path.display()))?;
-    validate_active_binding(config, &binding)?;
+    let binding: ActiveBinding = decode_pairing_document(&bytes, "active-binding")?;
+    validate_active_binding(config, &binding)
+        .map_err(|_| corrupt_pairing_state("active-binding"))?;
     Ok(Some(binding))
 }
 
@@ -74,8 +74,7 @@ fn load_state(store: &StateReader) -> anyhow::Result<Option<StoredPairingState>>
         }
     };
     let bytes = sarmg_client_secret::SecretBytes::new(bytes);
-    let state: StoredPairingState = serde_json::from_slice(bytes.expose())
-        .map_err(|_| anyhow::anyhow!("pairing state {} is invalid", path.display()))?;
+    let state: StoredPairingState = decode_pairing_document(bytes.expose(), "pairing-state")?;
     let (version, generation) = match &state {
         StoredPairingState::Creating {
             version,
@@ -110,9 +109,32 @@ fn load_state(store: &StateReader) -> anyhow::Result<Option<StoredPairingState>>
     };
     validate_state_version(version)?;
     if generation.is_nil() {
-        bail!("pairing state contains an invalid nil generation; start a new pairing request");
+        return Err(corrupt_pairing_state("pairing-state"));
     }
     Ok(Some(state))
+}
+
+/// Archive only account/pairing artifacts. Host identity and telemetry spool are
+/// deliberately outside this list and therefore survive re-pairing recovery.
+pub fn archive_incompatible_account_state(config: &ClientConfig) -> anyhow::Result<Vec<PathBuf>> {
+    let transaction = lock_state(config)?;
+    let archive_id = Uuid::new_v4().simple().to_string();
+    let mut archived = Vec::new();
+    for file in [
+        StateFile::Pairing,
+        StateFile::Authorization,
+        StateFile::Binding,
+        StateFile::Credential,
+    ] {
+        let name = format!("{}.incompatible-{archive_id}", file.name());
+        if let Some(path) = transaction
+            .archive(file, &name)
+            .with_context(|| format!("failed to archive incompatible {}", file.name()))?
+        {
+            archived.push(path);
+        }
+    }
+    Ok(archived)
 }
 
 // These fragments intentionally remain in this module scope. Pairing commit

@@ -203,6 +203,59 @@ fn commit_install(paths: &FixedPaths) -> anyhow::Result<()> {
     remove_tree_no_reparse(&paths.journal_root)
 }
 
+fn reset_configuration(paths: &FixedPaths) -> anyhow::Result<()> {
+    if !paths.state_root.exists() {
+        return Ok(());
+    }
+    validate_real_directory(&paths.state_root, "state root before configuration reset")?;
+    validate_tree(&paths.state_root)?;
+    validate_state_marker(paths, true)?;
+    match fs::symlink_metadata(&paths.config) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("failed to inspect old host-monitor configuration"),
+        Ok(_) => {
+            validate_regular_single_link(&paths.config, "old host-monitor configuration")?;
+            let handle = open_mutation_target(
+                &paths.config,
+                false,
+                "old host-monitor configuration removal",
+            )?;
+            delete_opened_mutation_target(handle, &paths.config)?;
+            ensure_absent(&paths.config, "old host-monitor configuration after reset")
+        }
+    }
+}
+
+fn reset_data(paths: &FixedPaths) -> anyhow::Result<()> {
+    if !paths.state_root.exists() {
+        return Ok(());
+    }
+    validate_real_directory(&paths.state_root, "state root before data reset")?;
+    validate_tree(&paths.state_root)?;
+    validate_state_marker(paths, true)?;
+    let marker = existing_state_marker(paths)?
+        .context("managed state marker disappeared before data reset")?;
+    let entries = fs::read_dir(&paths.state_root)
+        .context("failed to enumerate host-monitor data before reset")?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    for path in entries {
+        if path == paths.config || path == marker {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect old Client data {}", path.display()))?;
+        if metadata.is_dir() {
+            remove_tree_no_reparse(&path)?;
+        } else {
+            let handle = open_mutation_target(&path, false, "old Client data removal")?;
+            delete_opened_mutation_target(handle, &path)?;
+        }
+    }
+    validate_tree(&paths.state_root)?;
+    validate_state_marker(paths, true)
+}
+
 fn remove_fresh_install_state(paths: &FixedPaths) -> anyhow::Result<()> {
     validate_real_directory(&paths.state_root, "fresh-install state root")?;
     validate_tree(&paths.state_root)?;

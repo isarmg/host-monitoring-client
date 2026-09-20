@@ -12,6 +12,7 @@ const MAINTENANCE_DIAGNOSTIC_SDDL: &str = "O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)";
 #[derive(Debug, PartialEq, Eq)]
 struct MaintenanceInvocation {
     command: String,
+    program_executable: std::path::PathBuf,
     diagnostics: bool,
 }
 
@@ -31,6 +32,8 @@ fn is_maintenance_command(command: &str) -> bool {
             | "prepare-purge"
             | "rollback-purge"
             | "commit-purge"
+            | "reset-configuration"
+            | "reset-data"
     )
 }
 
@@ -50,6 +53,16 @@ fn parse_maintenance_arguments(
         is_maintenance_command(&command),
         "unknown maintenance command"
     );
+    let program_executable = arguments
+        .next()
+        .context("maintenance command requires the MSI-resolved program executable path")?;
+    let program_executable = program_executable
+        .to_str()
+        .context("maintenance program executable path must be valid Unicode")?;
+    ensure!(
+        !program_executable.is_empty(),
+        "maintenance program executable path must not be empty"
+    );
     let diagnostics = match arguments.next() {
         None => false,
         Some(value) => {
@@ -66,6 +79,7 @@ fn parse_maintenance_arguments(
     );
     Ok(MaintenanceInvocation {
         command,
+        program_executable: program_executable.into(),
         diagnostics,
     })
 }
@@ -920,9 +934,7 @@ mod windows_maintenance {
                 },
                 Threading::{GetCurrentProcess, OpenProcessToken},
             },
-            UI::Shell::{
-                FOLDERID_ProgramData, FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
-            },
+            UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
         },
         core::{PCWSTR, PWSTR},
     };
@@ -1011,7 +1023,7 @@ mod windows_maintenance {
 
     pub fn run() -> anyhow::Result<()> {
         let invocation = parse_maintenance_arguments(std::env::args_os().skip(1))?;
-        let paths = FixedPaths::discover()?;
+        let paths = FixedPaths::discover(&invocation.program_executable)?;
         let result = (|| {
             enable_restore_privileges()?;
             match invocation.command.as_str() {
@@ -1027,11 +1039,13 @@ mod windows_maintenance {
                 "prepare-purge" => prepare_purge(&paths),
                 "rollback-purge" => rollback_purge(&paths),
                 "commit-purge" => commit_purge(&paths),
+                "reset-configuration" => reset_configuration(&paths),
+                "reset-data" => reset_data(&paths),
                 _ => bail!(
                     "unknown maintenance command; expected prepare-install, apply-install, \
                  rollback-install, commit-install, preflight-uninstall, preserve-state, \
                  rollback-uninstall-preflight, rollback-uninstall, commit-uninstall, \
-                 prepare-purge, rollback-purge, or commit-purge"
+                 prepare-purge, rollback-purge, commit-purge, reset-configuration, or reset-data"
                 ),
             }
         })();
@@ -1087,15 +1101,23 @@ mod windows_maintenance {
     }
 
     impl FixedPaths {
-        fn discover() -> anyhow::Result<Self> {
-            let program_files = known_folder(&FOLDERID_ProgramFiles)?;
+        fn discover(program_exe: &Path) -> anyhow::Result<Self> {
             let program_data = known_folder(&FOLDERID_ProgramData)?;
-            ensure_absolute_root(&program_files, "Program Files")?;
             ensure_absolute_root(&program_data, "ProgramData")?;
-            let program_root = program_files.join(DIRECTORY_NAME);
+            ensure_absolute_root(program_exe, "MSI program executable")?;
+            ensure!(
+                program_exe
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(CLIENT_EXE)),
+                "MSI program executable must end in {CLIENT_EXE}"
+            );
+            let program_root = program_exe
+                .parent()
+                .context("MSI program executable has no parent directory")?
+                .to_path_buf();
             let state_root = program_data.join(DIRECTORY_NAME);
             Ok(Self {
-                program_exe: program_root.join(CLIENT_EXE),
+                program_exe: program_exe.to_path_buf(),
                 config: state_root.join(CONFIG_FILE),
                 journal_root: program_data.join(JOURNAL_DIRECTORY),
                 uninstall_journal_root: program_data.join(UNINSTALL_JOURNAL_DIRECTORY),
@@ -1701,24 +1723,51 @@ mod maintenance_diagnostic_tests {
     #[test]
     fn diagnostics_flag_is_optional_and_exact() {
         assert_eq!(
-            parse_maintenance_arguments(arguments(&["apply-install"])).unwrap(),
+            parse_maintenance_arguments(arguments(&["apply-install", "/custom/host-monitor.exe",]))
+                .unwrap(),
             MaintenanceInvocation {
                 command: "apply-install".to_owned(),
+                program_executable: "/custom/host-monitor.exe".into(),
                 diagnostics: false,
             }
         );
         assert_eq!(
-            parse_maintenance_arguments(arguments(&["apply-install", "1"])).unwrap(),
+            parse_maintenance_arguments(arguments(&[
+                "apply-install",
+                "/custom/host-monitor.exe",
+                "1",
+            ]))
+            .unwrap(),
             MaintenanceInvocation {
                 command: "apply-install".to_owned(),
+                program_executable: "/custom/host-monitor.exe".into(),
                 diagnostics: true,
             }
         );
         for invalid in ["", "0", "01", "true", "１"] {
-            assert!(parse_maintenance_arguments(arguments(&["apply-install", invalid])).is_err());
+            assert!(
+                parse_maintenance_arguments(arguments(&[
+                    "apply-install",
+                    "/custom/host-monitor.exe",
+                    invalid,
+                ]))
+                .is_err()
+            );
         }
-        assert!(parse_maintenance_arguments(arguments(&["apply-install", "1", "extra"])).is_err());
-        assert!(parse_maintenance_arguments(arguments(&["not-a-command", "1"])).is_err());
+        assert!(parse_maintenance_arguments(arguments(&["apply-install"])).is_err());
+        assert!(
+            parse_maintenance_arguments(arguments(&[
+                "apply-install",
+                "/custom/host-monitor.exe",
+                "1",
+                "extra",
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse_maintenance_arguments(arguments(&["not-a-command", "/custom/host-monitor.exe",]))
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -1732,6 +1781,14 @@ mod maintenance_diagnostic_tests {
         assert!(
             parse_maintenance_arguments(vec![
                 std::ffi::OsString::from("apply-install"),
+                std::ffi::OsString::from_vec(vec![0xff]),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_maintenance_arguments(vec![
+                std::ffi::OsString::from("apply-install"),
+                std::ffi::OsString::from("/custom/host-monitor.exe"),
                 std::ffi::OsString::from_vec(vec![0xff]),
             ])
             .is_err()

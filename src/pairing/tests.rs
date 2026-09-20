@@ -1193,6 +1193,115 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn legacy_093_account_documents_are_read_but_unknown_formats_are_classified() {
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        let endpoint = "https://host-monitoring.example/api/v2/host-monitor/report";
+        let mut pairing = serde_json::json!({
+            "phase": "active",
+            "version": "0.9.3",
+            "generation": generation,
+            "request_id": request_id,
+            "activation_url": "https://host-monitoring.example/activate",
+            "instance_id": instance_id,
+            "report_endpoint": endpoint,
+            "completed_at": Utc::now()
+        });
+        let _: StoredPairingState =
+            decode_pairing_document(&serde_json::to_vec(&pairing).unwrap(), "pairing-state")
+                .unwrap();
+        let binding = serde_json::json!({
+            "version": "0.9.3",
+            "generation": generation,
+            "request_id": request_id,
+            "instance_id": instance_id,
+            "report_endpoint": endpoint
+        });
+        let _: ActiveBinding =
+            decode_pairing_document(&serde_json::to_vec(&binding).unwrap(), "active-binding")
+                .unwrap();
+        let authorization = serde_json::json!({
+            "version": "0.9.3",
+            "status": "authorized",
+            "reason": "paired",
+            "changed_at": Utc::now()
+        });
+        let _: LocalAuthState = decode_pairing_document(
+            &serde_json::to_vec(&authorization).unwrap(),
+            "authorization-state",
+        )
+        .unwrap();
+
+        pairing["version"] = serde_json::json!("0.8.0");
+        let error = match decode_pairing_document::<StoredPairingState>(
+            &serde_json::to_vec(&pairing).unwrap(),
+            "pairing-state",
+        ) {
+            Ok(_) => panic!("unknown state format must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.chain().any(|cause| matches!(
+            cause.downcast_ref::<PairingStateCompatibilityError>(),
+            Some(PairingStateCompatibilityError::Unsupported {
+                artifact: "pairing-state",
+                detected,
+                supported: PERSISTED_STATE_FORMAT,
+            }) if detected == "0.8.0"
+        )));
+    }
+
+    #[test]
+    fn incompatible_account_archive_preserves_identity_and_spool() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("host-account-recovery-{}", Uuid::new_v4()));
+        let transaction = StateTransaction::begin(&root).unwrap();
+        transaction.write(StateFile::Identity, "host-identity").unwrap();
+        for file in [
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+            StateFile::Credential,
+        ] {
+            transaction.write(file, "legacy-account-data").unwrap();
+        }
+        drop(transaction);
+        let spool = root.join("spool");
+        fs::create_dir(&spool).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&spool, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        write_private_fixture(spool.join("evidence"), b"important-report-bytes").unwrap();
+
+        let archived = archive_incompatible_account_state(&test_config(root.clone())).unwrap();
+        assert_eq!(archived.len(), 4);
+        assert_eq!(fs::read(root.join("host-id")).unwrap(), b"host-identity");
+        assert_eq!(
+            fs::read(spool.join("evidence")).unwrap(),
+            b"important-report-bytes"
+        );
+        for file in [
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+            StateFile::Credential,
+        ] {
+            assert!(!root.join(file.name()).exists());
+            assert!(archived.iter().any(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{}.incompatible-", file.name()))
+            }));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn live_pending_request_cannot_be_silently_moved_to_another_server() {
         let directory =

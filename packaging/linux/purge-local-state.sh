@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=host-monitor.service
-package_version=0.9.26
+package_version=0.9.28
 account_state_dir=/var/lib/host-monitor-package
 managed_user_marker="$account_state_dir/managed-user"
 managed_group_marker="$account_state_dir/managed-group"
@@ -99,6 +99,18 @@ if [ -d /run/systemd/system ]; then
   esac
 fi
 
+is_supported_marker_package_version() {
+  marker_package_version=$1
+  case "$marker_package_version" in
+    0.9.*) marker_patch_version=${marker_package_version#0.9.} ;;
+    *) return 1 ;;
+  esac
+  case "$marker_patch_version" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 load_user_marker() {
   marker_format_seen=0
   marker_uid_seen=0
@@ -107,8 +119,9 @@ load_user_marker() {
   recorded_user_primary_gid=
   while IFS= read -r marker_line || [ -n "$marker_line" ]; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
+      format=*)
         [ "$marker_format_seen" -eq 0 ] || return 1
+        is_supported_marker_package_version "${marker_line#format=}" || return 1
         marker_format_seen=1
         ;;
       uid=*)
@@ -138,8 +151,9 @@ load_group_marker() {
   recorded_group_gid=
   while IFS= read -r marker_line || [ -n "$marker_line" ]; do
     case "$marker_line" in
-      format=0.9.4|format=0.9.5|format=0.9.6|format=0.9.7|format=0.9.8|format="$package_version")
+      format=*)
         [ "$marker_format_seen" -eq 0 ] || return 1
+        is_supported_marker_package_version "${marker_line#format=}" || return 1
         marker_format_seen=1
         ;;
       gid=*)

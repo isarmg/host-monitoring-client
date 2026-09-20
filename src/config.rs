@@ -104,6 +104,7 @@ pub(crate) struct CurrentPackageVersion;
 /// Frozen wire discriminator. The legacy field name remains application_version,
 /// but a binary-only release must not change the persisted configuration format.
 pub const CONFIG_FORMAT_VERSION: &str = "0.9.4";
+const LEGACY_COMPATIBLE_CONFIG_FORMAT: &str = "0.9.3";
 
 impl Serialize for CurrentPackageVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -120,7 +121,7 @@ impl<'de> Deserialize<'de> for CurrentPackageVersion {
         D: Deserializer<'de>,
     {
         let version = String::deserialize(deserializer)?;
-        if version == CONFIG_FORMAT_VERSION {
+        if version == CONFIG_FORMAT_VERSION || version == LEGACY_COMPATIBLE_CONFIG_FORMAT {
             Ok(Self)
         } else {
             Err(D::Error::custom(format!(
@@ -1285,6 +1286,10 @@ mod tests {
         let current = serde_json::to_value(ClientConfig::default()).unwrap();
         assert_eq!(current["application_version"], CONFIG_FORMAT_VERSION);
         serde_json::from_value::<ClientConfig>(current.clone()).unwrap();
+
+        let mut legacy = current.clone();
+        legacy["application_version"] = serde_json::json!("0.9.3");
+        serde_json::from_value::<ClientConfig>(legacy).unwrap();
 
         let mut missing_version = current.clone();
         missing_version

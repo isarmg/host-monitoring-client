@@ -1,6 +1,6 @@
 # 按平台安装与升级
 
-适用于 0.9.26，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
+适用于 0.9.28，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
 
 ## Windows 11 x64
 
@@ -8,36 +8,37 @@
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"
-Get-FileHash .\host-monitor-0.9.26-x64.msi -Algorithm SHA256
-msiexec.exe /i .\host-monitor-0.9.26-x64.msi /norestart
-$client = "$env:ProgramFiles\host-monitor\host-monitor.exe"
+Get-FileHash .\host-monitor-0.9.28-x64.msi -Algorithm SHA256
+msiexec.exe /i .\host-monitor-0.9.28-x64.msi /norestart
+$installRoot = (Get-ItemProperty 'HKLM:\Software\Host Monitoring\host-monitor').InstallLocation
+$client = Join-Path $installRoot 'host-monitor.exe'
 & $client doctor --network
 ```
 
-MSI 只安装程序并登记 Manual/Stopped 服务，不启动配对，也不读取任何秘密。安装完成后，在管理员终端显式运行 `& "$env:ProgramFiles\host-monitor\host-monitor.exe" setup --interactive`；原有 CLI 会在需要写入受保护状态时请求提权，`--help` 和 `--version` 不触发 UAC。配对失败不会让 MSI 回滚已提交的安装。
+MSI 的自定义安装页允许选择任意本机安装目录，并分别选择是否保留 `config.json`、是否保留身份/凭据/待发送采集队列；两项默认保留，取消选择会在最终提交阶段清理对应类别。向导始终显示完成页或失败页。MSI 不启动配对，也不读取任何秘密；安装后运行 `& $client setup --interactive`。
 
-将示例 Server 地址替换为你的 Host Monitoring Server，在交互提示中输入管理台创建的授权码。MSI 会把 `C:\Program Files\host-monitor` 事务性追加到机器 PATH；新终端可直接运行 `host-monitor`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\host-monitor\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
+将示例 Server 地址替换为你的 Host Monitoring Server，在交互提示中输入管理台创建的授权码。MSI 会把用户选择的目录事务性追加到机器 PATH；新终端可直接运行 `host-monitor`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\host-monitor\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
 
 已有安装直接再次运行同一 MSI；原生安装器处理升级、修复、降级检查和服务登记，并保留配置、身份、队列及启动意图。需要再次设置时运行 `host-monitor setup`：程序先显示发现的本地身份，再向 Server 核验凭据；远程核验成功后仍会询问是否复用，未完成事务可以继续。
 
 手动强制修复同一 MSI：
 
 ```powershell
-msiexec.exe /i "$PWD\host-monitor-0.9.26-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
+msiexec.exe /i "$PWD\host-monitor-0.9.28-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
 ```
 
-原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.26.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点或删除未知数据。
+原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.28.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点。无人值守部署用 `ADDLOCAL=ALL` 保留两类状态；只有部署系统明确删去 `PreserveConfiguration` 或 `PreserveData` 功能时才执行对应清理。
 
 ## Linux x86_64
 
 Debian/Ubuntu 下载 DEB；使用 APT 处理依赖并覆盖旧包：
 
 ```sh
-sudo apt install ./host-monitor_0.9.26_amd64.deb
+sudo apt install ./host-monitor_0.9.28_amd64.deb
 sudo host-monitor setup
 ```
 
-RPM 系统使用 `sudo dnf install ./host-monitor-0.9.26.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.26.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.26_amd64.deb`。不要添加忽略依赖的参数。
+RPM 系统使用 `sudo dnf install ./host-monitor-0.9.28.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.28.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.28_amd64.deb`。不要添加忽略依赖的参数。
 
 配置在 `/etc/host-monitor/config.json`，服务账户为 `host-monitor`。安装器会保留已有配置和身份；安装后运行 `sudo host-monitor setup`，按提示选择启动策略并验证连接。兼容旧版账户所有权标记会被识别；包管理器保留修改过的配置，不会清除身份和待发送队列。
 
@@ -48,7 +49,7 @@ RPM 系统使用 `sudo dnf install ./host-monitor-0.9.26.x86_64.rpm`；同版损
 只提供 arm64；不支持 Intel Mac。在 Release 下载 unsigned PKG；安装包尚未签名、公证，可在系统允许的安装确认界面批准该已校验文件。
 
 ```sh
-sudo installer -pkg ./host-monitor-0.9.26-macos-arm64-unsigned.pkg -target /
+sudo installer -pkg ./host-monitor-0.9.28-macos-arm64-unsigned.pkg -target /
 sudo /usr/local/bin/host-monitor setup
 ```
 
@@ -65,5 +66,7 @@ Server 必须使用系统信任的 HTTPS 证书；证书过期、名称不匹配
 撤销，必须使用新授权码重新运行配对。一次配对请求自身有短期事务超时，这不等于实例授权码过期；网络中断后
 再次运行 `setup` 会核对并恢复仍有效的同一事务，也可用 `pair status`、`pair resume` 精确检查。Server 数据库重建且旧凭据失效时，`setup` 会自动选择 `pair recover` 并提示输入新授权码；该流程保留原 Host UUID 和待发送队列，Server 仅在该 UUID 不存在时允许恢复。也可显式运行 `pair recover --interactive`。若管理员明确放弃旧身份，先运行 `queue archive --reason server-state-lost` 原子归档旧队列，再使用 `pair replace`，不得删除队列或把旧报告改属新 UUID。`status`
 显示未配对时不应反复安装或删除身份文件。
+
+0.9.3 的配置、配对、绑定与授权文档会被当前 Client 透明读取。真正未知或损坏的账户资料会返回 `pairing_state_incompatible`；创建新授权码后运行 `pair recover --interactive`，Client 会先验证采集队列，再归档旧账户文件并保留 Host UUID。若队列不可读、含隔离记录或身份不匹配，则返回 `important_state_incompatible` 并保持所有数据原样，不能通过重装或重新配对绕过。
 
 强制覆盖仅替换安装器管理的程序和服务文件，不绕过状态格式、路径所有权或配置校验；不需要用 `PURGE=1` 解决普通安装问题。

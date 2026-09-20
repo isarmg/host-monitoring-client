@@ -2,7 +2,9 @@ use sarmg_client_secret::SecretString;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned, de::Error as _,
+};
 use uuid::Uuid;
 
 use crate::model::HostIdentity;
@@ -20,6 +22,58 @@ pub(super) const ACTIVE_BINDING_FILE: &str = crate::state_store::StateFile::Bind
 
 /// Retained legacy wire value, independent from future binary patch versions.
 pub const PERSISTED_STATE_FORMAT: &str = "0.9.4";
+const LEGACY_COMPATIBLE_STATE_FORMAT: &str = "0.9.3";
+
+#[derive(Debug, thiserror::Error)]
+pub enum PairingStateCompatibilityError {
+    #[error("stored {artifact} uses an unsupported pairing-state schema")]
+    Unsupported {
+        artifact: &'static str,
+        detected: String,
+        supported: &'static str,
+    },
+    #[error("stored {artifact} is malformed or internally inconsistent")]
+    Corrupt { artifact: &'static str },
+}
+
+pub(super) fn corrupt_pairing_state(artifact: &'static str) -> anyhow::Error {
+    PairingStateCompatibilityError::Corrupt { artifact }.into()
+}
+
+pub(super) fn decode_pairing_document<T: DeserializeOwned>(
+    bytes: &[u8],
+    artifact: &'static str,
+) -> anyhow::Result<T> {
+    #[derive(Deserialize)]
+    struct Header {
+        version: serde_json::Value,
+    }
+
+    let header: Header =
+        serde_json::from_slice(bytes).map_err(|_| corrupt_pairing_state(artifact))?;
+    let version = header
+        .version
+        .as_str()
+        .ok_or_else(|| corrupt_pairing_state(artifact))?;
+    if version != PERSISTED_STATE_FORMAT && version != LEGACY_COMPATIBLE_STATE_FORMAT {
+        let detected = if version.len() <= 64
+            && version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            version.to_owned()
+        } else {
+            "unrecognized".to_owned()
+        };
+        return Err(PairingStateCompatibilityError::Unsupported {
+            artifact,
+            detected,
+            supported: PERSISTED_STATE_FORMAT,
+        }
+        .into());
+    }
+    serde_json::from_slice(bytes).map_err(|_| corrupt_pairing_state(artifact))
+}
 
 impl Serialize for PairingStateVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -36,7 +90,7 @@ impl<'de> Deserialize<'de> for PairingStateVersion {
         D: Deserializer<'de>,
     {
         let version = String::deserialize(deserializer)?;
-        if version == PERSISTED_STATE_FORMAT {
+        if version == PERSISTED_STATE_FORMAT || version == LEGACY_COMPATIBLE_STATE_FORMAT {
             Ok(Self)
         } else {
             Err(D::Error::custom(format!(

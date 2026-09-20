@@ -1,6 +1,6 @@
 # Host Monitoring Client 配置指南
 
-本文适用于 `host-monitor` `0.9.26`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
+本文适用于 `host-monitor` `0.9.28`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
 
 ## 1. 路径与准备
 
@@ -23,7 +23,8 @@ sudo host-monitor service stop
 Windows 请在管理员 PowerShell 中去掉 `sudo`；若 PATH 尚未刷新，使用：
 
 ```powershell
-$Client = "$env:ProgramFiles\host-monitor\host-monitor.exe"
+$InstallRoot = (Get-ItemProperty 'HKLM:\Software\Host Monitoring\host-monitor').InstallLocation
+$Client = Join-Path $InstallRoot 'host-monitor.exe'
 & $Client version --format json
 & $Client service stop
 ```
@@ -143,6 +144,8 @@ Server 数据丢失但要保留原 Host UUID 和待发队列时，由管理员�
 ```sh
 sudo host-monitor pair recover --interactive
 ```
+
+同一命令也用于 `pairing_state_incompatible`：Client 会先只读检查 spool，再把不兼容的 `pairing-state.json`、`auth-state.json`、`active-binding.json` 和 `client-token` 归档为唯一名称。`host-id` 与 `spool/` 永远不在账户归档列表中。若返回 `important_state_incompatible`，应停止恢复并保全 spool，使用兼容 Client 恢复或归档供人工审查，不要删除文件后重试。
 
 只有明确放弃旧绑定时才更换实例。先检查并尽量排空队列：
 

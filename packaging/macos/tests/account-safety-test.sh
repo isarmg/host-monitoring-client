@@ -5,10 +5,16 @@ script_dir="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
 uninstaller="$script_dir/uninstall.sh"
 postinstall="$script_dir/scripts/postinstall"
 build_script="$script_dir/build-pkg.sh"
+preinstall="$script_dir/scripts/preinstall"
+
+if grep -F 'pkgutil --pkg-info' "$preinstall" >/dev/null; then
+  echo "preinstall must not infer persistent-state compatibility from the package receipt" >&2
+  exit 1
+fi
 
 for version_bound_file in "$postinstall" "$uninstaller"; do
-  grep -F 'format=%s\n' "$version_bound_file" >/dev/null || {
-    echo "ownership marker is not package-versioned in $version_bound_file" >&2
+  grep -F 'marker_format=1\nlast_package_version=%s\nstate_format=0.9.4\n' "$version_bound_file" >/dev/null || {
+    echo "ownership marker schema is not explicit in $version_bound_file" >&2
     exit 1
   }
 done
@@ -253,7 +259,7 @@ grep -F 'for pgrep_selector in -u -U; do' "$postinstall" >/dev/null || {
   exit 1
 }
 state_acl_clear_line="$(awk '/^chmod -N "\$state"/ { print NR; exit }' "$postinstall")"
-retained_config_check_line="$(awk '/require_current_config "\$config"/ { line=NR } END { print line }' "$postinstall")"
+retained_config_check_line="$(awk '/require_supported_config "\$config"/ { line=NR } END { print line }' "$postinstall")"
 state_contents_safe_line="$(awk '/^state_contents_safe=1$/ { print NR; exit }' "$postinstall")"
 state_release_line="$(awk '/^release_verified_state_to_service / { print NR; exit }' "$postinstall")"
 launchd_disable_line="$(awk '/^launchctl disable system\/org\.sarmg\.hostmonitor$/ { print NR; exit }' "$postinstall")"

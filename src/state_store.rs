@@ -146,6 +146,51 @@ impl StateTransaction {
             crate::private_fs::write_atomic(&self.path(file), bytes)
         }
     }
+
+    /// Publish a durable archive before removing the active account-state name.
+    /// An interrupted recovery may leave both copies, but never no copy.
+    pub(crate) fn archive(
+        &self,
+        file: StateFile,
+        archive_name: &str,
+    ) -> io::Result<Option<PathBuf>> {
+        let bytes = match self.read(file) {
+            Ok(bytes) => sarmg_client_secret::SecretBytes::new(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        #[cfg(unix)]
+        {
+            let archive = EntryName::new(archive_name).map_err(io_error)?;
+            AtomicFile::create(&self.reader.directory, &archive, bytes.expose())
+                .map_err(io_error)?;
+            self.reader
+                .directory
+                .remove_file(&file.entry())
+                .map_err(io_error)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let archive = self.reader.path.join(archive_name);
+            if archive.parent() != Some(self.reader.path.as_path()) || archive.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "account-state archive already exists",
+                ));
+            }
+            crate::private_fs::write_atomic(&archive, bytes.expose())?;
+            let source = self.path(file);
+            let metadata = std::fs::symlink_metadata(&source)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "account-state source is not a physical file",
+                ));
+            }
+            std::fs::remove_file(source)?;
+        }
+        Ok(Some(self.reader.path.join(archive_name)))
+    }
 }
 
 #[cfg(unix)]
