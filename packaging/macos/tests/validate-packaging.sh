@@ -17,6 +17,13 @@ do
   sh -n "$script"
 done
 
+if grep -Eq '\$client_command"[[:space:]]+setup|setup[[:space:]]+--interactive' \
+  "$packaging_dir/scripts/postinstall"
+then
+  echo "postinstall must not run interactive setup inside the PKG transaction" >&2
+  exit 1
+fi
+
 command -v plutil >/dev/null 2>&1 || {
   echo "validate-packaging.sh requires macOS plutil" >&2
   exit 1

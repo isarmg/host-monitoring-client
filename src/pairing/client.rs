@@ -3,6 +3,7 @@ use sarmg_client_secret::{SecretKey, SecretString};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub(super) fn random_secret() -> Arc<SecretString> {
     let random = SecretKey::new(rand::random::<[u8; 32]>());
@@ -112,6 +113,7 @@ pub(super) fn ensure_pairing_status(
         code: None,
         received: None,
         supported: Vec::new(),
+        request_id: None,
     }
     .into())
 }
@@ -145,14 +147,34 @@ pub(super) fn ensure_pairing_response(
         .flatten()
         .filter_map(|value| value.as_u64().and_then(|v| u16::try_from(v).ok()))
         .collect();
+    let request_id = envelope
+        .as_ref()
+        .filter(|error| {
+            !error.retryable
+                && matches!(
+                    error.code.as_str(),
+                    "pairing_transaction_not_found" | "pairing_transaction_expired"
+                )
+        })
+        .and_then(|error| error.details.get("request_id"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| Uuid::parse_str(value).ok());
     let trusted_code = envelope
         .as_ref()
         .and_then(|error| match error.code.as_str() {
             "unsupported_client_protocol" if received.is_some() && !supported.is_empty() => {
                 Some("unsupported_client_protocol")
             }
-            "pairing_transaction_not_found" => Some("pairing_transaction_not_found"),
-            "not_found" => Some("not_found"),
+            "pairing_transaction_not_found"
+                if status == StatusCode::NOT_FOUND && request_id.is_some() && !error.retryable =>
+            {
+                Some("pairing_transaction_not_found")
+            }
+            "pairing_transaction_expired"
+                if status == StatusCode::GONE && request_id.is_some() && !error.retryable =>
+            {
+                Some("pairing_transaction_expired")
+            }
             "method_not_allowed" => Some("method_not_allowed"),
             "unsupported_media_type" => Some("unsupported_media_type"),
             _ => None,
@@ -163,6 +185,7 @@ pub(super) fn ensure_pairing_response(
         code: trusted_code,
         received,
         supported,
+        request_id,
     }
     .into())
 }

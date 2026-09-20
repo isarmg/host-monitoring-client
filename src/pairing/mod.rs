@@ -86,6 +86,8 @@ pub struct PairingHttpError {
     pub code: Option<&'static str>,
     pub received: Option<u16>,
     pub supported: Vec<u16>,
+    /// Present only for a dedicated, well-formed transaction error envelope.
+    pub request_id: Option<Uuid>,
 }
 
 impl PairingHttpError {
@@ -94,10 +96,22 @@ impl PairingHttpError {
             self.operation,
             PairingHttpOperation::Activate | PairingHttpOperation::Poll
         ) && self.status == StatusCode::NOT_FOUND.as_u16()
-            && matches!(
-                self.code,
-                Some("pairing_transaction_not_found" | "not_found")
-            )
+            && self.code == Some("pairing_transaction_not_found")
+            && self.request_id.is_some()
+    }
+
+    pub fn transaction_expired(&self) -> bool {
+        matches!(
+            self.operation,
+            PairingHttpOperation::Activate | PairingHttpOperation::Poll
+        ) && self.status == StatusCode::GONE.as_u16()
+            && self.code == Some("pairing_transaction_expired")
+            && self.request_id.is_some()
+    }
+
+    pub fn transaction_ended_for(&self, expected_request_id: Uuid) -> bool {
+        (self.transaction_missing() || self.transaction_expired())
+            && self.request_id == Some(expected_request_id)
     }
 }
 

@@ -97,7 +97,7 @@ pub async fn activate_pending_with_code(
         if let Err(error) = checked {
             if error
                 .downcast_ref::<PairingHttpError>()
-                .is_some_and(PairingHttpError::transaction_missing)
+                .is_some_and(|http| http.transaction_ended_for(request_id))
             {
                 mark_pending_expired(
                     config,

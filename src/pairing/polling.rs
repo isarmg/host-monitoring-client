@@ -59,7 +59,7 @@ pub async fn poll_existing(config: &ClientConfig) -> anyhow::Result<Option<Pairi
     if let Err(error) = checked {
         if error
             .downcast_ref::<PairingHttpError>()
-            .is_some_and(PairingHttpError::transaction_missing)
+            .is_some_and(|http| http.transaction_ended_for(request_id))
         {
             mark_pending_expired(
                 config,

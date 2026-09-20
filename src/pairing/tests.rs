@@ -298,6 +298,7 @@ mod tests {
 
     fn one_shot_pairing_error_server(
         expected_path: &'static str,
+        request_id: Uuid,
     ) -> (String, PathBuf, thread::JoinHandle<()>) {
         let server = crate::test_https::TestHttpsServer::new();
         let origin = server.origin.clone();
@@ -307,14 +308,16 @@ mod tests {
             let mut request = [0_u8; 16 * 1024];
             let read = stream.read(&mut request).unwrap();
             assert!(std::str::from_utf8(&request[..read]).unwrap().contains(expected_path));
-            let body = br#"{"code":"pairing_transaction_not_found","message":"pairing transaction no longer exists","retryable":false,"details":{}}"#;
+            let body = format!(
+                r#"{{"code":"pairing_transaction_not_found","message":"pairing transaction no longer exists","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+            );
             write!(
                 stream,
                 "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             )
             .unwrap();
-            stream.write_all(body).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
             stream.flush().unwrap();
         });
         (origin, ca_path, handle)
@@ -333,7 +336,9 @@ mod tests {
                 PairingHttpOperation::Poll => "/status ",
                 PairingHttpOperation::Create => unreachable!(),
             };
-            let (server, ca_path, server_thread) = one_shot_pairing_error_server(expected_path);
+            let request_id = Uuid::new_v4();
+            let (server, ca_path, server_thread) =
+                one_shot_pairing_error_server(expected_path, request_id);
             let config = ClientConfig {
                 endpoint: format!("{server}/api/v2/host-monitor/report"),
                 pairing_endpoint: Some(format!("{server}/api/v2/host-monitor/pairing-requests")),
@@ -342,7 +347,6 @@ mod tests {
                 ..ClientConfig::default()
             };
             let generation = Uuid::new_v4();
-            let request_id = Uuid::new_v4();
             persist_state(
                 &config,
                 &StoredPairingState::Pending {
@@ -890,17 +894,53 @@ mod tests {
 
     #[test]
     fn pairing_error_parser_accepts_only_known_codes_and_never_reflects_messages() {
+        let request_id = Uuid::new_v4();
+        let body = format!(
+            r#"{{"code":"pairing_transaction_not_found","message":"secret marker","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+        );
         let missing = ensure_pairing_response(
             StatusCode::NOT_FOUND,
             "application/json",
-            br#"{"code":"pairing_transaction_not_found","message":"secret marker","retryable":false}"#,
+            body.as_bytes(),
             &[StatusCode::OK],
             PairingHttpOperation::Poll,
         )
         .unwrap_err();
         let http = missing.downcast_ref::<PairingHttpError>().unwrap();
         assert!(http.transaction_missing());
+        assert!(http.transaction_ended_for(request_id));
+        assert!(!http.transaction_ended_for(Uuid::new_v4()));
         assert!(!format!("{missing:#}").contains("secret marker"));
+
+        let expired_body = format!(
+            r#"{{"code":"pairing_transaction_expired","message":"expired","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+        );
+        let expired = ensure_pairing_response(
+            StatusCode::GONE,
+            "application/json",
+            expired_body.as_bytes(),
+            &[StatusCode::OK],
+            PairingHttpOperation::Activate,
+        )
+        .unwrap_err();
+        let expired = expired.downcast_ref::<PairingHttpError>().unwrap();
+        assert!(expired.transaction_expired());
+        assert!(expired.transaction_ended_for(request_id));
+
+        let generic_not_found = ensure_pairing_response(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            br#"{"code":"not_found","message":"route missing","retryable":false}"#,
+            &[StatusCode::OK],
+            PairingHttpOperation::Poll,
+        )
+        .unwrap_err();
+        assert!(
+            !generic_not_found
+                .downcast_ref::<PairingHttpError>()
+                .unwrap()
+                .transaction_missing()
+        );
 
         let unknown = ensure_pairing_response(
             StatusCode::BAD_REQUEST,

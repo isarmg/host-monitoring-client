@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 // MSI persists this default before the first pairing. It must pass the same
 // HTTPS-only policy as release binaries, even while no Manager is configured.
 const DEFAULT_SERVER_ORIGIN: &str = "https://127.0.0.1:8081";
+const PACKAGED_PLACEHOLDER_HOST: &str = "host-monitoring.example.com";
 const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 const CLIENT_VERSION_OUTPUT: &str = concat!("host-monitor ", env!("CARGO_PKG_VERSION"));
@@ -597,6 +598,14 @@ impl ClientConfig {
         })
     }
 
+    /// The packaged example is a configuration sentinel, never a network target.
+    pub fn uses_packaged_placeholder_server(&self) -> bool {
+        [&self.endpoint, &self.pairing_endpoint()]
+            .into_iter()
+            .filter_map(|endpoint| url::Url::parse(endpoint).ok())
+            .any(|endpoint| endpoint.host_str() == Some(PACKAGED_PLACEHOLDER_HOST))
+    }
+
     pub(crate) fn validate_durable_report_endpoint(
         &self,
         report_endpoint: &str,
@@ -1116,6 +1125,23 @@ mod tests {
             config.pairing_endpoint(),
             "https://host-monitoring.example/prefix/api/v2/host-monitor/pairing-requests"
         );
+    }
+
+    #[test]
+    fn packaged_example_server_is_never_treated_as_a_real_network_target() {
+        let config = ClientConfig {
+            endpoint: format!(
+                "https://host-monitoring.example.com{}",
+                host_protocol::CLIENT_REPORT_PATH
+            ),
+            pairing_endpoint: Some(format!(
+                "https://host-monitoring.example.com{}",
+                host_protocol::CLIENT_PAIRING_REQUESTS_PATH
+            )),
+            ..ClientConfig::default()
+        };
+        assert!(config.uses_packaged_placeholder_server());
+        assert!(!ClientConfig::default().uses_packaged_placeholder_server());
     }
 
     #[test]

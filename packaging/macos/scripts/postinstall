@@ -1333,17 +1333,10 @@ launchctl enable system/org.sarmg.hostmonitor.logrotate
 restart_state_safe=0
 launchctl bootstrap system "$logrotate_plist"
 
-if [ -t 0 ] && [ -t 1 ]; then
-  echo "host-monitor's LaunchDaemon is installed; starting the interactive setup wizard."
-  if ! "$client_command" setup --interactive; then
-    echo 'Setup was not completed; installation and pairing progress were retained.' >&2
-    echo 'Resume later with: sudo /usr/local/bin/host-monitor setup' >&2
-  fi
-else
-  cat <<'EOF'
+cat <<'EOF'
 
-host-monitor's LaunchDaemon is installed. No interactive terminal was available.
-Resume setup with:
+host-monitor installation completed. Configuration is pending.
+Run setup separately from the installer with:
 
   sudo /usr/local/bin/host-monitor setup
 
@@ -1364,7 +1357,6 @@ Uninstall helper:
   sudo /usr/local/share/host-monitor/uninstall.sh
 
 EOF
-fi
 
 restart_state_safe=1
 exit 0

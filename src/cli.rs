@@ -308,12 +308,16 @@ fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Fa
             ));
             return failure;
         }
-        if http.transaction_missing() {
+        if http.transaction_missing() || http.transaction_expired() {
             return fail(7, "pairing_expired").with_detail(format!(
-                "operation={:?};http_status={};server_code={}",
+                "operation={:?};http_status={};server_code={};request_id={}",
                 http.operation,
                 http.status,
-                http.code.unwrap_or("<missing>")
+                http.code.unwrap_or("<missing>"),
+                http.request_id
+                    .map(|id| id.to_string())
+                    .as_deref()
+                    .unwrap_or("<missing>")
             ));
         }
         return match http.status {
@@ -1534,6 +1538,9 @@ fn execute(args: &Args) -> Result<Value> {
                     return Err(fail(2, "invalid_network_diagnostic"));
                 }
                 let config = load(&path)?;
+                if config.uses_packaged_placeholder_server() {
+                    return Err(fail(4, "awaiting_configuration"));
+                }
                 return tokio::runtime::Runtime::new()
                     .map_err(storage_error)?
                     .block_on(host_monitor::transport::network_probe(&config))
@@ -1675,6 +1682,11 @@ mod setup_tests {
                     code,
                     received: None,
                     supported: Vec::new(),
+                    request_id: matches!(
+                        code,
+                        Some("pairing_transaction_not_found" | "pairing_transaction_expired")
+                    )
+                    .then(uuid::Uuid::new_v4),
                 }
                 .into(),
                 6,
