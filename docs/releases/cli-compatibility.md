@@ -1,14 +1,14 @@
 # CLI 预发布兼容矩阵
 
-本次发布版本为 `0.9.24`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
+本次发布版本为 `0.9.25`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
 
 | 维度 | 契约 |
 | --- | --- |
-| 程序版本 | `0.9.24`，GitHub Release |
+| 程序版本 | `0.9.25`，GitHub Release |
 | CLI JSON | `schema_version = 1` |
 | 配置格式 | 固定 `0.9.4`；保留历史字段名 `application_version` |
 | 身份与配对状态格式 | 固定 `0.9.4`；不再取当前程序版本 |
-| Client Foundation | `0.9.10`，固定提交 `c081f5c3b5d5f6e74f029d03dd7d98cb5d88a456` |
+| Client Foundation | `0.9.13`，固定提交 `995331aa56a9373df0eb090d017532273f00d6ac` |
 | IPC | Foundation `GetStatus/1`，进程世代与绑定校验 |
 | 业务协议 | 既有 Host 协议；本次 UI 删除没有更换协议依赖 |
 

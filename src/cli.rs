@@ -16,6 +16,93 @@ const MAX_SERVER_ORIGIN_BYTES: usize = 2_048;
 const MAX_AUTHORIZATION_CODE_BYTES: usize = 256;
 const MAX_CONFIRMATION_BYTES: usize = 16;
 
+struct HostErrorCatalog;
+
+impl ProductErrorCatalog for HostErrorCatalog {
+    fn message(&self, code: &'static str) -> Option<&'static str> {
+        match code {
+            "awaiting_pairing" => Some("The Host client has not completed Server pairing."),
+            "active_setup_input_requires_pair_replace"
+            | "binding_already_active_use_pair_replace" => Some(
+                "This Host is already bound; replacing it requires the explicit pair replace workflow.",
+            ),
+            "pairing_authorization_rejected" | "pairing_rejected" => {
+                Some("The Host Server rejected the instance authorization code.")
+            }
+            "invalid_server_origin" => {
+                Some("The Host Server address must be a valid HTTPS origin.")
+            }
+            "no_pairing_transaction" | "pairing_transaction_missing" => {
+                Some("There is no saved Host pairing transaction to resume.")
+            }
+            "pairing_expired" => Some(
+                "The saved Host pairing transaction expired or no longer exists on the Server.",
+            ),
+            "pairing_endpoint_not_found" => {
+                Some("The configured Host Server does not expose the required pairing endpoint.")
+            }
+            "pairing_http_method_rejected" => {
+                Some("The Host Server or reverse proxy rejected the pairing HTTP method.")
+            }
+            "pairing_server_upgrade_required" => {
+                Some("The Host Server requires a different current pairing contract.")
+            }
+            "pairing_request_rejected" => Some("The Host Server rejected the pairing request."),
+            "pairing_unexpected_http_status" => {
+                Some("The Host Server returned an unexpected pairing HTTP status.")
+            }
+            "pairing_protocol_unsupported" => {
+                Some("The Host Client and Server do not support the same current protocol.")
+            }
+            "pairing_server_unavailable" | "server_unavailable_or_untrusted" => Some(
+                "The Host Server could not be reached or its TLS identity could not be trusted.",
+            ),
+            "pairing_postcondition_unconfirmed" | "pairing_result_unconfirmed" => {
+                Some("Host pairing returned without a durable active binding.")
+            }
+            "server_replacement_requires_pair_replace" | "server_change_requires_pair_replace" => {
+                Some("Changing the Host Server requires the explicit pair replace workflow.")
+            }
+            _ => None,
+        }
+    }
+
+    fn next_step(&self, product: &str, error: &Failure) -> Option<String> {
+        match error.code {
+            "awaiting_pairing" | "no_pairing_transaction" | "pairing_transaction_missing" => {
+                Some(format!(
+                    "Run `{product} setup --interactive` to create a Host pairing transaction."
+                ))
+            }
+            "pairing_authorization_rejected" | "pairing_rejected" => Some(format!(
+                "Create or rotate this Host instance authorization code, then run `{product} setup --interactive`."
+            )),
+            "invalid_server_origin"
+            | "pairing_postcondition_unconfirmed"
+            | "pairing_result_unconfirmed" => Some(format!(
+                "Check the Host Server address and instance code, then run `{product} setup --interactive`."
+            )),
+            "pairing_server_unavailable" | "server_unavailable_or_untrusted" => Some(format!(
+                "Check the Host Server URL, TLS certificate and network, then retry `{product} setup`."
+            )),
+            "pairing_expired" => Some(format!(
+                "Run `{product} setup --interactive`; a fresh Host transaction will be created."
+            )),
+            "pairing_endpoint_not_found" | "pairing_http_method_rejected" => Some(
+                "Check the Host Server address and reverse-proxy routing, then retry Setup.".into(),
+            ),
+            "pairing_server_upgrade_required" | "pairing_protocol_unsupported" => {
+                Some("Upgrade the older Host Client or Server to the same current contract.".into())
+            }
+            _ => None,
+        }
+    }
+}
+
+fn emit_host(command: &str, format: &str, result: &Result<Value>) -> u8 {
+    emit("host-monitor", command, format, result, &HostErrorCatalog)
+}
+
 fn service() -> Service {
     Service {
         #[cfg(not(target_os = "macos"))]
@@ -1122,7 +1209,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
         &["--network", "--delivery", "--confirm-replace"],
     ) {
         Ok(a) => a,
-        Err(e) => return emit("host-monitor", "parse", parse_format, &Err(e)),
+        Err(e) => return emit_host("parse", parse_format, &Err(e)),
     };
     // Informational commands must never trigger UAC, even if setup appears in
     // the remaining words of a malformed invocation.
@@ -1159,7 +1246,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
                 }
                 return exit;
             }
-            Err(error) => return emit("host-monitor", "setup", &args.format, &Err(error)),
+            Err(error) => return emit_host("setup", &args.format, &Err(error)),
         }
     }
     if args.words.is_empty() && !args.has("--version") {
@@ -1167,19 +1254,17 @@ pub fn entry(raw: Vec<String>) -> u8 {
     }
     if args.has("--follow") {
         if args.words != ["logs"] || args.format != "ndjson" {
-            return emit(
-                "host-monitor",
+            return emit_host(
                 "logs",
                 &args.format,
                 &Err(fail(2, "follow_requires_logs_ndjson")),
             );
         }
-        return follow_logs("host-monitor", &service(), args);
+        return follow_logs("host-monitor", &service(), args, &HostErrorCatalog);
     }
     if args.has("--watch") {
         if args.words != ["status"] || args.format != "ndjson" {
-            return emit(
-                "host-monitor",
+            return emit_host(
                 "status",
                 &args.format,
                 &Err(fail(2, "watch_requires_status_ndjson")),
@@ -1202,7 +1287,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
             .and_then(|v| v["legacy_exit"].as_u64())
             .unwrap_or(0) as u8;
     }
-    let exit = emit("host-monitor", &command, &args.format, &result);
+    let exit = emit_host(&command, &args.format, &result);
     #[cfg(windows)]
     if args.words == ["setup"]
         && args.has("--installer-session")
@@ -1513,7 +1598,7 @@ fn no_args(args: &Args) -> u8 {
             "host-monitor logs"
         ]);
     }
-    emit("host-monitor", "status", &args.format, &result)
+    emit_host("status", &args.format, &result)
 }
 
 fn watch(args: &Args) -> u8 {
@@ -1522,7 +1607,7 @@ fn watch(args: &Args) -> u8 {
         Err(_) => return 8,
     };
     rt.block_on(async {let deadline=tokio::time::Instant::now()+args.timeout;loop {
-        let result=execute(args);let code=emit("host-monitor","status","ndjson",&result);if code!=0 {return code;}
+        let result=execute(args);let code=emit_host("status","ndjson",&result);if code!=0 {return code;}
         tokio::select!{_=tokio::signal::ctrl_c()=>return 130,_=tokio::time::sleep_until(deadline)=>return 0,_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
     }})
 }
@@ -1564,6 +1649,20 @@ fn runtime_error(error: anyhow::Error) -> Failure {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
+
+    #[test]
+    fn host_owns_pairing_error_presentation() {
+        assert_eq!(
+            HostErrorCatalog.message("pairing_endpoint_not_found"),
+            Some("The configured Host Server does not expose the required pairing endpoint.")
+        );
+        let failure = fail(7, "pairing_authorization_rejected");
+        assert!(
+            HostErrorCatalog
+                .next_step("host-monitor", &failure)
+                .is_some_and(|step| step.contains("Host instance authorization code"))
+        );
+    }
 
     #[test]
     fn pairing_http_failures_have_actionable_distinct_codes() {
