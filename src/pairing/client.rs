@@ -97,16 +97,17 @@ pub(super) fn parse_pairing_json<T: DeserializeOwned>(
     serde_json::from_slice(body).map_err(|_| invalid_response())
 }
 
+#[cfg(test)]
 pub(super) fn ensure_pairing_status(
     status: StatusCode,
     allowed: &[StatusCode],
-    operation: &str,
+    operation: super::PairingHttpOperation,
 ) -> anyhow::Result<()> {
     if allowed.contains(&status) {
         return Ok(());
     }
-    let _ = operation;
     Err(super::PairingHttpError {
+        operation,
         status: status.as_u16(),
         code: None,
         received: None,
@@ -120,12 +121,11 @@ pub(super) fn ensure_pairing_response(
     content_type: &str,
     body: &[u8],
     allowed: &[StatusCode],
-    operation: &str,
+    operation: super::PairingHttpOperation,
 ) -> anyhow::Result<()> {
     if allowed.contains(&status) {
         return Ok(());
     }
-    let _ = operation;
     let envelope = (pairing_content_type_for_diagnostics(content_type) == "application/json")
         .then(|| serde_json::from_slice::<sarmg_client_error::ErrorEnvelope>(body).ok())
         .flatten();
@@ -145,10 +145,22 @@ pub(super) fn ensure_pairing_response(
         .flatten()
         .filter_map(|value| value.as_u64().and_then(|v| u16::try_from(v).ok()))
         .collect();
+    let trusted_code = envelope
+        .as_ref()
+        .and_then(|error| match error.code.as_str() {
+            "unsupported_client_protocol" if received.is_some() && !supported.is_empty() => {
+                Some("unsupported_client_protocol")
+            }
+            "pairing_transaction_not_found" => Some("pairing_transaction_not_found"),
+            "not_found" => Some("not_found"),
+            "method_not_allowed" => Some("method_not_allowed"),
+            "unsupported_media_type" => Some("unsupported_media_type"),
+            _ => None,
+        });
     Err(super::PairingHttpError {
+        operation,
         status: status.as_u16(),
-        code: (received.is_some() && !supported.is_empty())
-            .then_some("unsupported_client_protocol"),
+        code: trusted_code,
         received,
         supported,
     }

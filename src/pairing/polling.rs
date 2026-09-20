@@ -49,7 +49,30 @@ pub async fn poll_existing(config: &ClientConfig) -> anyhow::Result<Option<Pairi
     let status = response.status;
     let content_type = pairing_response_content_type(&response);
     let body = response.body;
-    ensure_pairing_status(status, &[StatusCode::OK], "poll pairing status")?;
+    let checked = ensure_pairing_response(
+        status,
+        &content_type,
+        &body,
+        &[StatusCode::OK],
+        PairingHttpOperation::Poll,
+    );
+    if let Err(error) = checked {
+        if error
+            .downcast_ref::<PairingHttpError>()
+            .is_some_and(PairingHttpError::transaction_missing)
+        {
+            mark_pending_expired(
+                config,
+                generation,
+                request_id,
+                activation_url,
+                &pairing_endpoint,
+                report_endpoint,
+                &polling_secret,
+            )?;
+        }
+        return Err(error);
+    }
     let polled: PairingStatusResponse = parse_pairing_json(
         &body,
         &content_type,
@@ -135,6 +158,39 @@ pub async fn poll_existing(config: &ClientConfig) -> anyhow::Result<Option<Pairi
             }))
         }
     }
+}
+
+fn mark_pending_expired(
+    config: &ClientConfig,
+    generation: Uuid,
+    request_id: Uuid,
+    activation_url: String,
+    pairing_endpoint: &str,
+    report_endpoint: String,
+    polling_secret: &SecretString,
+) -> anyhow::Result<PairingProgress> {
+    let expired = StoredPairingState::Expired {
+        version: PAIRING_STATE_VERSION,
+        generation,
+        request_id,
+        activation_url: activation_url.clone(),
+        report_endpoint: report_endpoint.clone(),
+        completed_at: Utc::now(),
+    };
+    compare_and_persist_pending(
+        config,
+        generation,
+        request_id,
+        pairing_endpoint,
+        &report_endpoint,
+        polling_secret,
+        &expired,
+    )?;
+    Ok(PairingProgress::Expired {
+        generation,
+        request_id,
+        activation_url,
+    })
 }
 
 fn pairing_status_endpoint(

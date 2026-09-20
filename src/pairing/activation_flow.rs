@@ -87,11 +87,30 @@ pub async fn activate_pending_with_code(
     let activated_instance = if status == StatusCode::CONFLICT {
         None
     } else {
-        ensure_pairing_status(
+        let checked = ensure_pairing_response(
             status,
+            &content_type,
+            &body,
             &[StatusCode::OK],
-            "submit the one-time authorization key",
-        )?;
+            PairingHttpOperation::Activate,
+        );
+        if let Err(error) = checked {
+            if error
+                .downcast_ref::<PairingHttpError>()
+                .is_some_and(PairingHttpError::transaction_missing)
+            {
+                mark_pending_expired(
+                    config,
+                    generation,
+                    request_id,
+                    activation_url.clone(),
+                    &pairing_endpoint,
+                    report_endpoint.clone(),
+                    &polling_secret,
+                )?;
+            }
+            return Err(error);
+        }
         let activated: ActivatePairingResponse = parse_pairing_json(
             &body,
             &content_type,

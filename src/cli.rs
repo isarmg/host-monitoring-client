@@ -10,6 +10,11 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use zeroize::Zeroizing;
+
+const MAX_SERVER_ORIGIN_BYTES: usize = 2_048;
+const MAX_AUTHORIZATION_CODE_BYTES: usize = 256;
+const MAX_CONFIRMATION_BYTES: usize = 16;
 
 fn service() -> Service {
     Service {
@@ -204,14 +209,7 @@ fn local_status(c: &ClientConfig) -> Result<Value> {
 #[serde(deny_unknown_fields)]
 struct PairInput {
     server: String,
-    authorization_code: String,
-}
-impl Drop for PairInput {
-    fn drop(&mut self) {
-        // Erase input allocation after the core has consumed it.
-        let mut s = std::mem::take(&mut self.authorization_code).into_bytes();
-        s.fill(0);
-    }
+    authorization_code: Zeroizing<String>,
 }
 fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Failure {
     if let Some(http) = error.downcast_ref::<pairing::PairingHttpError>() {
@@ -223,12 +221,22 @@ fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Fa
             ));
             return failure;
         }
+        if http.transaction_missing() {
+            return fail(7, "pairing_expired").with_detail(format!(
+                "operation={:?};http_status={};server_code={}",
+                http.operation,
+                http.status,
+                http.code.unwrap_or("<missing>")
+            ));
+        }
         return match http.status {
             401 | 403 => fail(7, "pairing_authorization_rejected"),
             408 | 429 | 500..=599 => fail(6, "pairing_server_unavailable"),
-            404 | 405 | 406 | 426 => fail(10, "pairing_protocol_unsupported"),
+            404 => fail(10, "pairing_endpoint_not_found"),
+            405 => fail(10, "pairing_http_method_rejected"),
+            406 | 426 => fail(10, "pairing_server_upgrade_required"),
             400..=499 => fail(2, "pairing_request_rejected"),
-            _ => fail(10, "pairing_protocol_unsupported"),
+            _ => fail(10, "pairing_unexpected_http_status"),
         };
     }
     if let Some(io) = error.downcast_ref::<std::io::Error>()
@@ -239,6 +247,7 @@ fn pairing_failure(error: anyhow::Error, fallback: u8, code: &'static str) -> Fa
     fail(fallback, code)
 }
 async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
+    let deadline = Instant::now() + args.timeout;
     c.validate(ClientCommand::Pair)
         .map_err(|_| fail(2, "invalid_configuration"))?;
     let resume = args.words.get(1).is_some_and(|s| s == "resume");
@@ -256,9 +265,13 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
             server: if let Some(server) = args.get("--server") {
                 server.into()
             } else {
-                prompt("Server origin", false)?
+                prompt_text("Server origin", MAX_SERVER_ORIGIN_BYTES, deadline)?
             },
-            authorization_code: prompt("Authorization code", true)?,
+            authorization_code: prompt_secret(
+                "Authorization code",
+                MAX_AUTHORIZATION_CODE_BYTES,
+                deadline,
+            )?,
         })
     } else {
         return Err(fail(2, "protected_input_required"));
@@ -377,7 +390,11 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
             }
         }
     };
-    let mut result = tokio::select! {r=tokio::time::timeout(args.timeout,operation)=>r.unwrap_or_else(|_|Err(fail(9,"pairing_result_unconfirmed"))),_=tokio::signal::ctrl_c()=>Err(fail(130,"interrupted_resume_required"))};
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| fail(9, "pairing_result_unconfirmed"))?;
+    let mut result = tokio::select! {r=tokio::time::timeout(remaining,operation)=>r.unwrap_or_else(|_|Err(fail(9,"pairing_result_unconfirmed"))),_=tokio::signal::ctrl_c()=>Err(fail(130,"interrupted_resume_required"))};
     if let Err(error) = &mut result
         && error.transaction_id.is_none()
         && let Ok(saved) = pairing::local_status(&c)
@@ -397,10 +414,11 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
     result
 }
 
-fn ask_yes_no(label: &str, default: bool) -> Result<bool> {
-    let value = prompt(
+fn ask_yes_no(label: &str, default: bool, deadline: Instant) -> Result<bool> {
+    let value = prompt_text(
         &format!("{label} [{}]", if default { "yes" } else { "no" }),
-        false,
+        MAX_CONFIRMATION_BYTES,
+        deadline,
     )?;
     match value.trim().to_ascii_lowercase().as_str() {
         "" => Ok(default),
@@ -778,8 +796,12 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         ExistingBindingState::RemoteVerified { host_id } => {
             if interactive {
                 eprintln!("[setup] pairing: remotely_verified ({host_id})");
-                ask_yes_no("Reuse this remotely verified binding?", true)
-                    .map_err(|error| error.at_step("pairing"))?
+                ask_yes_no(
+                    "Reuse this remotely verified binding?",
+                    true,
+                    deadline.expires_at,
+                )
+                .map_err(|error| error.at_step("pairing"))?
             } else {
                 true
             }
@@ -816,6 +838,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 recover_changed_server = ask_yes_no(
                     "Server changed. Recover the existing Host identity on the requested Server?",
                     false,
+                    deadline.expires_at,
                 )
                 .map_err(|error| error.at_step("pairing"))?;
             } else {
@@ -882,11 +905,26 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 return Err(fail(11, "service_state_unconfirmed").at_step("service_quiesce"));
             }
         }
-        let resume_existing_transaction = existing.progress.is_some()
+        let resumable_transaction = matches!(
+            existing.progress,
+            Some(PairingProgress::Creating { .. } | PairingProgress::Waiting(_))
+        );
+        let resume_existing_transaction = if resumable_transaction
+            && interactive
             && !args.has("--input-stdin")
             && !args.has("--interactive")
             && args.get("--server").is_none()
-            && !args.has("--non-interactive");
+        {
+            eprintln!("[setup] pairing: pending_request_found");
+            ask_yes_no(
+                "Resume without submitting a new authorization code?",
+                false,
+                deadline.expires_at,
+            )
+            .map_err(|error| error.at_step("pairing"))?
+        } else {
+            false
+        };
         let pair_action = setup_pair_action(
             &binding_state,
             recover_changed_server,
@@ -931,12 +969,20 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     );
     let (enable, start, verify) = if interactive {
         (
-            ask_yes_no("Enable service at system startup?", default_enable)
+            ask_yes_no(
+                "Enable service at system startup?",
+                default_enable,
+                deadline.expires_at,
+            )
+            .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
+            ask_yes_no("Run the service now?", default_start, deadline.expires_at)
                 .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
-            ask_yes_no("Run the service now?", default_start)
-                .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
-            ask_yes_no("Verify the connection now?", default_start)
-                .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
+            ask_yes_no(
+                "Verify the connection now?",
+                default_start,
+                deadline.expires_at,
+            )
+            .map_err(|error| setup_failure(error, &pairing, "preferences"))?,
         )
     } else {
         (default_enable, default_start, default_start)
@@ -1224,9 +1270,10 @@ fn execute(args: &Args) -> Result<Value> {
             }
             let mut c = new_config(path);
             if args.has("--interactive") {
-                let server = host_monitor::pairing_input::validate_server_base(&prompt(
+                let server = host_monitor::pairing_input::validate_server_base(&prompt_text(
                     "Server origin",
-                    false,
+                    MAX_SERVER_ORIGIN_BYTES,
+                    Instant::now() + args.timeout,
                 )?)
                 .map_err(input_error)?;
                 c.endpoint = format!("{server}{}", host_protocol::CLIENT_REPORT_PATH);
@@ -1517,6 +1564,50 @@ fn runtime_error(error: anyhow::Error) -> Failure {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
+
+    #[test]
+    fn pairing_http_failures_have_actionable_distinct_codes() {
+        use pairing::PairingHttpOperation;
+        let mapped = |operation, status, code| {
+            pairing_failure(
+                pairing::PairingHttpError {
+                    operation,
+                    status,
+                    code,
+                    received: None,
+                    supported: Vec::new(),
+                }
+                .into(),
+                6,
+                "fallback",
+            )
+        };
+        assert_eq!(
+            mapped(PairingHttpOperation::Create, 404, None).code,
+            "pairing_endpoint_not_found"
+        );
+        assert_eq!(
+            mapped(PairingHttpOperation::Create, 405, None).code,
+            "pairing_http_method_rejected"
+        );
+        assert_eq!(
+            mapped(PairingHttpOperation::Create, 426, None).code,
+            "pairing_server_upgrade_required"
+        );
+        assert_eq!(
+            mapped(PairingHttpOperation::Create, 400, None).code,
+            "pairing_request_rejected"
+        );
+        assert_eq!(
+            mapped(
+                PairingHttpOperation::Poll,
+                404,
+                Some("pairing_transaction_not_found")
+            )
+            .code,
+            "pairing_expired"
+        );
+    }
 
     #[test]
     fn startup_policy_requires_a_verified_platform_state() {

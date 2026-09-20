@@ -38,6 +38,7 @@ mod credential_tests;
 mod credentials;
 pub(crate) use credentials::HostCredentials;
 use sarmg_client_runtime::{CredentialAuthorization, CredentialStore};
+use sarmg_client_secret::SecretString;
 mod state;
 
 use activation::*;
@@ -70,13 +71,34 @@ include!("local.rs");
 include!("state_storage.rs");
 
 /// HTTP rejection is distinct from a transport failure with an uncertain result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingHttpOperation {
+    Create,
+    Activate,
+    Poll,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("pairing endpoint returned HTTP {status}; inspect the saved transaction before retrying")]
 pub struct PairingHttpError {
+    pub operation: PairingHttpOperation,
     pub status: u16,
     pub code: Option<&'static str>,
     pub received: Option<u16>,
     pub supported: Vec<u16>,
+}
+
+impl PairingHttpError {
+    pub fn transaction_missing(&self) -> bool {
+        matches!(
+            self.operation,
+            PairingHttpOperation::Activate | PairingHttpOperation::Poll
+        ) && self.status == StatusCode::NOT_FOUND.as_u16()
+            && matches!(
+                self.code,
+                Some("pairing_transaction_not_found" | "not_found")
+            )
+    }
 }
 
 pub use state::PERSISTED_STATE_FORMAT;

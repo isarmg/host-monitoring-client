@@ -27,6 +27,7 @@ enum PairingStart {
 fn prepare_start(config: &ClientConfig, host: &HostIdentity) -> anyhow::Result<PairingStart> {
     let transaction = lock_state(config)?;
     let store = &transaction;
+    let now = Utc::now();
     match load_state(store)? {
         Some(StoredPairingState::Pending {
             generation,
@@ -38,6 +39,7 @@ fn prepare_start(config: &ClientConfig, host: &HostIdentity) -> anyhow::Result<P
             report_endpoint,
             ..
         }) if !config.replace_pending_pairing
+            && expires_at > now
             && pairing_endpoints_match(config, &pairing_endpoint, &report_endpoint) =>
         {
             return Ok(PairingStart::Waiting(PairingSession {
@@ -49,7 +51,7 @@ fn prepare_start(config: &ClientConfig, host: &HostIdentity) -> anyhow::Result<P
             }));
         }
         Some(StoredPairingState::Pending { expires_at, .. })
-            if !config.replace_pending_pairing && expires_at > Utc::now() =>
+            if !config.replace_pending_pairing && expires_at > now =>
         {
             bail!(
                 "a browser pairing request for a different Host Monitoring server is still pending; \
@@ -178,7 +180,7 @@ async fn finish_create_request(
         &content_type,
         &body,
         &[StatusCode::OK, StatusCode::CREATED],
-        "create pairing request",
+        PairingHttpOperation::Create,
     )?;
     let created: CreatePairingResponse =
         parse_pairing_json(&body, &content_type, &pairing_endpoint, "pairing response")?;

@@ -296,6 +296,97 @@ mod tests {
         (origin, ca_path, handle)
     }
 
+    fn one_shot_pairing_error_server(
+        expected_path: &'static str,
+    ) -> (String, PathBuf, thread::JoinHandle<()>) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let handle = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(std::str::from_utf8(&request[..read]).unwrap().contains(expected_path));
+            let body = br#"{"code":"pairing_transaction_not_found","message":"pairing transaction no longer exists","retryable":false,"details":{}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+            stream.flush().unwrap();
+        });
+        (origin, ca_path, handle)
+    }
+
+    #[tokio::test]
+    async fn structured_missing_transaction_expires_matching_activate_and_poll_state() {
+        for operation in [PairingHttpOperation::Activate, PairingHttpOperation::Poll] {
+            let directory = std::env::temp_dir().canonicalize().unwrap().join(format!(
+                "host-monitoring-missing-pairing-{operation:?}-{}",
+                Uuid::new_v4()
+            ));
+            crate::private_fs::ensure_private_directory(&directory).unwrap();
+            let expected_path = match operation {
+                PairingHttpOperation::Activate => "POST /api/v2/host-monitor/activate ",
+                PairingHttpOperation::Poll => "/status ",
+                PairingHttpOperation::Create => unreachable!(),
+            };
+            let (server, ca_path, server_thread) = one_shot_pairing_error_server(expected_path);
+            let config = ClientConfig {
+                endpoint: format!("{server}/api/v2/host-monitor/report"),
+                pairing_endpoint: Some(format!("{server}/api/v2/host-monitor/pairing-requests")),
+                tls_ca_pem: Some(ca_path),
+                state_dir: directory.clone(),
+                ..ClientConfig::default()
+            };
+            let generation = Uuid::new_v4();
+            let request_id = Uuid::new_v4();
+            persist_state(
+                &config,
+                &StoredPairingState::Pending {
+                    version: PAIRING_STATE_VERSION,
+                    generation,
+                    request_id,
+                    activation_url: format!("{server}/activate/{request_id}"),
+                    expires_at: Utc::now() + TimeDelta::minutes(10),
+                    poll_interval: 1,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    bearer_secret: random_secret(),
+                    polling_secret: random_secret(),
+                },
+            )
+            .unwrap();
+            write_private_fixture(directory.join("client-token"), "preserved-token").unwrap();
+            write_private_fixture(directory.join("host-id"), Uuid::new_v4().to_string()).unwrap();
+
+            let error = match operation {
+                PairingHttpOperation::Activate => activate_pending_with_code(
+                    &config,
+                    generation,
+                    request_id,
+                    "uci_test_authorization_key",
+                )
+                .await
+                .unwrap_err(),
+                PairingHttpOperation::Poll => poll_existing(&config).await.unwrap_err(),
+                PairingHttpOperation::Create => unreachable!(),
+            };
+            assert!(error.downcast_ref::<PairingHttpError>().unwrap().transaction_missing());
+            assert!(matches!(
+                load_state(&StateReader::open(&directory).unwrap()).unwrap(),
+                Some(StoredPairingState::Expired { generation: saved, request_id: saved_request, .. })
+                    if saved == generation && saved_request == request_id
+            ));
+            assert_eq!(fs::read_to_string(directory.join("client-token")).unwrap(), "preserved-token");
+            assert!(directory.join("host-id").is_file());
+            server_thread.join().unwrap();
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn create_rejects_cross_origin_activation_url_before_showing_or_persisting_it() {
         let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
@@ -751,7 +842,7 @@ mod tests {
                 body: b"reflected-pairing-secret".to_vec(),
             };
             let error =
-                ensure_pairing_status(response.status, &[StatusCode::OK], "poll pairing status")
+                ensure_pairing_status(response.status, &[StatusCode::OK], PairingHttpOperation::Poll)
                     .unwrap_err();
             assert!(!format!("{error:#}/{error:?}").contains("reflected-pairing-secret"));
         }
@@ -759,7 +850,7 @@ mod tests {
             ensure_pairing_status(
                 StatusCode::OK,
                 &[StatusCode::OK, StatusCode::CREATED],
-                "create pairing request"
+                PairingHttpOperation::Create
             )
             .is_ok()
         );
@@ -767,14 +858,11 @@ mod tests {
             ensure_pairing_status(
                 StatusCode::CREATED,
                 &[StatusCode::OK, StatusCode::CREATED],
-                "create pairing request"
+                PairingHttpOperation::Create
             )
             .is_ok()
         );
-        for operation in [
-            "poll pairing status",
-            "submit the one-time authorization key",
-        ] {
+        for operation in [PairingHttpOperation::Poll, PairingHttpOperation::Activate] {
             assert!(ensure_pairing_status(StatusCode::OK, &[StatusCode::OK], operation).is_ok());
             assert!(
                 ensure_pairing_status(StatusCode::NO_CONTENT, &[StatusCode::OK], operation)
@@ -791,13 +879,40 @@ mod tests {
             "application/json",
             body,
             &[StatusCode::OK, StatusCode::CREATED],
-            "create pairing request",
+            PairingHttpOperation::Create,
         )
         .unwrap_err();
         let http = error.downcast_ref::<PairingHttpError>().unwrap();
         assert_eq!(http.code, Some("unsupported_client_protocol"));
         assert_eq!(http.received, Some(2));
         assert_eq!(http.supported, vec![1]);
+    }
+
+    #[test]
+    fn pairing_error_parser_accepts_only_known_codes_and_never_reflects_messages() {
+        let missing = ensure_pairing_response(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            br#"{"code":"pairing_transaction_not_found","message":"secret marker","retryable":false}"#,
+            &[StatusCode::OK],
+            PairingHttpOperation::Poll,
+        )
+        .unwrap_err();
+        let http = missing.downcast_ref::<PairingHttpError>().unwrap();
+        assert!(http.transaction_missing());
+        assert!(!format!("{missing:#}").contains("secret marker"));
+
+        let unknown = ensure_pairing_response(
+            StatusCode::BAD_REQUEST,
+            "application/json",
+            br#"{"code":"attacker_controlled","message":"authorization-secret","retryable":false}"#,
+            &[StatusCode::OK],
+            PairingHttpOperation::Create,
+        )
+        .unwrap_err();
+        let http = unknown.downcast_ref::<PairingHttpError>().unwrap();
+        assert_eq!(http.code, None);
+        assert!(!format!("{unknown:#}").contains("authorization-secret"));
     }
 
     #[test]
@@ -1084,6 +1199,40 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn live_pending_request_for_same_server_is_reused() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "host-monitoring-pending-resume-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: format!("https://host-monitoring.example/activate/{request_id}"),
+                expires_at: Utc::now() + TimeDelta::minutes(10),
+                poll_interval: 5,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret(),
+                polling_secret: random_secret(),
+            },
+        )
+        .unwrap();
+
+        let PairingStart::Waiting(session) = prepare_start(&config, &test_host()).unwrap() else {
+            panic!("live same-server pending request was not reused")
+        };
+        assert_eq!(session.generation, generation);
+        assert_eq!(session.request_id, request_id);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[tokio::test]
     async fn interrupted_create_cannot_be_silently_moved_to_another_server() {
         let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
@@ -1119,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_replacement_rotates_same_origin_incomplete_state() {
+    fn expired_pending_is_replaced_automatically_and_explicit_replacement_rotates_creating() {
         for phase in ["creating", "expired_pending"] {
             let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
                 "host-monitoring-same-origin-replace-{phase}-{}",
@@ -1172,10 +1321,13 @@ mod tests {
                     }
                     _ => panic!("creating state was not resumed"),
                 },
-                ("expired_pending", PairingStart::Waiting(session)) => {
-                    assert_eq!(session.generation, old_generation);
+                ("expired_pending", PairingStart::Create(replacement)) => {
+                    let StoredPairingState::Creating { generation, .. } = *replacement else {
+                        panic!("expired pending state was not replaced with Creating")
+                    };
+                    assert_ne!(generation, old_generation);
                 }
-                _ => panic!("ordinary pairing did not conservatively resume saved state"),
+                _ => panic!("ordinary pairing did not select the expected saved state"),
             }
 
             config.replace_pending_pairing = true;
