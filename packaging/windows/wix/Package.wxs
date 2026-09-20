@@ -135,6 +135,9 @@
       <Component Id="PreserveDataSelection" Guid="D063EAF7-D49B-4B93-A29F-01C667967DC3" Bitness="always64">
         <RegistryValue Root="HKLM" Key="Software\Host Monitoring\host-monitor" Name="PreserveData" Type="integer" Value="1" KeyPath="yes" />
       </Component>
+      <Component Id="PrepareSetupSelection" Guid="35B1E4E7-FC87-4628-9AA6-62F67F286220" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="Software\Host Monitoring\host-monitor" Name="PrepareSetup" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <Feature
@@ -150,6 +153,9 @@
       </Feature>
       <Feature Id="PreserveData" Title="Retain existing Client data" Description="Keep pairing identity, credentials and queued telemetry. Deselect to permanently remove them." Level="1" AllowAbsent="yes">
         <ComponentRef Id="PreserveDataSelection" />
+      </Feature>
+      <Feature Id="PrepareSetup" Title="Prepare incompatible account data for Setup (recommended)" Description="Archive only incompatible pairing/account files. The Host UUID and telemetry queue are validated and preserved so ordinary Setup can recover them." Level="1" AllowAbsent="yes">
+        <ComponentRef Id="PrepareSetupSelection" />
       </Feature>
     </Feature>
 
@@ -245,6 +251,13 @@
       Return="ignore" />
 
     <CustomAction
+      Id="PrepareSetupState"
+      FileRef="ClientExecutable"
+      ExeCommand="installer prepare-setup"
+      Execute="commit"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
       Id="ResetOldConfiguration"
       BinaryRef="HostMonitorMaintenance.exe"
       ExeCommand="reset-configuration &quot;[#ClientExecutable]&quot; [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]"
@@ -294,6 +307,10 @@
         Action="ResetOldData"
         After="ResetOldConfiguration"
         Condition="NOT Installed AND &amp;PreserveData &lt;&gt; 3" />
+      <Custom
+        Action="PrepareSetupState"
+        After="ResetOldData"
+        Condition="NOT REMOVE~=&quot;ALL&quot; AND &amp;PrepareSetup = 3" />
       <!--
         Standard MSI service/file removal is name/path based, so it must never run until the
         helper has rejected a replaced service and file/junction/reparse root. Register a narrow

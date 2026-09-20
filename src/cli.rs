@@ -66,6 +66,9 @@ impl ProductErrorCatalog for HostErrorCatalog {
             "pairing_state_incompatible" => Some(
                 "The stored Host account or pairing data is incompatible or malformed; it was preserved.",
             ),
+            "local_binding_incomplete" => {
+                Some("The local Host identity is present, but its account binding is incomplete.")
+            }
             "important_state_incompatible" => Some(
                 "Important saved Host collection data is incompatible or unreadable and was preserved.",
             ),
@@ -102,6 +105,9 @@ impl ProductErrorCatalog for HostErrorCatalog {
             }
             "pairing_state_incompatible" => Some(format!(
                 "Create a new Host authorization code, then run `{product} pair recover --interactive`; incompatible account files will be archived while the Host identity and queue are preserved."
+            )),
+            "local_binding_incomplete" => Some(format!(
+                "Create a new Host authorization code, then run `{product} setup`; Setup will recover the existing Host identity and preserve its telemetry queue."
             )),
             "important_state_incompatible" => Some(
                 "Do not delete or replace the reported spool; restore it with a compatible Client or archive it for operator review."
@@ -660,17 +666,53 @@ impl SetupPairAction {
 fn setup_pair_action(
     binding_state: &ExistingBindingState,
     recover_changed_server: bool,
+    recover_preserved_identity: bool,
     resume_existing_transaction: bool,
 ) -> SetupPairAction {
-    if matches!(binding_state, ExistingBindingState::Unauthorized) || recover_changed_server {
+    if matches!(
+        binding_state,
+        ExistingBindingState::Unauthorized | ExistingBindingState::LocalOnly
+    ) || recover_changed_server
+    {
         SetupPairAction::Recover
     } else if matches!(binding_state, ExistingBindingState::RemoteVerified { .. }) {
         SetupPairAction::Replace
     } else if resume_existing_transaction {
         SetupPairAction::Resume
+    } else if recover_preserved_identity {
+        SetupPairAction::Recover
     } else {
         SetupPairAction::Fresh
     }
+}
+
+#[cfg(any(windows, test))]
+fn installer_prepare_setup(c: &ClientConfig) -> Result<Value> {
+    let _guard = Guard::acquire(&c.state_dir).map_err(runtime_error)?;
+    let pairing_status = pairing::local_status(c);
+    let authorization_status = pairing::local_auth_state(c);
+    let incompatible = pairing_status
+        .as_ref()
+        .err()
+        .is_some_and(|error| pairing_state_failure(error).is_some())
+        || authorization_status
+            .as_ref()
+            .err()
+            .is_some_and(|error| pairing_state_failure(error).is_some());
+    if !incompatible {
+        authorization_status.map_err(pairing_state_error)?;
+        pairing_status.map_err(pairing_state_error)?;
+        return Ok(json!({"prepared":true,"archived":[],"important_data":"preserved"}));
+    }
+
+    checked_queue(c)?;
+    host_monitor::collectors::load_host_identity(&c.state_dir).map_err(pairing_state_error)?;
+    let archived = pairing::archive_incompatible_account_state(c).map_err(pairing_state_error)?;
+    Ok(json!({
+        "prepared":true,
+        "archived":archived,
+        "important_data":"host_identity_and_spool_preserved"
+    }))
 }
 
 fn setup_pair_args(args: &Args, action: SetupPairAction) -> Args {
@@ -991,7 +1033,10 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
             false
         }
         ExistingBindingState::LocalOnly => {
-            return Err(fail(8, "local_binding_incomplete").at_step("pairing"));
+            if interactive {
+                eprintln!("[setup] pairing: local_binding_incomplete_recovery");
+            }
+            false
         }
         ExistingBindingState::RemoteFailure(failure) => {
             let mut error = fail(6, failure.stable_code()).at_step("pairing");
@@ -1105,6 +1150,8 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
         let pair_action = setup_pair_action(
             &binding_state,
             recover_changed_server,
+            matches!(&binding_state, ExistingBindingState::None)
+                && host_monitor::collectors::load_host_identity(&c.state_dir).is_ok(),
             resume_existing_transaction,
         );
         let mut pair_args = setup_pair_args(args, pair_action);
@@ -1413,6 +1460,19 @@ fn execute(args: &Args) -> Result<Value> {
         };
     }
     match words.as_slice() {
+        #[cfg(windows)]
+        ["installer", "prepare-setup"] => {
+            args.validate_options(&[])?;
+            if path != host_monitor::config::default_config_path() {
+                return Err(fail(2, "installer_state_path_mismatch"));
+            }
+            let c = if config_exists(&path)? {
+                load(&path).map_err(|error| error.at_step("configuration"))?
+            } else {
+                new_config(path)
+            };
+            installer_prepare_setup(&c)
+        }
         ["setup"] => {
             args.validate_options(&[
                 "--interactive",
@@ -1917,7 +1977,7 @@ mod setup_tests {
         )
         .unwrap();
 
-        let recover = setup_pair_action(&ExistingBindingState::Unauthorized, false, true);
+        let recover = setup_pair_action(&ExistingBindingState::Unauthorized, false, false, true);
         assert_eq!(recover, SetupPairAction::Recover);
         let recover_args = setup_pair_args(&default_setup, recover);
         assert_eq!(recover_args.words, ["pair", "recover"]);
@@ -1928,18 +1988,64 @@ mod setup_tests {
                 host_id: "test-host".into(),
             },
             false,
+            false,
             true,
         );
         assert_eq!(replace, SetupPairAction::Replace);
         assert!(setup_pair_args(&default_setup, replace).has("--interactive"));
 
-        let resume = setup_pair_action(&ExistingBindingState::None, false, true);
+        let resume = setup_pair_action(&ExistingBindingState::None, false, true, true);
         assert_eq!(resume, SetupPairAction::Resume);
         assert!(!setup_pair_args(&default_setup, resume).has("--interactive"));
 
-        let fresh = setup_pair_action(&ExistingBindingState::None, false, false);
+        let preserved = setup_pair_action(&ExistingBindingState::None, false, true, false);
+        assert_eq!(preserved, SetupPairAction::Recover);
+
+        let incomplete = setup_pair_action(&ExistingBindingState::LocalOnly, false, false, false);
+        assert_eq!(incomplete, SetupPairAction::Recover);
+
+        let fresh = setup_pair_action(&ExistingBindingState::None, false, false, false);
         assert_eq!(fresh, SetupPairAction::Fresh);
         assert!(setup_pair_args(&default_setup, fresh).has("--interactive"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installer_preparation_archives_incompatible_account_but_preserves_host_identity() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state_dir = directory.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let host_id = uuid::Uuid::new_v4().to_string();
+        for (name, bytes) in [
+            ("host-id", host_id.as_bytes()),
+            (
+                "pairing-state.json",
+                br#"{"phase":"active","version":"0.8.0"}"#,
+            ),
+        ] {
+            let path = state_dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut config = ClientConfig::default();
+        config.state_dir = state_dir.clone();
+
+        let result = installer_prepare_setup(&config).unwrap();
+        let archived = result["archived"].as_array().unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(state_dir.join("host-id")).unwrap(),
+            host_id
+        );
+        assert!(!state_dir.join("pairing-state.json").exists());
+        assert!(
+            archived[0]
+                .as_str()
+                .is_some_and(|path| Path::new(path).exists())
+        );
     }
 
     #[test]

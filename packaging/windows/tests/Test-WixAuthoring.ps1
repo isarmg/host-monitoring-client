@@ -138,7 +138,7 @@ Assert-Equal $installerUi.InstallDirectory "INSTALLFOLDER" `
 $installLocation = Select-One "//w:RegistryValue[@Name='InstallLocation']"
 Assert-Equal $installLocation.Value "[INSTALLFOLDER]" `
     "Post-install commands must discover the selected installation directory."
-foreach ($featureId in @("PreserveConfiguration", "PreserveData")) {
+foreach ($featureId in @("PreserveConfiguration", "PreserveData", "PrepareSetup")) {
     $feature = Select-One "//w:Feature[@Id='$featureId']"
     Assert-Equal $feature.AllowAbsent "yes" `
         "Retention option $featureId must be an explicit user choice."
@@ -234,14 +234,33 @@ $expectedActions = [ordered]@{
     "ResetOldConfiguration" = @('reset-configuration "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "check")
     "ResetOldData" = @('reset-data "[#ClientExecutable]" [HOST_MONITORING_MAINTENANCE_DIAGNOSTICS]', "commit", "check")
 }
+$expectedClientActions = [ordered]@{
+    "PrepareSetupState" = @('installer prepare-setup', "commit", "check")
+}
 $nativeActions = @($actions | Where-Object {
     $_.GetAttribute("BinaryRef") -eq "HostMonitorMaintenance.exe"
 })
 if ($nativeActions.Count -ne $expectedActions.Count) {
     throw "Expected exactly $($expectedActions.Count) native lifecycle custom actions; found $($nativeActions.Count)."
 }
-if ($actions.Count -ne $expectedActions.Count) {
-    throw "Expected only the native lifecycle custom actions; found $($actions.Count)."
+if ($actions.Count -ne ($expectedActions.Count + $expectedClientActions.Count)) {
+    throw "Expected only the native lifecycle and setup-preparation custom actions; found $($actions.Count)."
+}
+
+foreach ($entry in $expectedClientActions.GetEnumerator()) {
+    $action = Select-One "//w:CustomAction[@Id='$($entry.Key)']"
+    Assert-Equal $action.ExeCommand $entry.Value[0] `
+        "The command bound to custom action $($entry.Key) drifted."
+    Assert-Equal $action.Execute $entry.Value[1] `
+        "The execution phase for custom action $($entry.Key) drifted."
+    Assert-Equal $action.Return $entry.Value[2] `
+        "The return policy for custom action $($entry.Key) drifted."
+    Assert-Equal $action.FileRef "ClientExecutable" `
+        "Setup preparation must use the just-installed, version-matched Client executable."
+    Assert-Equal $action.GetAttribute("BinaryRef") "" `
+        "Setup preparation must not use the maintenance helper command surface."
+    Assert-Equal $action.Impersonate "no" `
+        "Setup preparation must run in the protected system install context."
 }
 if ($null -ne $package.SelectSingleNode("//w:CustomAction[@Id='LaunchInteractiveSetup']", $namespace)) {
     throw "MSI must not launch interactive product setup from the installer transaction."
@@ -298,6 +317,7 @@ $expectedSequence = [ordered]@{
     "CommitClientInstall" = @("After", "ApplyClientInstall", $installCondition)
     "ResetOldConfiguration" = @("After", "CommitClientInstall", 'NOT Installed AND &PreserveConfiguration <> 3')
     "ResetOldData" = @("After", "ResetOldConfiguration", 'NOT Installed AND &PreserveData <> 3')
+    "PrepareSetupState" = @("After", "ResetOldData", 'NOT REMOVE~="ALL" AND &PrepareSetup = 3')
     "RollbackUninstallPreflight" = @("Before", "PreflightClientUninstall", $preflightCondition)
     "PreflightClientUninstall" = @("Before", "StopServices", $preflightCondition)
     "RollbackPreservedState" = @("After", "StopServices", $preserveCondition)
