@@ -658,7 +658,7 @@ pub(crate) fn validate_current_token(token: &str) -> Result<(), LocalCredentialC
 /// | 变体 | 需要改变的东西 | 处置 |
 /// |---|---|---|
 /// | `Permanent`  | 报文内容本身（改不了） | 丢弃 |
-/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 需要创建新实例并再次配对 |
+/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 使用授权恢复流程重新配对；仅明确放弃旧身份时才替换实例 |
 /// | `IdentityMismatch` | 报告不属于当前凭据身份 | 保留原字节隔离，继续队列 |
 /// | `Transient`  | 等待网络或服务恢复 | 保留并退避重试 |
 #[derive(Debug, thiserror::Error)]
@@ -672,8 +672,8 @@ pub enum SendError {
     #[error("{0}")]
     Permanent(String),
     /// Host Monitoring 以 401 和稳定 `unauthorized` 机器码确认凭据不被接受。主机进入
-    /// `reauth_required`，只能通过创建新实例并执行当前 v2 配对流程恢复；Client 不会自动生成
-    /// 或替换凭据。代理/WAF 生成的未知 401 不得使用此变体。
+    /// `reauth_required`，需要显式执行授权恢复配对；Client 不会自动生成或替换凭据，
+    /// 也不会在恢复过程中改换 Host UUID。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
     /// The authenticated Server returned the stable current protocol-mismatch envelope.
@@ -689,7 +689,7 @@ impl SendError {
         matches!(self, Self::Permanent(_))
     }
 
-    /// 凭据已失效，需要创建新实例并再次配对后才可能成功。
+    /// 凭据已失效，需要显式恢复授权后才可能成功。
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Unauthorized(_) | Self::UnsupportedProtocol(_))
     }

@@ -10,9 +10,9 @@ fn secure_state_for_service(path: &Path) -> anyhow::Result<()> {
 fn secure_program_for_service(path: &Path) -> anyhow::Result<()> {
     let service_sid = service_sid_string()?;
     // The service keeps its isolated read/execute grant while BUILTIN\Users
-    // receives the same non-writing rights needed to start the per-user tray
-    // companion from HKLM\...\Run. Mutable state remains under the separate
-    // `apply_exact_acl` template and deliberately never receives this ACE.
+    // receives non-writing rights to invoke the installed CLI. Mutable state
+    // remains under the separate `apply_exact_acl` template and deliberately
+    // never receives this ACE.
     let descriptor = program_security_descriptor(&service_sid);
     apply_descriptor_recursively(path, &descriptor)
 }
@@ -64,8 +64,8 @@ enum ProgramAclRestore {
     /// An install rollback has already restored the exact protected ACL
     /// snapshot from the current installation transaction.
     PreserveSnapshot,
-    /// Uninstall rollback restores the currently installed tray-aware
-    /// product, so rebuild and verify the current exact template.
+    /// Uninstall rollback restores the currently installed product, so
+    /// rebuild and verify the current exact template.
     SecureCurrent,
 }
 

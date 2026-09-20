@@ -1,52 +1,53 @@
 # Host Monitoring Client
 
-跨平台只读主机遥测客户端。公开入口是 `host-monitor`，后台由操作系统服务管理器运行，无托盘、本机网页或浏览器启动入口。集中管理仍在独立的 Host Monitoring Server 中。
+`host-monitor` `0.9.25` 是 Host Monitoring 的只读主机遥测客户端。它采集 CPU、内存、磁盘、网络和可选 NVIDIA 指标，通过 HTTPS 主动上报到 Server，并在网络不可用时使用有界本地队列重试。
 
-当前纯 CLI 与系统服务版本为 `0.9.25`；用法和验收限制见 [CLI 改造说明](docs/releases/cli-unreleased.md)。安装产物未签名、未公证，实机与升级验收边界见发行说明。
+当前支持 Windows x64、Linux x64 和 macOS Apple Silicon。Client 不开放入站端口，也不提供托盘或本地 Web；安装包和系统服务能力以对应 Release 为准。
 
-支持 Windows x64、Linux x64 和 macOS Apple Silicon（arm64）。不再为 Intel macOS 适配、运行 CI 或提供发行包。
+## 配置概览
 
-详细的 Windows、Linux、macOS 安装命令、配置路径、覆盖修复与日志说明见 [各平台安装配置指南](docs/platform-setup.md)。
-
-## 部署与配对
-
-每个平台只发布一个原生安装包文件：DEB/RPM、MSI 或 PKG。安装器检查平台、架构、权限并注册低权限系统服务；有交互终端的首次安装会直接调用唯一的 `setup` 命令，完成交互式配对、开机启动选择、立即启动和连接验证。Linux 使用 `host-monitor` 低权限账户，macOS 使用 `_hostmonitor`，Windows 保持 LocalService。Unix 写命令使用 `sudo`，Windows 使用已提权终端；静默或无终端安装会保留进度，随后显式运行 `setup`。
+安装后先确认版本并停止后台服务，再初始化配置：
 
 ```sh
-host-monitor setup
+host-monitor version --format json
+sudo host-monitor service stop
+sudo host-monitor config init
+sudo host-monitor config show --format json
 ```
 
-`setup` 会在已存在有效身份时复用身份，在未完成的配对事务上执行 `pair resume`；配对失败不会回滚安装或删除进度。配置、配对持久化、服务注册、启动策略、运行状态与连接均逐关卡复查，只有当前关卡验证成功才进入下一关；失败结果包含稳定的 `error.code`、`error.step`、可读 `error.message`，服务管理器失败还包含受限长度的 `error.detail`。默认配置位置：Linux `/etc/host-monitor/config.json`，macOS `/Library/Application Support/host-monitor/config.json`，Windows ProgramData 下 `host-monitor/config.json`。`--config` 可以选择绝对配置路径；服务命令只能操作与已安装服务注册一致的配置。
-
-自动化通过 stdin 交付单个 JSON 文档：字段为 `server` 和 `authorization_code`。例如部署器启动 `host-monitor setup --input-stdin --non-interactive --format json` 后写入受保护输入；非交互模式默认完成服务启用、启动和验证，不要在 Shell 参数或日志中拼接秘密。
-
-`pair resume` 只核对已有事务。`pair replace --confirm-replace --expected-binding <当前 host_id> --interactive` 明确替换绑定，要求旧待发送/隔离队列均为空。先通过 `queue status`、`queue inspect`、`queue drain --timeout 60s` 检查或排空；不会自动删除旧数据或换身份发送。
-
-## 配置和诊断
+交互式编辑会在保存前校验配置：
 
 ```sh
-host-monitor config show --format json
-host-monitor config validate --file /absolute/candidate.json
-host-monitor config diff --file /absolute/candidate.json
-host-monitor service stop
-host-monitor config apply --file /absolute/candidate.json --expected-revision REVISION
-host-monitor service start
-host-monitor status --check
+sudo host-monitor config edit
 ```
 
-`config show/diff` 脱敏，提交核对修订并原子持久化。已绑定的 Server 地址及状态目录不能通过普通配置提交迁移。保留当前配置/状态版本检查，不通过修改版本字段绕过升级工具。
-
-`probe` 仅采集、不联网、不创建持久身份。`once` 是独占会话内的真实报告投递，会读取身份、访问 Server 并更新投递状态。`doctor` 默认只读本地配置、身份与队列；`doctor --network` 会访问已配置 Server，但不发送遥测报告；`doctor --delivery` 会执行一次真实投递并产生服务端报告及本地投递状态。诊断输出分享前仍应脱敏 Server 地址、主机标识和时间线。`status --watch --format ndjson` 只读取受保护的本地状态通道，Ctrl+C 只退出观察。
-
-## 构建验证
+随后使用 Server 管理页生成的实例授权码配对，并启动服务：
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo check --locked --no-default-features
+sudo host-monitor pair --interactive
+sudo host-monitor pair status --format json
+sudo host-monitor service enable
+sudo host-monitor service start
+host-monitor status --check --format json
 ```
 
-测试中的本地 HTTP/TLS 和 IPC 需要创建本机监听端点的权限。保留 Linux DEB/RPM、Windows 原生服务维护程序和 macOS LaunchDaemon 打包基础。默认卸载保留身份与队列；在 Server 退役设备后再安排受控的数据处置。
+自动化配置、候选文件的 `validate/diff/apply`、授权码轮换、队列处理和诊断命令见[完整配置指南](docs/configuration.md)。不要把授权码、Client token 或 OTLP token 放进命令参数、Shell 历史或日志。
 
-版本维度、源提交及升级/回退边界见 [CLI 兼容矩阵](docs/releases/cli-compatibility.md)。
+默认配置位置和安装步骤按平台不同，见[平台安装指南](docs/platform-setup.md)。
+
+## 开发验证
+
+```sh
+cargo +1.98.0 fmt --all -- --check
+cargo +1.98.0 clippy --locked --all-targets --all-features -- -D warnings
+cargo +1.98.0 test --locked --all-features
+```
+
+## 文档
+
+- [文档总览](docs/README.md)
+- [完整配置指南](docs/configuration.md)
+- [平台安装与升级](docs/platform-setup.md)
+- [CLI 兼容矩阵](docs/releases/cli-compatibility.md)
+
+代码采用 [Apache License 2.0](LICENSE-APACHE)。

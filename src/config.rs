@@ -1344,14 +1344,14 @@ mod tests {
     }
 
     #[test]
-    fn request_timeout_is_bounded_for_graceful_tray_cancellation() {
+    fn request_timeout_is_bounded_for_graceful_process_cancellation() {
         let mut config = config_with_interval(10);
         config.request_timeout_seconds = 300;
         assert!(config.validate(ClientCommand::Run).is_ok());
         config.request_timeout_seconds = 301;
         let error = config
             .validate(ClientCommand::Run)
-            .expect_err("unbounded network waits defeat tray cancellation guarantees");
+            .expect_err("unbounded network waits defeat process cancellation guarantees");
         assert!(error.to_string().contains("300"));
     }
 

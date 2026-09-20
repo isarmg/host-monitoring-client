@@ -1,10 +1,10 @@
-# 按平台安装、配置与升级
+# 按平台安装与升级
 
-适用于 0.9.25，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务，随后使用 `setup` 完成配对、服务策略和连接验证。
+适用于 0.9.25，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
 
 ## Windows 11 x64
 
-从开始菜单以管理员身份打开 PowerShell，下载并校验 Release MSI。普通安装不要使用 `/qn`，MSI 提交部署后会在交互终端中直接启动 `setup --interactive`：
+从开始菜单以管理员身份打开 PowerShell，下载并校验 Release MSI。MSI 不在安装事务中启动配对；安装完成后由同一个管理员终端显式运行 `setup --interactive`：
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"

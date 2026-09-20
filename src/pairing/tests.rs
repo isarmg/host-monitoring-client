@@ -1363,7 +1363,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirmed_tray_replacement_can_replace_mismatched_incomplete_states() {
+    async fn confirmed_replacement_can_replace_mismatched_incomplete_states() {
         for old_state in ["creating", "pending"] {
             let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
                 "host-monitoring-confirmed-replace-{old_state}-{}",

@@ -357,7 +357,7 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
     let next_action = match overall_state {
         "degraded" => "repair the failed local check, then run `host-monitor doctor`",
         "reauth_required" => {
-            "create a new pairing invitation in Host Monitoring and pair this host again"
+            "create a new authorization code in Host Monitoring, then run `host-monitor pair recover --interactive`"
         }
         "pairing" => "complete or resume the saved browser pairing request",
         "unconfigured" => "run `host-monitor pair --server https://your-console`",

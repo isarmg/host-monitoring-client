@@ -1204,7 +1204,7 @@ mod program_acl_template_tests {
     }
 
     #[test]
-    fn tray_execute_access_never_leaks_into_mutable_state_template() {
+    fn cli_execute_access_never_leaks_into_mutable_state_template() {
         let program = program_security_descriptor(SERVICE_SID);
         assert!(program.contains("(A;OICI;0x1200a9;;;BU)"));
 

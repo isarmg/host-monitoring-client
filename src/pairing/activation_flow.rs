@@ -1,5 +1,5 @@
 /// Submit the one-time authorization key for exactly the pending generation
-/// emitted to the trusted Windows tray broker.
+/// selected by the explicit pairing command.
 ///
 /// The key stays in memory and is sent only by the Client's TLS-configured
 /// client. Redirects are disabled so an HTTP 307/308 can never replay the JSON
