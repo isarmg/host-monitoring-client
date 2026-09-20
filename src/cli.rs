@@ -2092,7 +2092,11 @@ mod setup_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
-        let state_dir = directory.path().join("state");
+        // Darwin's TMPDIR is commonly spelled through /var, which is a
+        // symlink to /private/var. Production state rejects every symlink in
+        // its path, so exercise it through the physical path just as the
+        // package-managed /Library state is addressed.
+        let state_dir = directory.path().canonicalize().unwrap().join("state");
         std::fs::create_dir(&state_dir).unwrap();
         std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let host_id = uuid::Uuid::new_v4().to_string();
