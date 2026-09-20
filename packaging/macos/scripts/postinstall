@@ -787,6 +787,29 @@ require_launchd_job_absent() {
   return 1
 }
 
+wait_for_launchd_job_absent() {
+  waiting_job_target="$1"
+  waiting_job_description="$2"
+  waiting_attempt=0
+  waiting_limit=30
+  while [ "$waiting_attempt" -lt "$waiting_limit" ]; do
+    if inspect_launchd_job "$waiting_job_target"; then
+      waiting_job_state=0
+    else
+      waiting_job_state=$?
+    fi
+    case "$waiting_job_state" in
+      1) return 0 ;;
+      2) return 1 ;;
+    esac
+    waiting_attempt=$((waiting_attempt + 1))
+    [ "$waiting_attempt" -lt "$waiting_limit" ] || break
+    sleep 1
+  done
+  echo "$waiting_job_description did not finish unloading within $waiting_limit seconds" >&2
+  return 1
+}
+
 stop_failed_bootstrap_job() {
   failed_job_target="$1"
   failed_job_description="$2"
@@ -1163,6 +1186,8 @@ fi
 if [ "$previous_logrotate_loaded" -eq 1 ]; then
   previous_logrotate_stopped=1
   launchctl bootout system/org.sarmg.hostmonitor.logrotate
+  wait_for_launchd_job_absent system/org.sarmg.hostmonitor.logrotate \
+    "host-monitor log-rotation helper" || exit 1
 fi
 
 # The rotation helper may have stopped the Client temporarily and restores it
@@ -1172,6 +1197,8 @@ if inspect_launchd_job system/org.sarmg.hostmonitor; then
   previous_client_loaded=1
   previous_client_stopped=1
   launchctl bootout system/org.sarmg.hostmonitor
+  wait_for_launchd_job_absent system/org.sarmg.hostmonitor \
+    "host-monitor" || exit 1
 else
   post_helper_client_state=$?
   case "$post_helper_client_state" in
@@ -1183,6 +1210,8 @@ if inspect_launchd_job system/org.sarmg.hostmonitor; then
   previous_client_loaded=1
   previous_client_stopped=1
   launchctl bootout system/org.sarmg.hostmonitor
+  wait_for_launchd_job_absent system/org.sarmg.hostmonitor \
+    "host-monitor" || exit 1
 else
   second_client_state=$?
   [ "$second_client_state" -eq 1 ] || exit 1

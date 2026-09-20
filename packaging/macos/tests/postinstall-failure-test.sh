@@ -533,6 +533,7 @@ EOF
 
   cat >"$case_bin/sleep" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >>"$FILE_STATE/sleep-calls"
 exit 0
 EOF
 
@@ -676,10 +677,18 @@ case "${1:-}" in
     fi
     target="$2"
     label="${target#system/}"
-    rm -f "$LAUNCH_STATE/loaded.$label"
-    if [ "$label" = org.sarmg.hostmonitor ] &&
-      [ "${BOOTOUT_LEAVES_CLIENT_PROCESS:-0}" -ne 1 ]; then
-      rm -f "$LAUNCH_STATE/process-u.$label" "$LAUNCH_STATE/process-U.$label"
+    delayed_absence="${BOOTOUT_DELAYED_ABSENCE_PRINTS:-0}"
+    case "$delayed_absence" in
+      ''|*[!0-9]*) exit 64 ;;
+    esac
+    if [ "$delayed_absence" -gt 0 ] && [ -e "$LAUNCH_STATE/loaded.$label" ]; then
+      printf '%s\n' "$delayed_absence" >"$LAUNCH_STATE/delayed-absence.$label"
+    else
+      rm -f "$LAUNCH_STATE/loaded.$label"
+      if [ "$label" = org.sarmg.hostmonitor ] &&
+        [ "${BOOTOUT_LEAVES_CLIENT_PROCESS:-0}" -ne 1 ]; then
+        rm -f "$LAUNCH_STATE/process-u.$label" "$LAUNCH_STATE/process-U.$label"
+      fi
     fi
     if [ "$label" = org.sarmg.hostmonitor.logrotate ] &&
       [ "${HELPER_RESTORES_CLIENT_ON_EXIT:-0}" -eq 1 ]; then
@@ -729,6 +738,19 @@ case "${1:-}" in
     fi
     target="$2"
     label="${target#system/}"
+    delayed_marker="$LAUNCH_STATE/delayed-absence.$label"
+    if [ -f "$delayed_marker" ]; then
+      IFS= read -r delayed_remaining <"$delayed_marker"
+      delayed_remaining=$((delayed_remaining - 1))
+      if [ "$delayed_remaining" -gt 0 ]; then
+        printf '%s\n' "$delayed_remaining" >"$delayed_marker"
+      else
+        rm -f "$delayed_marker" "$LAUNCH_STATE/loaded.$label"
+        if [ "$label" = org.sarmg.hostmonitor ]; then
+          rm -f "$LAUNCH_STATE/process-u.$label" "$LAUNCH_STATE/process-U.$label"
+        fi
+      fi
+    fi
     if [ -f "$LAUNCH_STATE/loaded.$label" ]; then
       exit 0
     fi
@@ -780,6 +802,7 @@ reset_fault_counters() {
     "$reset_case/chown-count" "$reset_case/chown-calls" \
     "$reset_case/chmod-n-count" "$reset_case"/acl-cleared.* \
     "$reset_case/pgrep-calls" "$reset_case/pkill-calls" \
+    "$reset_case/sleep-calls" \
     "$reset_case/race-config-injected" \
     "$reset_case/mutable-checks-active" \
     "$reset_case/launch/bootstrap-count" "$reset_case/launch/bootout-count" \
@@ -787,6 +810,7 @@ reset_fault_counters() {
     "$reset_case/launch/print-count" \
     "$reset_case/launch/client-bootout-completed" \
     "$reset_case/launch/post-bootout-print-failed"
+  rm -f "$reset_case/launch"/delayed-absence.*
 }
 
 assert_mock_metadata() {
@@ -1810,6 +1834,26 @@ fi
   fail 'failed replacement restarted the helper without revalidating mutable state'
 grep -Fx 'disable system/org.sarmg.hostmonitor' "$case_dir/launch/calls" >/dev/null ||
   fail 'failed replacement did not persistently disable the Client label'
+
+# launchctl bootout can return before launchd finishes removing a job. A normal
+# package upgrade must wait for both old labels instead of treating the short
+# removal window as a failed cutover.
+case_dir="$test_root/reinstall-asynchronous-bootout"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish jobs for the asynchronous bootout case'
+start_prior_client
+reset_fault_counters "$case_dir"
+: >"$case_dir/launch/calls"
+run_postinstall "$case_dir" BOOTOUT_DELAYED_ABSENCE_PRINTS=2 \
+  >"$case_dir/reinstall.log" 2>&1 ||
+  fail 'postinstall rejected launchd asynchronous job removal'
+grep -Fx '1' "$case_dir/sleep-calls" >/dev/null ||
+  fail 'postinstall did not wait for launchd job removal'
+[ ! -e "$case_dir/launch/loaded.org.sarmg.hostmonitor" ] &&
+  [ -e "$case_dir/launch/disabled.org.sarmg.hostmonitor" ] &&
+  [ -e "$case_dir/launch/loaded.org.sarmg.hostmonitor.logrotate" ] ||
+  fail 'asynchronous bootout did not leave the validated Client stopped'
 
 # The rotation helper may have the Client temporarily stopped and restore it
 # from its exit trap. postinstall must decide whether to stop Client only after
