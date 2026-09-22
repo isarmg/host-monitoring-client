@@ -31,6 +31,9 @@ sudo host-monitor service start
 host-monitor status --check --format json
 ```
 
+交互配对时，实例授权码按普通文本输入并在终端中明文显示；没有遮罩、隐藏切换或二次显示模式。使用后仍不会
+写入日志或命令参数，并继续由可清零内存缓冲区保存。
+
 自动化配置、候选文件的 `validate/diff/apply`、授权码轮换、队列处理和诊断命令见[完整配置指南](docs/configuration.md)。不要把授权码、Client token 或 OTLP token 放进命令参数、Shell 历史或日志。
 
 默认配置位置和安装步骤按平台不同，见[平台安装指南](docs/platform-setup.md)。

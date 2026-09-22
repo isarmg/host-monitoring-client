@@ -17,7 +17,7 @@ $client = Join-Path $installRoot 'host-monitor.exe'
 
 MSI 的自定义安装页允许选择任意本机安装目录，并分别选择是否保留 `config.json`、是否保留身份/凭据/待发送采集队列，以及是否执行“Prepare incompatible account data for Setup (recommended)”。三项默认选中。最后一项不读取授权码，也不发起网络配对：它只检查本机账户格式；发现未知或损坏的配对、授权、绑定或凭据文件时，先验证 Host UUID 和 telemetry spool，再把不兼容账户文件归档为唯一名称。Host UUID 和待发送队列不在归档范围内。取消前两项会在最终提交阶段清理对应类别。向导始终显示完成页或失败页；安装后只需运行 `& $client setup --interactive`。
 
-将示例 Server 地址替换为你的 Host Monitoring Server，在交互提示中输入管理台创建的授权码。MSI 会把用户选择的目录事务性追加到机器 PATH；新终端可直接运行 `host-monitor`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\host-monitor\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
+将示例 Server 地址替换为你的 Host Monitoring Server，在交互提示中输入管理台创建的授权码。授权码使用普通文本提示并在终端中明文回显，不提供遮罩或隐藏切换。MSI 会把用户选择的目录事务性追加到机器 PATH；新终端可直接运行 `host-monitor`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\host-monitor\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
 
 已有安装直接再次运行同一 MSI；原生安装器处理升级、修复、降级检查和服务登记，并保留配置、身份、队列及启动意图。安装器完成兼容性准备后，普通 `host-monitor setup` 会把仅有本地身份、缺少完整绑定以及“账户文件已归档但 Host UUID 仍在”的状态自动选择为 recovery，不再要求管理员先运行 `pair recover`。程序仍会在真实终端询问新的 Server 授权码；远程核验成功的绑定仍可复用，未完成事务可以继续。
 

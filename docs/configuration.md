@@ -111,6 +111,10 @@ sudo host-monitor pair --interactive
 sudo host-monitor pair status --format json
 ```
 
+所有交互配对入口（首次配对、替换和恢复）使用同一个 `Authorization code (visible)` 普通文本提示。输入或
+粘贴的授权码会在终端中明文回显，不提供遮罩、隐藏切换或特殊显示流程；CLI 仍不会把授权码写入日志、结果
+JSON 或命令参数。
+
 自动化必须通过 stdin 提交严格 JSON：
 
 ```json

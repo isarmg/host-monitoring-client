@@ -435,11 +435,11 @@ async fn pair(args: &Args, mut c: ClientConfig) -> Result<Value> {
             } else {
                 prompt_text("Server origin", MAX_SERVER_ORIGIN_BYTES, deadline)?
             },
-            authorization_code: prompt_secret(
-                "Authorization code",
+            authorization_code: Zeroizing::new(prompt_text(
+                "Authorization code (visible)",
                 MAX_AUTHORIZATION_CODE_BYTES,
                 deadline,
-            )?,
+            )?),
         })
     } else {
         return Err(fail(2, "protected_input_required"));
