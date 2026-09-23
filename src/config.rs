@@ -458,15 +458,9 @@ impl ClientConfig {
         if self.jitter_percent > 50 {
             bail!("jitter_percent must not exceed 50");
         }
-        // 校验的是**最坏情况下的采样 cadence**，而不是配置值本身。
-        //
-        // run 模式的网络投递由独立 worker 完成，不再计入两次采样之间的间隔；正常
-        // 周期只由 ticker 的 jitter 决定。`interval_seconds = 3600` 若只比较配置值，
-        // 仍会被 10% 默认 jitter 推到 3960 秒并被服务端判为 400。
-        //
-        // 那种失败尤其难查：报文入 spool 后仍会因永久拒绝被确认丢弃，现象只是
-        // "数据没了"加上日志里周期性的 400。因此在启动时按最坏 jitter
-        // 拒绝，并把可用上限直接算给用户。
+        // 正常采样周期由 ticker 的 jitter 决定，网络投递由独立 worker 执行。
+        // 按最大 jitter 校验服务端允许的上报间隔：3600 秒加 10% jitter 可达
+        // 3960 秒。超限配置在启动时拒绝，并报告当前 jitter 对应的可用上限。
         let worst_case_cycle = self.worst_case_cycle_seconds();
         if worst_case_cycle > MAX_REPORT_INTERVAL_SECONDS as f64 {
             bail!(
