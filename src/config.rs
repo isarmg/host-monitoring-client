@@ -145,6 +145,8 @@ pub struct ClientConfig {
     pub otlp_token: Option<Arc<SecretString>>,
     pub interval_seconds: u64,
     pub slow_interval_seconds: u64,
+    #[serde(default)]
+    pub smart: crate::collectors::smart::SmartConfig,
     pub request_timeout_seconds: u64,
     pub jitter_percent: u8,
     pub state_dir: PathBuf,
@@ -191,6 +193,7 @@ impl Default for ClientConfig {
             otlp_token: None,
             interval_seconds: 10,
             slow_interval_seconds: 30,
+            smart: Default::default(),
             request_timeout_seconds: 10,
             jitter_percent: 10,
             state_dir: default_state_dir(),
@@ -476,6 +479,17 @@ impl ClientConfig {
                 self.jitter_percent,
                 self.max_interval_seconds_at_current_jitter()
             );
+        }
+        if !(60..=86400).contains(&self.smart.interval_seconds) {
+            bail!("smart.interval_seconds must be between 60 and 86400");
+        }
+        if self
+            .smart
+            .executable
+            .as_ref()
+            .is_some_and(|p| !p.is_absolute())
+        {
+            bail!("smart.executable must be an absolute path");
         }
         if self.slow_interval_seconds < self.interval_seconds {
             bail!("slow_interval_seconds must be at least interval_seconds");

@@ -30,6 +30,12 @@ mod pdh_buffer;
 mod pdh_recovery;
 #[cfg(target_os = "windows")]
 mod windows_gpu;
+#[cfg(any(all(target_os = "windows", target_arch = "x86_64"), test))]
+#[cfg_attr(not(windows), allow(dead_code))] // Exercise native ABI/conversion tests on Linux.
+mod windows_vendor;
+
+mod hardware;
+pub mod smart;
 
 /// 长期复用 sysinfo 对象，避免反复枚举系统并确保差值指标有正确采样基线。
 pub struct SystemSampler {
@@ -42,10 +48,21 @@ pub struct SystemSampler {
     cached_temperatures: Vec<TemperatureSnapshot>,
     cached_temperature_capability: Capability,
     gpu_runtime: GpuRuntime,
+    hardware: Option<crate::model::HardwareSnapshot>,
+    hardware_capability: Capability,
+    smart: smart::SmartCollector,
 }
 
 impl SystemSampler {
     pub fn new() -> Self {
+        Self::with_smart_config(smart::SmartConfig::default())
+    }
+
+    pub fn with_smart_config(config: smart::SmartConfig) -> Self {
+        #[allow(unused_mut)]
+        let mut gpu_runtime = GpuRuntime::new();
+        #[cfg(target_os = "windows")]
+        let _ = gpu_runtime.collect(); // Prime PDH and start asynchronous vendor sampling.
         Self {
             // The Client never reads process data. `new_all()` eagerly walks
             // every process (and Linux task) and retains that unused snapshot
@@ -71,8 +88,23 @@ impl SystemSampler {
             last_slow_sample: None,
             cached_temperatures: Vec::new(),
             cached_temperature_capability: temperature_capability(&[]),
-            gpu_runtime: GpuRuntime::new(),
+            gpu_runtime,
+            hardware: None,
+            hardware_capability: Capability::available("hardware.inventory", "sysinfo"),
+            smart: smart::SmartCollector::new(config),
         }
+    }
+
+    pub fn vendor_scan_pending(&self) -> bool {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        return self.gpu_runtime.vendors.is_pending();
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        false
+    }
+
+    pub fn smart_scan_pending(&mut self) -> bool {
+        self.smart.poll();
+        self.smart.is_pending()
     }
 
     pub fn collect(
@@ -107,6 +139,10 @@ impl SystemSampler {
             .last_slow_sample
             .is_none_or(|last| now.duration_since(last).as_secs() >= slow_interval_seconds);
         if refresh_slow {
+            self.system.refresh_cpu_frequency();
+            let (hardware, capability) = hardware::collect(&self.system, &self.networks);
+            self.hardware = Some(hardware);
+            self.hardware_capability = capability;
             #[cfg(not(target_os = "linux"))]
             self.components.refresh(true);
             let temperature_result = collect_temperatures(&self.components);
@@ -118,11 +154,25 @@ impl SystemSampler {
             self.last_slow_sample = Some(now);
         }
 
-        let (gpus, gpu_capabilities) = self.gpu_runtime.collect();
+        let gpu = self.gpu_runtime.collect();
         let mut capabilities = core_capabilities(&self.cached_temperature_capability);
+        let (disk_health, smart_capability) = self.smart.poll();
+        if let Some(hardware) = &mut self.hardware {
+            hardware.disk_health = disk_health;
+            hardware
+                .sensors
+                .retain(|sensor| !matches!(sensor.source.as_str(), "amd-adlx" | "intel-igcl"));
+            extend_bounded(
+                &mut hardware.sensors,
+                gpu.sensors,
+                crate::model::MAX_HARDWARE_SENSORS,
+            );
+        }
+        capabilities.push(self.hardware_capability.clone());
+        capabilities.push(smart_capability);
         extend_bounded(
             &mut capabilities,
-            gpu_capabilities,
+            gpu.capabilities,
             CLIENT_REPORT_MAX_CAPABILITIES,
         );
         capabilities.sort_by(|left, right| left.name.cmp(&right.name));
@@ -145,6 +195,7 @@ impl SystemSampler {
             host,
             interval_seconds,
             system: SystemSnapshot {
+                hardware: self.hardware.clone(),
                 uptime_seconds: System::uptime(),
                 cpu: CpuSnapshot {
                     usage_percent: finite(self.system.global_cpu_usage() as f64).unwrap_or(0.0),
@@ -170,10 +221,13 @@ impl SystemSampler {
                 networks: collect_networks(&self.networks, interval_seconds),
                 disks: collect_disks(&self.disks, interval_seconds),
                 temperatures: collect_bounded(
-                    self.cached_temperatures.iter().cloned(),
+                    self.cached_temperatures
+                        .iter()
+                        .cloned()
+                        .chain(gpu.temperatures),
                     CLIENT_REPORT_MAX_TEMPERATURES,
                 ),
-                gpus,
+                gpus: gpu.gpus,
             },
             capabilities,
             client: ClientHealth {
@@ -362,11 +416,20 @@ fn core_capabilities(temperature: &Capability) -> Vec<Capability> {
     capabilities
 }
 
+struct GpuCollection {
+    gpus: Vec<GpuSnapshot>,
+    capabilities: Vec<Capability>,
+    sensors: Vec<crate::model::HardwareSensor>,
+    temperatures: Vec<TemperatureSnapshot>,
+}
+
 struct GpuRuntime {
     #[cfg(feature = "nvidia")]
     nvidia: nvidia::NvidiaCollector,
     #[cfg(target_os = "windows")]
     windows: windows_gpu::WindowsGpuCollector,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    vendors: windows_vendor::VendorWorker,
 }
 
 impl GpuRuntime {
@@ -376,13 +439,19 @@ impl GpuRuntime {
             nvidia: nvidia::NvidiaCollector::new(),
             #[cfg(target_os = "windows")]
             windows: windows_gpu::WindowsGpuCollector::new(),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            vendors: windows_vendor::VendorWorker::new(),
         }
     }
 
-    fn collect(&mut self) -> (Vec<GpuSnapshot>, Vec<Capability>) {
+    fn collect(&mut self) -> GpuCollection {
         #[allow(unused_mut)] // macOS baseline build intentionally has no private GPU collector.
         let mut gpus = Vec::new();
         let mut capabilities = Vec::new();
+        #[allow(unused_mut)]
+        let mut sensors = Vec::new();
+        #[allow(unused_mut)]
+        let mut temperatures = Vec::new();
 
         #[cfg(feature = "nvidia")]
         {
@@ -415,28 +484,44 @@ impl GpuRuntime {
         #[cfg(target_os = "windows")]
         {
             let result = self.windows.collect();
-            extend_bounded(&mut gpus, result.0, CLIENT_REPORT_MAX_GPUS);
+            let nvidia_count = gpus
+                .iter()
+                .filter(|g| g.vendor.eq_ignore_ascii_case("nvidia"))
+                .count();
+            let dxgi_nvidia_count = result.0.iter().filter(|g| g.vendor == "nvidia").count();
+            for gpu in result.0 {
+                // NVML is the richer whole-device source. When it covers every NVIDIA
+                // adapter, avoid counting the same VRAM twice through DXGI.
+                if gpu.vendor == "nvidia" && nvidia_count > 0 && nvidia_count == dxgi_nvidia_count {
+                    continue;
+                }
+                push_bounded(&mut gpus, gpu, CLIENT_REPORT_MAX_GPUS);
+            }
             push_bounded(&mut capabilities, result.1, CLIENT_REPORT_MAX_CAPABILITIES);
-            push_bounded(
-                &mut capabilities,
-                Capability::unavailable(
-                    "gpu.amd.vendor",
-                    "amd-adlx",
+            #[cfg(target_arch = "x86_64")]
+            {
+                let (vendor_capabilities, vendor_sensors, vendor_temperatures) =
+                    self.vendors.collect(&mut gpus);
+                extend_bounded(
+                    &mut capabilities,
+                    vendor_capabilities,
+                    CLIENT_REPORT_MAX_CAPABILITIES,
+                );
+                sensors.extend(vendor_sensors);
+                temperatures.extend(vendor_temperatures);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            for (name, source) in [
+                ("gpu.amd.vendor", "amd-adlx"),
+                ("gpu.intel.vendor", "intel-igcl"),
+            ] {
+                capabilities.push(Capability::unavailable(
+                    name,
+                    source,
                     CapabilityErrorKind::Unsupported,
-                    "ADLX enrichment is not present; WDDM utilization remains available",
-                ),
-                CLIENT_REPORT_MAX_CAPABILITIES,
-            );
-            push_bounded(
-                &mut capabilities,
-                Capability::unavailable(
-                    "gpu.intel.vendor",
-                    "intel-igcl",
-                    CapabilityErrorKind::Unsupported,
-                    "IGCL enrichment is not present; WDDM utilization remains available",
-                ),
-                CLIENT_REPORT_MAX_CAPABILITIES,
-            );
+                    "vendor telemetry requires Windows x64",
+                ));
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -446,7 +531,12 @@ impl GpuRuntime {
                 CLIENT_REPORT_MAX_CAPABILITIES,
             );
         }
-        (gpus, capabilities)
+        GpuCollection {
+            gpus,
+            capabilities,
+            sensors,
+            temperatures,
+        }
     }
 }
 
@@ -599,6 +689,7 @@ mod tests {
             },
             interval_seconds: 10.0,
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 10.0,

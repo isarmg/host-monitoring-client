@@ -46,6 +46,9 @@ pub(crate) fn bound_report(report: &mut ClientReport) -> bool {
         .iter()
         .any(|capability| capability.name == TRUNCATED_CAPABILITY);
     let mut changed = normalize_scalars_and_text(report);
+    if let Some(hardware) = &mut report.system.hardware {
+        changed |= bound_hardware(hardware, report.collected_at);
+    }
 
     let cpu = &mut report.system.cpu;
     if cpu.per_core_percent.is_empty() {
@@ -282,6 +285,9 @@ fn fit_body(
     temperature_minimum: usize,
     gpu_minimum: usize,
 ) {
+    if serialized_len(report) > CLIENT_REPORT_MAX_BODY_BYTES {
+        report.system.hardware = None;
+    }
     let capability_minimum = usize::from(
         report
             .capabilities
@@ -516,6 +522,92 @@ fn replace_f64(value: &mut f64, replacement: f64) -> bool {
     true
 }
 
+fn bound_hardware(h: &mut HardwareSnapshot, report_time: chrono::DateTime<Utc>) -> bool {
+    let mut changed = false;
+    if h.collected_at > report_time {
+        h.collected_at = report_time;
+        changed = true;
+    }
+    changed |= bound_optional_nonempty_text(&mut h.cpu.model, MAX_HARDWARE_TEXT);
+    changed |= bound_optional_nonempty_text(&mut h.cpu.vendor, MAX_HARDWARE_TEXT);
+    changed |= clean_number(&mut h.cpu.frequency_mhz, 0.0, f64::MAX);
+    changed |= clean_number(&mut h.cpu.max_frequency_mhz, 0.0, f64::MAX);
+    changed |= truncate(
+        &mut h.cpu.per_core_frequency_mhz,
+        CLIENT_REPORT_MAX_CPU_CORES,
+    );
+    for v in &mut h.cpu.per_core_frequency_mhz {
+        changed |= clean_number(v, 0.0, f64::MAX);
+    }
+    if h.cpu
+        .load_average
+        .is_some_and(|v| v.iter().any(|v| !v.is_finite() || *v < 0.0))
+    {
+        h.cpu.load_average = None;
+        changed = true;
+    }
+    changed |= truncate(&mut h.networks, MAX_HARDWARE_NETWORKS);
+    for n in &mut h.networks {
+        changed |= bound_required_text(&mut n.name, MAX_HARDWARE_TEXT, "unknown");
+        changed |= bound_optional_nonempty_text(&mut n.mac_address, MAX_HARDWARE_TEXT);
+        changed |= bound_optional_nonempty_text(&mut n.operational_state, MAX_HARDWARE_TEXT);
+        changed |= clean_number(&mut n.link_speed_mbps, 0.0, f64::MAX);
+        changed |= truncate(&mut n.ip_addresses, 64);
+        let before = n.ip_addresses.len();
+        n.ip_addresses.retain(|address| {
+            address.split_once('/').is_some_and(|(ip, prefix)| {
+                match (ip.parse::<std::net::IpAddr>(), prefix.parse::<u8>()) {
+                    (Ok(ip), Ok(prefix)) => prefix <= if ip.is_ipv4() { 32 } else { 128 },
+                    _ => false,
+                }
+            })
+        });
+        changed |= before != n.ip_addresses.len();
+    }
+    changed |= truncate(&mut h.sensors, MAX_HARDWARE_SENSORS);
+    let length = h.sensors.len();
+    h.sensors.retain(|s| {
+        s.value.is_finite()
+            && (s.value >= 0.0
+                || matches!(s.kind, SensorKind::VoltageVolts | SensorKind::CurrentAmps))
+    });
+    changed |= length != h.sensors.len();
+    let mut seen = std::collections::HashSet::new();
+    for s in &mut h.sensors {
+        changed |= bound_required_text(&mut s.id, MAX_HARDWARE_TEXT, "unknown");
+        changed |= bound_required_text(&mut s.label, MAX_HARDWARE_TEXT, "unknown");
+        changed |= bound_required_text(&mut s.source, MAX_HARDWARE_TEXT, "unknown");
+    }
+    let length = h.sensors.len();
+    h.sensors
+        .retain(|s| seen.insert((s.source.clone(), s.id.clone())));
+    changed |= length != h.sensors.len();
+    changed |= truncate(&mut h.disk_health, MAX_HARDWARE_DISKS);
+    for d in &mut h.disk_health {
+        if d.collected_at > report_time {
+            d.collected_at = report_time;
+            changed = true;
+        }
+        changed |= bound_required_text(&mut d.device, MAX_HARDWARE_TEXT, "unknown");
+        changed |= bound_required_text(&mut d.source, MAX_HARDWARE_TEXT, "unknown");
+        changed |= bound_optional_nonempty_text(&mut d.model, MAX_HARDWARE_TEXT);
+        changed |= bound_optional_nonempty_text(&mut d.serial_number, MAX_HARDWARE_TEXT);
+        changed |= bound_optional_nonempty_text(&mut d.protocol, MAX_HARDWARE_TEXT);
+        changed |= clean_number(&mut d.temperature_celsius, -273.15, 1000.0);
+        changed |= clean_number(&mut d.percentage_used, 0.0, 255.0);
+        changed |= clean_number(&mut d.available_spare_percent, 0.0, 100.0);
+    }
+    changed
+}
+fn clean_number(v: &mut Option<f64>, min: f64, max: f64) -> bool {
+    if v.is_some_and(|v| !v.is_finite() || v < min || v > max) {
+        *v = None;
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +628,7 @@ mod tests {
             },
             interval_seconds: 10.0,
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 10.0,

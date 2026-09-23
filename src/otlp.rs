@@ -487,7 +487,7 @@ mod tests {
     fn encodes_stable_host_resource_identity() {
         let host_id = Uuid::new_v4();
         let report = ClientReport {
-            schema_version: 1,
+            schema_version: crate::model::CLIENT_REPORT_SCHEMA_VERSION,
             report_id: Uuid::new_v4().to_string(),
             collected_at: Utc::now(),
             interval_seconds: 10.0,
@@ -500,6 +500,7 @@ mod tests {
                 client_version: "test".into(),
             },
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 10.0,
@@ -647,7 +648,7 @@ mod tests {
 
     fn base_report() -> ClientReport {
         ClientReport {
-            schema_version: 1,
+            schema_version: crate::model::CLIENT_REPORT_SCHEMA_VERSION,
             report_id: Uuid::new_v4().to_string(),
             collected_at: Utc::now(),
             interval_seconds: 10.0,
@@ -660,6 +661,7 @@ mod tests {
                 client_version: "test".into(),
             },
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 10.0,

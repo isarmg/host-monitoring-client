@@ -504,7 +504,7 @@ pub(super) async fn run_read_only_doctor(config: &ClientConfig) -> anyhow::Resul
 
     let started = Instant::now();
     let collection_host = transient_host_identity(diagnostic_id);
-    let mut sampler = SystemSampler::new();
+    let mut sampler = SystemSampler::with_smart_config(config.smart.clone());
     let report = sampler.collect(
         collection_host,
         config.slow_interval_seconds,

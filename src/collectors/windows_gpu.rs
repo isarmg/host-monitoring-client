@@ -211,11 +211,11 @@ impl WindowsGpuCollector {
     }
 
     pub fn collect(&mut self) -> (Vec<GpuSnapshot>, Capability) {
-        let (query, counter) = match self
+        let (query, counter, memory_counter) = match self
             .session
             .get_or_try_init(Instant::now(), open_pdh_session)
         {
-            Ok(session) => (session.query, session.counter),
+            Ok(session) => (session.query, session.counter, session.memory_counter),
             Err(error) => {
                 let error_kind = if self.session.ever_succeeded() {
                     CapabilityErrorKind::Transient
@@ -223,7 +223,7 @@ impl WindowsGpuCollector {
                     CapabilityErrorKind::Unsupported
                 };
                 return (
-                    Vec::new(),
+                    dxgi_snapshots(&[], &[]),
                     Capability::unavailable("gpu.windows.wddm", "windows-pdh", error_kind, error),
                 );
             }
@@ -238,7 +238,7 @@ impl WindowsGpuCollector {
                 self.session.invalidate(Instant::now(), message.clone());
             }
             return (
-                Vec::new(),
+                dxgi_snapshots(&[], &[]),
                 Capability::unavailable(
                     "gpu.windows.wddm",
                     "windows-pdh",
@@ -251,8 +251,16 @@ impl WindowsGpuCollector {
         match formatted_values(counter) {
             Ok(summary) => {
                 let (utilization, capability) = finish_formatted_values(&summary);
-                let snapshots = utilization
-                    .map(|utilization| GpuSnapshot {
+                let memory_samples = memory_counter
+                    .and_then(|counter| formatted_values(counter).ok())
+                    .map(|v| v.samples)
+                    .unwrap_or_default();
+                let mut snapshots = dxgi_snapshots(&summary.samples, &memory_samples);
+                // Keep utilization on systems where DXGI enumeration is unavailable.
+                if snapshots.is_empty()
+                    && let Some(utilization) = utilization
+                {
+                    snapshots.push(GpuSnapshot {
                         id: "windows-wddm".into(),
                         vendor: "unknown".into(),
                         name: "Windows WDDM GPU".into(),
@@ -266,9 +274,8 @@ impl WindowsGpuCollector {
                         pcie_rx_bytes_per_second: None,
                         pcie_tx_bytes_per_second: None,
                         source: "windows-pdh-gpu-engine".into(),
-                    })
-                    .into_iter()
-                    .collect();
+                    });
+                }
                 (snapshots, capability)
             }
             Err(error) => {
@@ -277,7 +284,7 @@ impl WindowsGpuCollector {
                     self.session.invalidate(Instant::now(), message.clone());
                 }
                 (
-                    Vec::new(),
+                    dxgi_snapshots(&[], &[]),
                     Capability::unavailable(
                         "gpu.windows.wddm",
                         "windows-pdh",
@@ -293,6 +300,7 @@ impl WindowsGpuCollector {
 struct PdhSession {
     query: PDH_HQUERY,
     counter: PDH_HCOUNTER,
+    memory_counter: Option<PDH_HCOUNTER>,
 }
 
 impl Drop for PdhSession {
@@ -327,7 +335,22 @@ fn open_pdh_session() -> Result<PdhSession, String> {
         }
     };
     if result == ERROR_SUCCESS {
-        Ok(PdhSession { query, counter })
+        let mut memory_counter = PDH_HCOUNTER::default();
+        // SAFETY: valid query owned by this session; optional gauge does not require a rate baseline.
+        let memory_counter = (unsafe {
+            PdhAddEnglishCounterW(
+                query,
+                w!(r"\GPU Adapter Memory(*)\Dedicated Usage"),
+                0,
+                &mut memory_counter,
+            )
+        } == ERROR_SUCCESS)
+            .then_some(memory_counter);
+        Ok(PdhSession {
+            query,
+            counter,
+            memory_counter,
+        })
     } else {
         if !query.is_invalid() {
             // SAFETY: query was returned by PdhOpenQueryW and is no longer used.
@@ -464,6 +487,79 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<FormattedValuesSummary, Pdh
     // Keep the backing allocation alive until after all item values have been copied.
     drop(buffer);
     Ok(summary)
+}
+
+fn adapter_luid(name: &str) -> Option<(u32, u32)> {
+    let (_, suffix) = name.split_once("luid_")?;
+    let mut parts = suffix.split('_');
+    let high = u32::from_str_radix(parts.next()?.strip_prefix("0x")?, 16).ok()?;
+    let low = u32::from_str_radix(parts.next()?.strip_prefix("0x")?, 16).ok()?;
+    Some((high, low))
+}
+
+fn dxgi_snapshots(engines: &[(String, f64)], memory: &[(String, f64)]) -> Vec<GpuSnapshot> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+    };
+    let mut result = Vec::new();
+    // SAFETY: COM interfaces are owned RAII values, enumeration is bounded, no raw pointers escape.
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
+            return result;
+        };
+        for index in 0..crate::model::CLIENT_REPORT_MAX_GPUS as u32 {
+            let Ok(adapter) = factory.EnumAdapters1(index) else {
+                break;
+            };
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            let luid = (desc.AdapterLuid.HighPart as u32, desc.AdapterLuid.LowPart);
+            let samples: Vec<_> = engines
+                .iter()
+                .filter(|(name, _)| adapter_luid(name) == Some(luid))
+                .cloned()
+                .collect();
+            let used = memory
+                .iter()
+                .filter(|(name, _)| adapter_luid(name) == Some(luid))
+                .map(|(_, v)| *v)
+                .filter(|v| v.is_finite() && *v >= 0.0 && *v < u64::MAX as f64)
+                .reduce(f64::max)
+                .map(|v| v as u64);
+            let end = desc
+                .Description
+                .iter()
+                .position(|v| *v == 0)
+                .unwrap_or(desc.Description.len());
+            result.push(GpuSnapshot {
+                id: format!("luid_{:08x}_{:08x}", luid.0, luid.1),
+                vendor: match desc.VendorId {
+                    0x10de => "nvidia",
+                    0x1002 => "amd",
+                    0x8086 => "intel",
+                    _ => "unknown",
+                }
+                .into(),
+                name: String::from_utf16_lossy(&desc.Description[..end]),
+                utilization_percent: aggregate_engine_utilization(&samples),
+                memory_total_bytes: (desc.DedicatedVideoMemory > 0)
+                    .then_some(desc.DedicatedVideoMemory as u64),
+                memory_used_bytes: used,
+                temperature_celsius: None,
+                power_watts: None,
+                core_clock_mhz: None,
+                memory_clock_mhz: None,
+                pcie_rx_bytes_per_second: None,
+                pcie_tx_bytes_per_second: None,
+                source: "windows-dxgi-pdh".into(),
+            });
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -722,5 +818,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("outside the live returned"));
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    #[test]
+    fn luid_matching_is_numeric_and_handles_both_counter_families() {
+        assert_eq!(
+            adapter_luid("pid_4_luid_0x00000000_0x000000ab_phys_0_eng_0_engtype_3D"),
+            Some((0, 171))
+        );
+        assert_eq!(adapter_luid("luid_0x0_0xAB_phys_0"), Some((0, 171)));
+        assert_eq!(adapter_luid("unknown"), None);
     }
 }

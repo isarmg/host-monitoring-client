@@ -207,6 +207,7 @@ mod tests {
             collected_at: Utc::now(),
             interval_seconds: 10.0,
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 12.5,

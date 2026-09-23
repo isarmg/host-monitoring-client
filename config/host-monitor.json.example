@@ -6,6 +6,7 @@
   "otlp_token": null,
   "interval_seconds": 10,
   "slow_interval_seconds": 30,
+  "smart": { "enabled": true, "interval_seconds": 300, "executable": null },
   "request_timeout_seconds": 10,
   "jitter_percent": 10,
   "state_dir": "/var/lib/host-monitor",

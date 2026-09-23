@@ -134,11 +134,26 @@ pub(crate) async fn execute_config(
     } else {
         None
     };
-    let mut sampler = SystemSampler::new();
+    let mut sampler = SystemSampler::with_smart_config(config.smart.clone());
     tokio::select! {
         biased;
         _ = shutdown.cancelled() => return Ok(()),
         _ = tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL) => {}
+    }
+
+    if matches!(command, ClientCommand::Probe | ClientCommand::Once) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(31);
+        let vendor_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while (sampler.smart_scan_pending()
+            || (sampler.vendor_scan_pending() && std::time::Instant::now() < vendor_deadline))
+            && std::time::Instant::now() < deadline
+        {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        }
     }
 
     if command == ClientCommand::Probe {

@@ -201,7 +201,38 @@ fn collect_card(card: &str, device: &Path, vendor: &str) -> Result<CardReading, 
             .filter(|value| value.is_finite());
     let power_watts = retain_sysfs(first_hwmon_f64(device, "power1_average"), &mut first_error)
         .map(|microwatts| microwatts / 1_000_000.0);
-    let core_clock_mhz = retain_sysfs(read_f64(&device.join("gt_cur_freq_mhz")), &mut first_error);
+    let power_watts = power_watts.or_else(|| {
+        retain_sysfs(first_hwmon_f64(device, "power1_input"), &mut first_error)
+            .map(|v| v / 1_000_000.0)
+    });
+    let core_clock_mhz = retain_sysfs(read_f64(&device.join("gt_cur_freq_mhz")), &mut first_error)
+        .or_else(|| {
+            retain_sysfs(
+                read_f64(&device.join("tile0/gt0/freq0/act_freq")),
+                &mut first_error,
+            )
+        })
+        .or_else(|| {
+            retain_sysfs(
+                read_f64(&device.join("tile0/gt0/freq0/cur_freq")),
+                &mut first_error,
+            )
+        })
+        .or_else(|| {
+            retain_sysfs(
+                read_f64(&device.join("gt/gt0/rps_act_freq_mhz")),
+                &mut first_error,
+            )
+        })
+        .or_else(|| active_dpm_clock(&device.join("pp_dpm_sclk")))
+        .or_else(|| {
+            retain_sysfs(first_hwmon_f64(device, "freq1_input"), &mut first_error)
+                .map(|v| v / 1_000_000.0)
+        });
+    let memory_clock_mhz = active_dpm_clock(&device.join("pp_dpm_mclk")).or_else(|| {
+        retain_sysfs(first_hwmon_f64(device, "freq2_input"), &mut first_error)
+            .map(|v| v / 1_000_000.0)
+    });
 
     Ok(CardReading {
         snapshot: GpuSnapshot {
@@ -214,7 +245,7 @@ fn collect_card(card: &str, device: &Path, vendor: &str) -> Result<CardReading, 
             temperature_celsius,
             power_watts,
             core_clock_mhz,
-            memory_clock_mhz: None,
+            memory_clock_mhz,
             pcie_rx_bytes_per_second: None,
             pcie_tx_bytes_per_second: None,
             source: format!("linux-{vendor}-sysfs"),
@@ -484,6 +515,22 @@ fn enumeration_limit_error(root: &Path) -> SysfsError {
     )
 }
 
+// amdgpu marks the active DPM level with '*'; inactive boost levels are not current clocks.
+fn active_dpm_clock(path: &Path) -> Option<f64> {
+    fs::read_to_string(path).ok()?.lines().find_map(|line| {
+        if !line.trim_end().ends_with('*') {
+            return None;
+        }
+        let frequency = line.split_once(':')?.1.split_whitespace().next()?;
+        let value = frequency
+            .strip_suffix("Mhz")
+            .or_else(|| frequency.strip_suffix("MHz"))?
+            .parse::<f64>()
+            .ok()?;
+        (value.is_finite() && value >= 0.0).then_some(value)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -634,5 +681,19 @@ mod tests {
             capability(&result, "gpu.amd").error_kind,
             Some(CapabilityErrorKind::InvalidData)
         );
+    }
+}
+
+#[cfg(test)]
+mod modern_clock_tests {
+    use super::*;
+    #[test]
+    fn amd_active_dpm_frequency_is_used_instead_of_peak() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pp_dpm_mclk");
+        fs::write(&file, "0: 96Mhz\n1: 1000Mhz *\n2: 2200Mhz\n").unwrap();
+        assert_eq!(active_dpm_clock(&file), Some(1000.0));
+        fs::write(&file, "0: 96Mhz\n1: 1000Mhz\n").unwrap();
+        assert_eq!(active_dpm_clock(&file), None);
     }
 }

@@ -594,7 +594,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "host-monitor"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -632,8 +632,8 @@ dependencies = [
 
 [[package]]
 name = "host-protocol"
-version = "0.9.13"
-source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=ae766a9d13ba49a434b0fa8ae19d038eebc4f17c#ae766a9d13ba49a434b0fa8ae19d038eebc4f17c"
+version = "0.9.26"
+source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=9715a19cfe6d2a4149943675554250761d27d82b#9715a19cfe6d2a4149943675554250761d27d82b"
 dependencies = [
  "chrono",
  "serde",

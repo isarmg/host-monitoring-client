@@ -1,6 +1,6 @@
 # 按平台安装与升级
 
-适用于 0.9.30，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
+适用于 0.9.31，配置与持久身份格式仍为 0.9.4。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、旧版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
 
 ## Windows 11 x64
 
@@ -8,8 +8,8 @@
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"
-Get-FileHash .\host-monitor-0.9.30-x64.msi -Algorithm SHA256
-msiexec.exe /i .\host-monitor-0.9.30-x64.msi /norestart
+Get-FileHash .\host-monitor-0.9.31-x64.msi -Algorithm SHA256
+msiexec.exe /i .\host-monitor-0.9.31-x64.msi /norestart
 $installRoot = (Get-ItemProperty 'HKLM:\Software\Host Monitoring\host-monitor').InstallLocation
 $client = Join-Path $installRoot 'host-monitor.exe'
 & $client doctor --network
@@ -24,21 +24,21 @@ MSI 的自定义安装页允许选择任意本机安装目录，并分别选择�
 手动强制修复同一 MSI：
 
 ```powershell
-msiexec.exe /i "$PWD\host-monitor-0.9.30-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
+msiexec.exe /i "$PWD\host-monitor-0.9.31-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\host-monitor-repair.log"
 ```
 
-原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.30.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点。无人值守部署用 `ADDLOCAL=ALL` 保留两类状态并启用兼容性准备；只有部署系统明确删去 `PreserveConfiguration`、`PreserveData` 或 `PrepareSetup` 功能时才关闭对应行为。
+原生维护失败另写入 `C:\ProgramData\host-monitor.maintenance-diagnostic-0.9.31.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点。无人值守部署用 `ADDLOCAL=ALL` 保留两类状态并启用兼容性准备；只有部署系统明确删去 `PreserveConfiguration`、`PreserveData` 或 `PrepareSetup` 功能时才关闭对应行为。
 
 ## Linux x86_64
 
 Debian/Ubuntu 下载 DEB；使用 APT 处理依赖并覆盖旧包：
 
 ```sh
-sudo apt install ./host-monitor_0.9.30_amd64.deb
+sudo apt install ./host-monitor_0.9.31_amd64.deb
 sudo host-monitor setup
 ```
 
-RPM 系统使用 `sudo dnf install ./host-monitor-0.9.30.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.30.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.30_amd64.deb`。不要添加忽略依赖的参数。
+RPM 系统使用 `sudo dnf install ./host-monitor-0.9.31.x86_64.rpm`；同版损坏重装可用 `sudo rpm -Uvh --replacepkgs ./host-monitor-0.9.31.x86_64.rpm`。DEB 同版重装使用 `sudo apt install --reinstall ./host-monitor_0.9.31_amd64.deb`。不要添加忽略依赖的参数。
 
 配置在 `/etc/host-monitor/config.json`，服务账户为 `host-monitor`。安装器会保留已有配置和身份；安装后运行 `sudo host-monitor setup`，按提示选择启动策略并验证连接。兼容旧版账户所有权标记会被识别；包管理器保留修改过的配置，不会清除身份和待发送队列。
 
@@ -49,7 +49,7 @@ RPM 系统使用 `sudo dnf install ./host-monitor-0.9.30.x86_64.rpm`；同版损
 只提供 arm64；不支持 Intel Mac。在 Release 下载 unsigned PKG；安装包尚未签名、公证，可在系统允许的安装确认界面批准该已校验文件。
 
 ```sh
-sudo installer -pkg ./host-monitor-0.9.30-macos-arm64-unsigned.pkg -target /
+sudo installer -pkg ./host-monitor-0.9.31-macos-arm64-unsigned.pkg -target /
 sudo /usr/local/bin/host-monitor setup
 ```
 

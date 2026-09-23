@@ -37,7 +37,7 @@ fn round_trip(report: &ClientReport) -> OfficialRequest {
 
 fn report() -> ClientReport {
     ClientReport {
-        schema_version: 1,
+        schema_version: host_protocol::CLIENT_REPORT_SCHEMA_VERSION,
         report_id: Uuid::new_v4().to_string(),
         collected_at: chrono::Utc::now(),
         interval_seconds: 10.0,
@@ -52,6 +52,7 @@ fn report() -> ClientReport {
             client_version: env!("CARGO_PKG_VERSION").into(),
         },
         system: SystemSnapshot {
+            hardware: None,
             uptime_seconds: 3600,
             cpu: CpuSnapshot {
                 usage_percent: 40.0,

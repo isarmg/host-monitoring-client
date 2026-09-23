@@ -676,7 +676,7 @@ pub enum SendError {
     /// 也不会在恢复过程中改换 Host UUID。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
-    /// The authenticated Server returned the stable current protocol-mismatch envelope.
+    /// The Server rejected the wire version. Re-pairing cannot repair this; do not retry the report.
     #[error("{0}")]
     UnsupportedProtocol(String),
     /// 网络故障或服务端暂时不可用，保留记录并退避重试。
@@ -686,12 +686,12 @@ pub enum SendError {
 
 impl SendError {
     pub fn is_permanent(&self) -> bool {
-        matches!(self, Self::Permanent(_))
+        matches!(self, Self::Permanent(_) | Self::UnsupportedProtocol(_))
     }
 
     /// 凭据已失效，需要显式恢复授权后才可能成功。
     pub fn is_unauthorized(&self) -> bool {
-        matches!(self, Self::Unauthorized(_) | Self::UnsupportedProtocol(_))
+        matches!(self, Self::Unauthorized(_))
     }
 
     pub fn stable_code(&self) -> &'static str {
@@ -787,10 +787,15 @@ pub fn classify_host_monitoring_response(
             Some(error)
                 if error.code.as_str() == "unsupported_client_protocol" && !error.retryable =>
             {
-                Err(SendError::UnsupportedProtocol(message))
+                Err(SendError::UnsupportedProtocol(format!(
+                    "{message}; client/server protocol versions do not match; upgrade both to the same release. Re-pairing will not fix this error"
+                )))
             }
             Some(error) if error.code.as_str() == "bad_request" && !error.retryable => {
-                Err(SendError::Permanent(message))
+                Err(SendError::Permanent(format!(
+                    "{message}; report schema {} was rejected. Check that client and server use the same protocol version; this report will not be retried",
+                    crate::model::CLIENT_REPORT_SCHEMA_VERSION
+                )))
             }
             _ => Err(SendError::Transient(message)),
         },
@@ -992,7 +997,7 @@ mod tests {
 
     pub(super) fn report() -> ClientReport {
         ClientReport {
-            schema_version: 1,
+            schema_version: crate::model::CLIENT_REPORT_SCHEMA_VERSION,
             report_id: Uuid::new_v4().to_string(),
             collected_at: Utc::now(),
             host: HostIdentity {
@@ -1005,6 +1010,7 @@ mod tests {
             },
             interval_seconds: 10.0,
             system: SystemSnapshot {
+                hardware: None,
                 uptime_seconds: 1,
                 cpu: CpuSnapshot {
                     usage_percent: 0.0,
@@ -1258,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_protocol_mismatch_requires_reauthorization_and_preserves_version_details() {
+    fn protocol_mismatch_is_terminal_without_invalidating_credentials() {
         let error = classify_host_monitoring_response(
             StatusCode::BAD_REQUEST,
             Some("application/json"),
@@ -1266,7 +1272,9 @@ mod tests {
         )
         .expect_err("the explicit protocol rejection must not be treated as report content loss");
         assert!(matches!(error, SendError::UnsupportedProtocol(_)));
-        assert!(error.is_unauthorized());
+        assert!(!error.is_unauthorized());
+        assert!(error.is_permanent());
+        assert!(error.to_string().contains("upgrade both"));
         assert_eq!(error.stable_code(), "unsupported_client_protocol");
         assert_eq!(error.http_status(), Some(400));
     }

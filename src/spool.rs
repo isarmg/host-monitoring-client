@@ -64,39 +64,59 @@ impl Spool {
     }
 
     pub fn oldest(&self) -> anyhow::Result<Option<PendingReport>> {
-        let Some(record) = self.inner.next()? else {
-            return Ok(None);
-        };
-        if record.contract_id.as_str() != HOST_REPORT_CONTRACT {
-            self.inner.quarantine(
-                &record.record_id,
-                sarmg_client_runtime::QuarantineReason::Corrupt,
-            )?;
-            anyhow::bail!("Foundation spool payload has a different contract identifier");
-        }
-        let parsed = serde_json::from_slice::<ClientReport>(record.payload.as_slice())
-            .context("Foundation spool payload is not a Host Client report")
-            .and_then(|report| {
-                let (canonical, _) = report_contract::encode_report_body(&report)?;
-                anyhow::ensure!(
-                    canonical == report,
-                    "spool payload is not the current canonical Host report"
-                );
-                Ok(report)
-            });
-        match parsed {
-            Ok(report) => Ok(Some(PendingReport {
-                record_id: record.record_id,
-                report,
-            })),
-            Err(error) => {
+        // Isolate incompatible queued reports without treating an upgrade as disk failure.
+        for _ in 0..32 {
+            let Some(record) = self.inner.next()? else {
+                return Ok(None);
+            };
+            if record.contract_id.as_str() != HOST_REPORT_CONTRACT {
                 self.inner.quarantine(
                     &record.record_id,
                     sarmg_client_runtime::QuarantineReason::Corrupt,
                 )?;
-                Err(error)
+                anyhow::bail!("Foundation spool payload has a different contract identifier");
             }
+            if serde_json::from_slice::<serde_json::Value>(record.payload.as_slice())
+                .ok()
+                .and_then(|v| v.get("schema_version").and_then(serde_json::Value::as_u64))
+                .is_some_and(|version| {
+                    version != u64::from(crate::model::CLIENT_REPORT_SCHEMA_VERSION)
+                })
+            {
+                self.inner.quarantine(
+                    &record.record_id,
+                    sarmg_client_runtime::QuarantineReason::Corrupt,
+                )?;
+                tracing::warn!(
+                    "isolated queued report with incompatible schema; original bytes preserved, current collection continues"
+                );
+                continue;
+            }
+            let parsed = serde_json::from_slice::<ClientReport>(record.payload.as_slice())
+                .context("Foundation spool payload is not a Host Client report")
+                .and_then(|report| {
+                    let (canonical, _) = report_contract::encode_report_body(&report)?;
+                    anyhow::ensure!(
+                        canonical == report,
+                        "spool payload is not the current canonical Host report"
+                    );
+                    Ok(report)
+                });
+            return match parsed {
+                Ok(report) => Ok(Some(PendingReport {
+                    record_id: record.record_id,
+                    report,
+                })),
+                Err(error) => {
+                    self.inner.quarantine(
+                        &record.record_id,
+                        sarmg_client_runtime::QuarantineReason::Corrupt,
+                    )?;
+                    Err(error)
+                }
+            };
         }
+        Ok(None)
     }
 
     pub fn health(&self) -> io::Result<sarmg_client_runtime::ClientHealth> {
@@ -198,5 +218,32 @@ mod tests {
         );
         drop(spool);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    #[test]
+    fn old_reports_are_isolated_without_a_queue_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let spool = Spool::open(&root.path().join("state"), 1024 * 1024).unwrap();
+        for _ in 0..4 {
+            spool
+                .inner
+                .enqueue(
+                    ContractId::new(HOST_REPORT_CONTRACT).unwrap(),
+                    1,
+                    BoundedBytes::new(
+                        br#"{"schema_version":1}"#.to_vec(),
+                        CLIENT_REPORT_MAX_BODY_BYTES,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        assert_eq!(spool.pending_count().unwrap(), 4);
+        assert!(spool.oldest().unwrap().is_none());
+        assert_eq!(spool.pending_count().unwrap(), 0);
     }
 }

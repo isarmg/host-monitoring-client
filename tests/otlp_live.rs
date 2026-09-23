@@ -112,7 +112,7 @@ async fn collector_accepts_the_client_otlp_protobuf() {
     let (config, state_dir, instance_id) = otlp_test_config(endpoint);
     let reporter = Reporter::new(&config).expect("build OTLP test client");
     let report = ClientReport {
-        schema_version: 1,
+        schema_version: host_protocol::CLIENT_REPORT_SCHEMA_VERSION,
         report_id: Uuid::new_v4().to_string(),
         collected_at: chrono::Utc::now(),
         host: HostIdentity {
@@ -125,6 +125,7 @@ async fn collector_accepts_the_client_otlp_protobuf() {
         },
         interval_seconds: 10.0,
         system: SystemSnapshot {
+            hardware: None,
             uptime_seconds: 60,
             cpu: CpuSnapshot {
                 usage_percent: 25.0,
@@ -212,7 +213,7 @@ async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
     };
 
     let report = ClientReport {
-        schema_version: 1,
+        schema_version: host_protocol::CLIENT_REPORT_SCHEMA_VERSION,
         report_id: Uuid::new_v4().to_string(),
         collected_at: chrono::Utc::now(),
         host: HostIdentity {
@@ -225,6 +226,7 @@ async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
         },
         interval_seconds: 10.0,
         system: SystemSnapshot {
+            hardware: None,
             uptime_seconds: 86_400,
             cpu: CpuSnapshot {
                 usage_percent: 37.5,
