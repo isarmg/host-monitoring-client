@@ -10,6 +10,7 @@ host-monitor 专注硬件与系统运行状态，不枚举进程，不采集命�
 | CPU 硬件最高频率 | cpufreq 的 cpuinfo_max_freq | 暂不可用 | 暂不可用 |
 | 1/5/15 分钟系统负载 | 有 | 不适用，报告 null | 有 |
 | 网卡 MAC、IPv4/IPv6 与前缀、MTU | 有 | 有 | 有 |
+| 独立识别的物理网卡 | sysfs 设备关联；排除虚拟接口 | Windows 接口表的硬件接口标志 | 暂不可用，报告空列表 |
 | 网卡状态、协商链路速率 | sysfs | 暂不可用 | 暂不可用 |
 | 风扇 RPM、电压 V、电流 A、功率 W、累计能量 J | 标准 hwmon | 暂无主板传感器提供器 | 暂无主板传感器提供器 |
 | 系统热区温度 | hwmon | Windows PDH `Thermal Zone Information`（取决于固件是否暴露） | sysinfo，取决于系统 |
@@ -44,10 +45,10 @@ hwmon 的风扇原值是 RPM，电压/电流除以 1000，功率/能量除以 10
 
 ## 协议与构建
 
-报告 schema 仅支持 **2**，继续使用严格字段解析。硬件位于 `system.hardware`，没有进程扩展。服务端必须同步更新；不会回退发送旧协议。明确的协议拒绝或当前错误格式的永久 400 响应会提示检查版本并停止重试该报告，不清除配对凭据。无法识别的代理错误仍按网络故障退避，避免误删凭据。
+报告 schema 仅支持 **3**，继续使用严格字段解析。硬件位于 `system.hardware`，没有进程扩展。服务端必须同步更新；不会回退发送旧协议。明确的协议拒绝或当前错误格式的永久 400 响应会提示检查版本并停止重试该报告，不清除配对凭据。无法识别的代理错误仍按网络故障退避，避免误删凭据。
 
 升级前积压的非当前 schema 报告保留原始字节隔离，不尝试转换，也不把版本问题累积为磁盘故障。CLI JSON、配对协议的版本号独立于报告 schema，不随此变更提升。
 
-客户端通过固定 Git 提交依赖 Server 0.9.26 的 `host-protocol` 共享协议源码，具体提交见 `Cargo.toml` 与 `Cargo.lock`。独立克隆客户端即可构建，不需要相邻服务端目录。
+客户端通过固定 Git 提交依赖 Server 0.9.30 的 `host-protocol` 共享协议源码，具体提交见 `Cargo.toml` 与 `Cargo.lock`。独立克隆客户端即可构建，不需要相邻服务端目录。
 
 接口依据：[Linux hwmon](https://docs.kernel.org/hwmon/sysfs-interface.html)、[Intel Xe 频率接口](https://www.kernel.org/doc/html/latest/gpu/xe/xe_gt_freq.html)、[smartctl 手册源码](https://github.com/smartmontools/smartmontools/blob/master/smartmontools/smartctl.8.in)。

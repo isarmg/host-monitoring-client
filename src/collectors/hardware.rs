@@ -64,6 +64,7 @@ pub(super) fn collect(system: &System, networks: &Networks) -> (HardwareSnapshot
             collected_at: Utc::now(),
             cpu,
             networks: network_hardware,
+            physical_networks: super::physical_network::collect(),
             sensors,
             disk_health: vec![],
         },

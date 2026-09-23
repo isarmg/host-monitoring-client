@@ -594,7 +594,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "host-monitor"
-version = "0.9.33"
+version = "0.9.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -632,8 +632,8 @@ dependencies = [
 
 [[package]]
 name = "host-protocol"
-version = "0.9.26"
-source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=9715a19cfe6d2a4149943675554250761d27d82b#9715a19cfe6d2a4149943675554250761d27d82b"
+version = "0.9.30"
+source = "git+https://github.com/isarmg/host-monitoring-server.git?rev=9c8facb7fc355dd7afe809bbaf2014e5560e0f35#9c8facb7fc355dd7afe809bbaf2014e5560e0f35"
 dependencies = [
  "chrono",
  "serde",
@@ -2059,7 +2059,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

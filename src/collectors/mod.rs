@@ -28,6 +28,7 @@ mod nvidia;
 mod pdh_buffer;
 #[cfg(any(target_os = "windows", test))]
 mod pdh_recovery;
+mod physical_network;
 #[cfg(target_os = "windows")]
 mod windows_gpu;
 #[cfg(any(all(target_os = "windows", target_arch = "x86_64"), test))]

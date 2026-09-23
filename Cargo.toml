@@ -74,6 +74,8 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -156,7 +158,7 @@ required-features = ["desktop"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.33"
+version = "0.9.34"
 edition = "2024"
 rust-version = "1.98"
 authors = ["sarmg <isarmg@163.com>"]
@@ -171,7 +173,7 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-host-protocol = { git = "https://github.com/isarmg/host-monitoring-server.git", rev = "9715a19cfe6d2a4149943675554250761d27d82b", version = "=0.9.26" }
+host-protocol = { git = "https://github.com/isarmg/host-monitoring-server.git", rev = "9c8facb7fc355dd7afe809bbaf2014e5560e0f35", version = "=0.9.30" }
 sarmg-client-cli = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "8890ced415793b144997ebb04728f52fbe3e7e59", version = "=0.9.15" }
 sarmg-client-runtime = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "8890ced415793b144997ebb04728f52fbe3e7e59", version = "=0.9.15" }
 sarmg-client-secret = { git = "https://github.com/isarmg/sarmg-foundation-client.git", rev = "8890ced415793b144997ebb04728f52fbe3e7e59", version = "=0.9.15" }
