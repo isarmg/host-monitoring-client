@@ -1,0 +1,15 @@
+smartmontools bundled component
+================================
+
+This package includes the standalone smartctl executable and drive database from
+smartmontools 7.5. smartmontools is licensed under the GNU General Public License,
+version 2 or (at your option) any later version.
+
+Upstream project: https://github.com/smartmontools/smartmontools
+Release: https://github.com/smartmontools/smartmontools/releases/tag/RELEASE_7_5
+
+The installed smartmontools/COPYING.txt contains the license. The complete
+corresponding upstream source archive is installed as
+smartmontools/smartmontools-7.5-source.tar.gz.
+
+smartctl is executed as a separate process. It is not linked into host-monitor.

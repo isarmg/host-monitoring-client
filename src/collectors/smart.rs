@@ -114,6 +114,14 @@ fn executable(config: &SmartConfig) -> Option<PathBuf> {
         return p.is_absolute().then(|| p.clone());
     }
     #[cfg(windows)]
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(bundled_executable)
+    {
+        return Some(bundled);
+    }
+    #[cfg(windows)]
     let candidates = [
         r"C:\Program Files\smartmontools\bin\smartctl.exe",
         r"C:\Program Files\smartmontools\smartctl.exe",
@@ -129,6 +137,16 @@ fn executable(config: &SmartConfig) -> Option<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .find(|p| p.is_file())
+}
+
+#[cfg(windows)]
+fn bundled_executable(current_exe: &Path) -> Option<PathBuf> {
+    let candidate = current_exe
+        .parent()?
+        .join("smartmontools")
+        .join("bin")
+        .join("smartctl.exe");
+    candidate.is_file().then_some(candidate)
 }
 
 fn collect(config: &SmartConfig) -> ResultSet {
@@ -398,6 +416,19 @@ mod tests {
             )
             .error_kind,
             Some(CapabilityErrorKind::PermissionDenied)
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn bundled_smartctl_is_resolved_relative_to_the_client() {
+        let root = tempfile::tempdir().unwrap();
+        let smartctl = root.path().join("smartmontools/bin/smartctl.exe");
+        std::fs::create_dir_all(smartctl.parent().unwrap()).unwrap();
+        std::fs::write(&smartctl, []).unwrap();
+
+        assert_eq!(
+            bundled_executable(&root.path().join("host-monitor.exe")),
+            Some(smartctl)
         );
     }
     #[cfg(unix)]

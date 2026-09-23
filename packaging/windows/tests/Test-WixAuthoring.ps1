@@ -9,6 +9,8 @@ $wixRoot = Join-Path $packagingRoot "wix"
 $packagePath = Join-Path $wixRoot "Package.wxs"
 $projectPath = Join-Path $wixRoot "HostMonitor.Installer.wixproj"
 $buildPath = Join-Path $wixRoot "build-msi.cmd"
+$fetchPath = Join-Path $packagingRoot "fetch-smartmontools.ps1"
+$smartNoticePath = Join-Path $packagingRoot "smartmontools-NOTICE.txt"
 $clientRoot = Split-Path -Parent (Split-Path -Parent $packagingRoot)
 $workspaceRoot = $clientRoot
 $workspacePath = Join-Path $workspaceRoot "Cargo.toml"
@@ -17,7 +19,7 @@ $mainPath = Join-Path $clientRoot "src\main.rs"
 $helperSourceRoot = Join-Path $clientRoot "src\windows\maintenance"
 
 foreach ($required in @(
-    $packagePath, $projectPath, $buildPath, $workspacePath,
+    $packagePath, $projectPath, $buildPath, $fetchPath, $smartNoticePath, $workspacePath,
     $helperPath, $mainPath
 )) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -55,6 +57,7 @@ function Get-SourceBundle {
 $packageText = Get-Content -LiteralPath $packagePath -Raw
 $projectText = Get-Content -LiteralPath $projectPath -Raw
 $buildText = Get-Content -LiteralPath $buildPath -Raw
+$fetchText = Get-Content -LiteralPath $fetchPath -Raw
 $workspaceText = Get-Content -LiteralPath $workspacePath -Raw
 $helperEntryText = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
 $helperText = Get-SourceBundle -EntryPath $helperPath -SourceRoot $helperSourceRoot
@@ -167,6 +170,17 @@ Assert-Equal $pathEntry.Permanent "no" `
     "Uninstall must remove the product-owned PATH entry."
 Assert-Equal $pathEntry.System "yes" `
     "The per-machine installer must update machine PATH."
+
+$smartctl = Select-One "//w:File[@Id='SmartctlExecutable']"
+Assert-Equal $smartctl.Name "smartctl.exe" "The bundled SMART executable name drifted."
+Assert-Equal $smartctl.Source '$(var.SmartctlExe)' "WiX must consume the verified smartctl payload."
+$smartSource = Select-One "//w:File[@Id='SmartmontoolsSource']"
+Assert-Equal $smartSource.Name "smartmontools-7.5-source.tar.gz" `
+    "The MSI must carry complete corresponding smartmontools source."
+foreach ($componentId in @("SmartmontoolsRuntimeComponent", "SmartmontoolsComplianceComponent")) {
+    $componentRef = Select-One "//w:Feature[@Id='ClientFeature']/w:ComponentRef[@Id='$componentId']"
+    Assert-Equal $componentRef.Id $componentId "Bundled smartmontools component is not mandatory."
+}
 
 $serviceControl = Select-One "//w:ServiceControl[@Name='host-monitor']"
 Assert-Equal $serviceControl.GetAttribute("Start") "" "Installation must not start an unpaired service."
@@ -371,6 +385,7 @@ Assert-Equal $defaultProductVersions[0].InnerText `
 $expectedPayloads = [ordered]@{
     ClientExe = '$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe'
     MaintenanceExe = '$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe'
+    SmartmontoolsDir = '$(MSBuildThisFileDirectory)obj\smartmontools\payload'
 }
 foreach ($propertyName in $expectedPayloads.Keys) {
     $payloadNodes = @($project.Project.PropertyGroup.$propertyName)
@@ -399,6 +414,17 @@ Assert-Contains $buildText '"%CLIENT_EXE%" --version' `
     "The command-line MSI build entrypoint must read the Client binary version."
 Assert-Contains $buildText 'host-monitor %PRODUCT_VERSION%' `
     "The command-line MSI build entrypoint must reject a binary/version mismatch."
+Assert-Contains $buildText 'SMARTMONTOOLS_DIR' `
+    "The MSI build entrypoint must require an explicit verified smartmontools payload."
+foreach ($pinnedDigest in @(
+    '896337fcc253220614cf8cdbd5cf2321c5aa326a37a04160a672a281e6104c70',
+    '690b83ca331378da9ea0d9d61008c4b22dde391387b9bbad7f29387f2595f76e'
+)) {
+    Assert-Contains $fetchText $pinnedDigest `
+        "The smartmontools fetcher must pin both runtime and source artifacts by SHA-256."
+}
+Assert-Contains $fetchText '"/SO", "x64,smartctl,drivedb,doc"' `
+    "The smartmontools fetcher must exclude smartd, services, shortcuts and PATH changes."
 if ($buildText.Contains('1.2.3')) {
     throw "The current-only MSI build documentation must not advertise an arbitrary version."
 }

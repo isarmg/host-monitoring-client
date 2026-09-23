@@ -44,7 +44,11 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="host-monitor" />
+      <Directory Id="INSTALLFOLDER" Name="host-monitor">
+        <Directory Id="SMARTMONTOOLSDIRECTORY" Name="smartmontools">
+          <Directory Id="SMARTMONTOOLS_BINDIRECTORY" Name="bin" />
+        </Directory>
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="STATEDIRECTORY" Name="host-monitor" />
@@ -103,6 +107,20 @@
       </Component>
     </DirectoryRef>
 
+    <DirectoryRef Id="SMARTMONTOOLS_BINDIRECTORY">
+      <Component Id="SmartmontoolsRuntimeComponent" Guid="{4FB7E776-817C-4C70-AB62-2DB7111DD15A}" Bitness="always64">
+        <File Id="SmartctlExecutable" Source="$(var.SmartctlExe)" Name="smartctl.exe" KeyPath="yes" Checksum="yes" />
+        <File Id="SmartmontoolsDriveDatabase" Source="$(var.SmartDriveDb)" Name="drivedb.h" Checksum="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="SMARTMONTOOLSDIRECTORY">
+      <Component Id="SmartmontoolsComplianceComponent" Guid="{67F64859-953F-411A-A6E6-A3D65466EEEF}" Bitness="always64">
+        <File Id="SmartmontoolsLicense" Source="$(var.SmartLicense)" Name="COPYING.txt" KeyPath="yes" />
+        <File Id="SmartmontoolsSource" Source="$(var.SmartSource)" Name="smartmontools-7.5-source.tar.gz" />
+        <File Id="SmartmontoolsNotice" Source="$(var.SmartNotice)" Name="NOTICE.txt" />
+      </Component>
+    </DirectoryRef>
+
     <!--
       This component records the fixed mutable root but deliberately creates or owns neither the
       directory nor any runtime file below it. The transactional native helper creates and secures
@@ -148,6 +166,8 @@
       AllowAdvertise="no">
       <ComponentRef Id="ClientServiceComponent" />
       <ComponentRef Id="ClientStateDirectoryComponent" />
+      <ComponentRef Id="SmartmontoolsRuntimeComponent" />
+      <ComponentRef Id="SmartmontoolsComplianceComponent" />
       <Feature Id="PreserveConfiguration" Title="Retain existing configuration" Description="Keep config.json. Deselect to remove it and configure the Client again." Level="1" AllowAbsent="yes">
         <ComponentRef Id="PreserveConfigurationSelection" />
       </Feature>

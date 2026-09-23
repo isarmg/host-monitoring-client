@@ -155,7 +155,9 @@ impl SystemSampler {
         }
 
         let gpu = self.gpu_runtime.collect();
-        let mut capabilities = core_capabilities(&self.cached_temperature_capability);
+        let disk_snapshots = collect_disks(&self.disks, interval_seconds);
+        let mut capabilities =
+            core_capabilities(&self.cached_temperature_capability, &disk_snapshots);
         let (disk_health, smart_capability) = self.smart.poll();
         if let Some(hardware) = &mut self.hardware {
             hardware.disk_health = disk_health;
@@ -219,7 +221,7 @@ impl SystemSampler {
                     swap_used_bytes: self.system.used_swap(),
                 },
                 networks: collect_networks(&self.networks, interval_seconds),
-                disks: collect_disks(&self.disks, interval_seconds),
+                disks: disk_snapshots,
                 temperatures: collect_bounded(
                     self.cached_temperatures
                         .iter()
@@ -376,6 +378,28 @@ fn collect_temperatures(_components: &Components) -> TemperatureCollection {
     let mut seen = HashSet::new();
     #[cfg(not(target_os = "linux"))]
     let mut values = values;
+
+    #[cfg(target_os = "windows")]
+    let windows_thermal_error = match windows_gpu::thermal_zone_temperatures() {
+        Ok(thermal_zones) => {
+            extend_bounded(
+                &mut values,
+                thermal_zones
+                    .into_iter()
+                    .map(|(id, label, celsius)| TemperatureSnapshot {
+                        id,
+                        label,
+                        celsius: Some(celsius),
+                        max_celsius: None,
+                        critical_celsius: None,
+                        source: "windows-pdh-thermal-zone".to_string(),
+                    }),
+                CLIENT_REPORT_MAX_TEMPERATURES,
+            );
+            None
+        }
+        Err(error) => Some(error),
+    };
     #[cfg(not(target_os = "linux"))]
     values.retain(|item| seen.insert((item.source.clone(), item.id.clone())));
 
@@ -387,7 +411,26 @@ fn collect_temperatures(_components: &Components) -> TemperatureCollection {
 
     #[cfg(not(target_os = "linux"))]
     TemperatureCollection {
-        capability: temperature_capability(&values),
+        capability: {
+            let capability = temperature_capability(&values);
+            #[cfg(target_os = "windows")]
+            if !capability.available
+                && let Some(error) = windows_thermal_error
+            {
+                Capability::unavailable(
+                    "system.temperature",
+                    "sysinfo/windows-pdh-thermal-zone",
+                    CapabilityErrorKind::Unsupported,
+                    format!(
+                        "the operating system exposed no readable numeric sensor; Windows thermal-zone counter: {error}"
+                    ),
+                )
+            } else {
+                capability
+            }
+            #[cfg(not(target_os = "windows"))]
+            capability
+        },
         temperatures: values,
     }
 }
@@ -405,12 +448,21 @@ fn temperature_capability(temperatures: &[TemperatureSnapshot]) -> Capability {
     }
 }
 
-fn core_capabilities(temperature: &Capability) -> Vec<Capability> {
+fn core_capabilities(temperature: &Capability, disks: &[DiskSnapshot]) -> Vec<Capability> {
     let mut capabilities = vec![
         Capability::available("system.cpu", "sysinfo"),
         Capability::available("system.memory", "sysinfo"),
         Capability::available("system.network", "sysinfo"),
-        Capability::available("system.disk", "sysinfo"),
+        if disks.is_empty() {
+            Capability::unavailable(
+                "system.disk",
+                "sysinfo-mounted-volumes",
+                CapabilityErrorKind::NotPresent,
+                "the operating system exposed no mounted volume",
+            )
+        } else {
+            Capability::available("system.disk", "sysinfo-mounted-volumes")
+        },
     ];
     capabilities.push(temperature.clone());
     capabilities
@@ -637,7 +689,7 @@ mod tests {
     #[test]
     fn empty_temperature_input_is_reported_as_a_capability_gap() {
         let temperature_capability = temperature_capability(&[]);
-        let temperature = core_capabilities(&temperature_capability)
+        let temperature = core_capabilities(&temperature_capability, &[])
             .into_iter()
             .find(|capability| capability.name == "system.temperature")
             .expect("core capabilities always describe temperature support");
@@ -649,6 +701,24 @@ mod tests {
                 "sysinfo/hwmon",
                 CapabilityErrorKind::Unsupported,
                 "the operating system or hardware exposed no readable numeric sensor",
+            )
+        );
+    }
+
+    #[test]
+    fn disk_capability_requires_an_enumerated_volume() {
+        let temperature_capability = temperature_capability(&[]);
+        let disk = core_capabilities(&temperature_capability, &[])
+            .into_iter()
+            .find(|capability| capability.name == "system.disk")
+            .expect("core capabilities always describe mounted-volume support");
+        assert_eq!(
+            disk,
+            Capability::unavailable(
+                "system.disk",
+                "sysinfo-mounted-volumes",
+                CapabilityErrorKind::NotPresent,
+                "the operating system exposed no mounted volume",
             )
         );
     }

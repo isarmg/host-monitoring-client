@@ -15,6 +15,7 @@ overrides:
       - passwd
       - systemd
       - util-linux
+      - smartmontools
   rpm:
     # The same account tools use the shadow-utils package name on RPM-family
     # systems.
@@ -22,6 +23,7 @@ overrides:
       - shadow-utils
       - systemd
       - util-linux
+      - smartmontools
 # ⚠ 必须从**工作区根**执行：
 #   cargo build --release -p host-monitor
 #   NFPM_ARCH=amd64 packaging/linux/build-packages.sh

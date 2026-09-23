@@ -312,7 +312,16 @@ fn merge(gpus: &mut Vec<GpuSnapshot>, reading: &Reading) {
         );
         base.source = format!("windows-dxgi-pdh+{}", extra.source);
     } else if gpus.len() < crate::model::CLIENT_REPORT_MAX_GPUS {
-        gpus.push(extra.clone());
+        let mut standalone = extra.clone();
+        if standalone.source == "amd-adlx-no-luid" {
+            // DXGI remains authoritative for adapter-level utilization and memory.
+            // Without a Windows LUID the ADLX device cannot be proven to be a distinct
+            // adapter, so retain only sensor fields and avoid double-counting summaries.
+            standalone.utilization_percent = None;
+            standalone.memory_total_bytes = None;
+            standalone.memory_used_bytes = None;
+        }
+        gpus.push(standalone);
     }
 }
 
@@ -420,6 +429,40 @@ mod tests {
         assert_eq!(gpus[0].temperature_celsius, None);
         assert_eq!(gpus[0].utilization_percent, Some(20.0));
         assert_eq!(gpus[1].temperature_celsius, Some(65.0));
+    }
+
+    #[test]
+    fn unmatched_adlx_fallback_keeps_sensors_without_double_counting_memory() {
+        let mut reading = Reading::new(
+            "adlx_00000001".into(),
+            "amd",
+            "AMD GPU".into(),
+            "amd-adlx-no-luid",
+        );
+        reading.gpu.utilization_percent = Some(50.0);
+        reading.gpu.memory_total_bytes = Some(1024);
+        reading.gpu.memory_used_bytes = Some(512);
+        reading.gpu.temperature_celsius = Some(64.0);
+        reading.gpu.power_watts = Some(18.0);
+        let mut gpus = vec![
+            Reading::new(
+                "luid_00000000_00000001".into(),
+                "amd",
+                "AMD GPU".into(),
+                "windows-dxgi-pdh",
+            )
+            .gpu,
+        ];
+
+        merge(&mut gpus, &reading);
+
+        assert_eq!(gpus.len(), 2);
+        let fallback = &gpus[1];
+        assert_eq!(fallback.utilization_percent, None);
+        assert_eq!(fallback.memory_total_bytes, None);
+        assert_eq!(fallback.memory_used_bytes, None);
+        assert_eq!(fallback.temperature_celsius, Some(64.0));
+        assert_eq!(fallback.power_watts, Some(18.0));
     }
     #[test]
     fn zero_fan_rpm_is_real_but_invalid_values_are_not_sensors() {

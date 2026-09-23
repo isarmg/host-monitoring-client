@@ -540,6 +540,17 @@ Assert-ClientCompletelyAbsent
 Invoke-Msi /i $currentMsi "fresh-install"
 Assert-MachinePathInstalled
 if ((Get-Service host-monitor).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
+$bundledSmartctl = Join-Path $installedRoot 'smartmontools\bin\smartctl.exe'
+$bundledSmartSource = Join-Path $installedRoot 'smartmontools\smartmontools-7.5-source.tar.gz'
+foreach ($bundledFile in @($bundledSmartctl, $bundledSmartSource)) {
+    if (-not (Test-Path -LiteralPath $bundledFile -PathType Leaf)) {
+        throw "Bundled smartmontools payload is missing: $bundledFile"
+    }
+}
+$smartVersion = & $bundledSmartctl --version 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $smartVersion -notmatch 'smartctl 7\.5') {
+    throw "Bundled smartctl is not executable or has the wrong version: $smartVersion"
+}
 # Synthetic offline identity for SCM/ACL acceptance only. The installed private
 # state root is fresh and the service is stopped; no remote registration occurs.
 Assert-StateAcl
@@ -692,6 +703,9 @@ $customInstallRoot = Join-Path $env:ProgramFiles "host-monitor-custom-$ProductVe
 Invoke-Msi /i $currentMsi "custom-path-install" "INSTALLFOLDER=`"$customInstallRoot`""
 if (-not (Test-Path -LiteralPath (Join-Path $customInstallRoot 'host-monitor.exe') -PathType Leaf)) {
     throw 'Custom installation directory did not receive the Client executable.'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $customInstallRoot 'smartmontools\bin\smartctl.exe') -PathType Leaf)) {
+    throw 'Custom installation directory did not receive bundled smartctl.'
 }
 $customImagePath = (Get-CimInstance Win32_Service -Filter "Name='host-monitor'").PathName
 if (-not $customImagePath.StartsWith("`"$customInstallRoot\host-monitor.exe`"", [StringComparison]::OrdinalIgnoreCase)) {

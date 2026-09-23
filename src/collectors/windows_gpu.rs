@@ -360,6 +360,67 @@ fn open_pdh_session() -> Result<PdhSession, String> {
     }
 }
 
+pub(super) fn thermal_zone_temperatures() -> Result<Vec<(String, String, f64)>, String> {
+    let mut query = PDH_HQUERY::default();
+    let mut counter = PDH_HCOUNTER::default();
+    // SAFETY: PDH owns the returned handles; the static path is valid UTF-16 and the
+    // query is closed by PdhSession on every path after successful creation.
+    let result = unsafe {
+        let open = PdhOpenQueryW(PCWSTR::null(), 0, &mut query);
+        if open != ERROR_SUCCESS {
+            open
+        } else {
+            PdhAddEnglishCounterW(
+                query,
+                w!(r"\Thermal Zone Information(*)\Temperature"),
+                0,
+                &mut counter,
+            )
+        }
+    };
+    if result != ERROR_SUCCESS {
+        if !query.is_invalid() {
+            // SAFETY: query was returned by PdhOpenQueryW and has not been transferred.
+            unsafe { PdhCloseQuery(query) };
+        }
+        return Err(format!(
+            "PDH thermal-zone initialization returned 0x{result:08x}"
+        ));
+    }
+    let session = PdhSession {
+        query,
+        counter,
+        memory_counter: None,
+    };
+    // SAFETY: session owns a valid query containing the temperature gauge.
+    let collect = unsafe { PdhCollectQueryData(session.query) };
+    if collect != ERROR_SUCCESS {
+        return Err(format!(
+            "PDH thermal-zone collection returned 0x{collect:08x}"
+        ));
+    }
+    let summary = formatted_values(session.counter).map_err(|error| error.to_string())?;
+    let mut temperatures = Vec::new();
+    for (name, kelvin) in summary.samples {
+        let celsius = kelvin - 273.15;
+        if !celsius.is_finite() || !(-273.15..=1000.0).contains(&celsius) {
+            continue;
+        }
+        let Some(label) = super::hardware::text(&name) else {
+            continue;
+        };
+        let Some(id) = super::hardware::text(&format!("thermal-zone:{name}")) else {
+            continue;
+        };
+        temperatures.push((id, label, celsius));
+    }
+    if temperatures.is_empty() {
+        Err("PDH returned no finite thermal-zone temperature".to_string())
+    } else {
+        Ok(temperatures)
+    }
+}
+
 #[derive(Debug)]
 struct PdhReadError {
     message: String,

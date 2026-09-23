@@ -97,6 +97,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\packaging\windows\tests\Test-WixAuthoring.ps1
+      - name: Fetch verified smartmontools payload
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\fetch-smartmontools.ps1 -OutputDirectory "$env:RUNNER_TEMP\host-monitor-smartmontools"
       - name: Build WiX 4 MSI
         if: runner.os == 'Windows'
         shell: cmd
@@ -106,6 +110,7 @@ jobs:
           packaging\windows\wix\build-msi.cmd %HOST_MONITOR_VERSION%
           target\x86_64-pc-windows-msvc\release\host-monitor.exe
           target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe
+          "%RUNNER_TEMP%\host-monitor-smartmontools\payload"
       - name: Exercise real MSI service install and rollback lifecycle
         if: runner.os == 'Windows'
         shell: powershell

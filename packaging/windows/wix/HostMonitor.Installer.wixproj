@@ -9,7 +9,8 @@
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.9.32</ProductVersion>
     <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor.exe</ClientExe>
     <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\host-monitor-maintenance.exe</MaintenanceExe>
-    <DefineConstants>ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe);LicenseRtf=$(MSBuildThisFileDirectory)..\License.rtf</DefineConstants>
+    <SmartmontoolsDir Condition="'$(SmartmontoolsDir)' == ''">$(MSBuildThisFileDirectory)obj\smartmontools\payload</SmartmontoolsDir>
+    <DefineConstants>ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe);LicenseRtf=$(MSBuildThisFileDirectory)..\License.rtf;SmartctlExe=$(SmartmontoolsDir)\bin\smartctl.exe;SmartDriveDb=$(SmartmontoolsDir)\bin\drivedb.h;SmartLicense=$(SmartmontoolsDir)\doc\COPYING.txt;SmartSource=$(SmartmontoolsDir)\..\smartmontools-7.5.tar.gz;SmartNotice=$(MSBuildThisFileDirectory)..\smartmontools-NOTICE.txt</DefineConstants>
     <OutputName>host-monitor-$(ProductVersion)-x64</OutputName>
   </PropertyGroup>
 
@@ -33,6 +34,10 @@
       Text="The ProductVersion build field must be between 0 and 65535." />
     <Error Condition="!Exists('$(ClientExe)')" Text="ClientExe does not exist: $(ClientExe)" />
     <Error Condition="!Exists('$(MaintenanceExe)')" Text="MaintenanceExe does not exist: $(MaintenanceExe)" />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\bin\smartctl.exe')" Text="Bundled smartctl does not exist below SmartmontoolsDir: $(SmartmontoolsDir)" />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\bin\drivedb.h')" Text="Bundled smartmontools drive database is missing." />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\doc\COPYING.txt')" Text="Bundled smartmontools license is missing." />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\..\smartmontools-7.5.tar.gz')" Text="Bundled smartmontools corresponding source is missing." />
     <Exec
       Command="&quot;$(ClientExe)&quot; --version"
       ConsoleToMSBuild="true"

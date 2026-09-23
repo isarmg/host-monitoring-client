@@ -30,11 +30,18 @@ impl<T> Drop for Interface<T> {
         }
     }
 }
+#[cfg(test)]
 fn output<T>(call: impl FnOnce(*mut Raw) -> Status) -> Result<Interface<T>, Failure> {
+    output_at("interface request", call)
+}
+fn output_at<T>(
+    operation: &str,
+    call: impl FnOnce(*mut Raw) -> Status,
+) -> Result<Interface<T>, Failure> {
     let mut raw = std::ptr::null_mut();
     let status = call(&mut raw);
     if status != 0 {
-        return Err(error(status));
+        return Err(error_at(status, operation));
     }
     let ptr = NonNull::new(raw).ok_or_else(|| {
         Failure::new(
@@ -47,14 +54,35 @@ fn output<T>(call: impl FnOnce(*mut Raw) -> Status) -> Result<Interface<T>, Fail
         _kind: PhantomData,
     })
 }
-fn error(code: i32) -> Failure {
+fn error_at(code: i32, operation: &str) -> Failure {
+    let status_name = match code {
+        1 => "already_enabled",
+        2 => "already_initialized",
+        3 => "failure",
+        4 => "invalid_arguments",
+        5 => "bad_version",
+        6 => "unknown_interface",
+        7 => "terminated",
+        8 => "ADL_initialization_error",
+        9 => "not_found",
+        10 => "invalid_object",
+        11 => "orphan_objects",
+        12 => "not_supported",
+        13 => "pending_operation",
+        14 => "GPU_inactive",
+        15 => "GPU_in_use",
+        16 => "timeout",
+        17 => "not_active",
+        18 => "reset_needed",
+        _ => "unknown_status",
+    };
     Failure::new(
         match code {
             5 | 6 | 12 => CapabilityErrorKind::Unsupported,
             9 => CapabilityErrorKind::NotPresent,
             _ => CapabilityErrorKind::Transient,
         },
-        format!("ADLX status {code}"),
+        format!("ADLX {operation} returned status {code} ({status_name})"),
     )
 }
 
@@ -86,7 +114,7 @@ impl Adlx {
         let status = unsafe { init(VERSION, &mut system) };
         // An already-initialized singleton is not ours to terminate.
         if status != 0 {
-            return Err(error(status));
+            return Err(error_at(status, "initialization"));
         }
         let Some(system) = NonNull::new(system) else {
             unsafe {
@@ -106,7 +134,7 @@ impl Adlx {
         };
         // SAFETY: IADLXSystem is a library-owned singleton, not a reference-counted Base.
         let table = unsafe { &*system.as_ref().vtable.cast::<System>() };
-        result.performance = Some(output(|out| unsafe {
+        result.performance = Some(output_at("performance-service request", |out| unsafe {
             (table.get_performance)(system.as_ptr(), out)
         })?);
         Ok(result)
@@ -114,8 +142,9 @@ impl Adlx {
     pub fn collect(&mut self) -> Result<VendorResult, Failure> {
         // SAFETY: singleton lifetime is bounded by this initialized session.
         let table = unsafe { &*self.system.as_ref().vtable.cast::<System>() };
-        let list: Interface<GpuList> =
-            output(|out| unsafe { (table.get_gpus)(self.system.as_ptr(), out) })?;
+        let list: Interface<GpuList> = output_at("GPU-list request", |out| unsafe {
+            (table.get_gpus)(self.system.as_ptr(), out)
+        })?;
         let begin = unsafe { (list.table().begin)(list.raw()) };
         let count = unsafe { (list.table().size)(list.raw()) };
         if count as usize > crate::model::CLIENT_REPORT_MAX_GPUS {
@@ -133,8 +162,9 @@ impl Adlx {
                 ));
             };
             let reading = (|| {
-                let gpu: Interface<Gpu> =
-                    output(|out| unsafe { (list.table().at_gpu)(list.raw(), index, out) })?;
+                let gpu: Interface<Gpu> = output_at("GPU-list item request", |out| unsafe {
+                    (list.table().at_gpu)(list.raw(), index, out)
+                })?;
                 self.read_gpu(&gpu)
             })();
             match reading {
@@ -148,19 +178,40 @@ impl Adlx {
     }
     fn read_gpu(&self, gpu: &Interface<Gpu>) -> Result<Reading, Failure> {
         let id: Vec<u16> = "IADLXGPU2".encode_utf16().chain(Some(0)).collect();
-        let gpu2: Interface<Gpu2> =
-            output(|out| unsafe { (gpu.table().base.query)(gpu.raw(), id.as_ptr(), out) })?;
-        let mut luid = Luid::default();
-        let status = unsafe { (gpu2.table().luid)(gpu2.raw(), &mut luid) };
-        if status != 0 {
-            return Err(error(status));
-        }
-        if luid.low == 0 && luid.high == 0 {
-            return Err(Failure::new(
-                CapabilityErrorKind::InvalidData,
-                "ADLX device has no usable Windows LUID",
-            ));
-        }
+        let (gpu_id, source) = match output_at::<Gpu2>("IADLXGPU2 query", |out| unsafe {
+            (gpu.table().base.query)(gpu.raw(), id.as_ptr(), out)
+        }) {
+            Ok(gpu2) => {
+                let mut luid = Luid::default();
+                let status = unsafe { (gpu2.table().luid)(gpu2.raw(), &mut luid) };
+                if status != 0 {
+                    return Err(error_at(status, "IADLXGPU2 LUID read"));
+                }
+                if luid.low == 0 && luid.high == 0 {
+                    return Err(Failure::new(
+                        CapabilityErrorKind::InvalidData,
+                        "ADLX IADLXGPU2 returned no usable Windows LUID",
+                    ));
+                }
+                (super::luid_id(luid.low, luid.high), "amd-adlx")
+            }
+            Err(failure)
+                if failure.kind == CapabilityErrorKind::Unsupported
+                    && failure.message.contains("status 6 (unknown_interface)") =>
+            {
+                // Older AMD drivers can expose performance monitoring through IADLXGPU
+                // without the newer IADLXGPU2 LUID extension. Keep that telemetry under
+                // an ADLX-local identity; merge() deliberately strips counters which would
+                // otherwise double-count the DXGI adapter.
+                let mut unique_id = -1;
+                let status = unsafe { (gpu.table().unique_id)(gpu.raw(), &mut unique_id) };
+                if status != 0 {
+                    return Err(error_at(status, "IADLXGPU unique-ID fallback"));
+                }
+                (format!("adlx_{:08x}", unique_id as u32), "amd-adlx-no-luid")
+            }
+            Err(failure) => return Err(failure),
+        };
         let mut name_ptr = std::ptr::null();
         let mut name = "AMD GPU".to_string();
         if unsafe { (gpu.table().name)(gpu.raw(), &mut name_ptr) } == 0 && !name_ptr.is_null() {
@@ -177,8 +228,7 @@ impl Adlx {
                 name = value;
             }
         }
-        let mut reading =
-            Reading::new(super::luid_id(luid.low, luid.high), "amd", name, "amd-adlx");
+        let mut reading = Reading::new(gpu_id, "amd", name, source);
         let mut total_mb = 0;
         if unsafe { (gpu.table().total_vram)(gpu.raw(), &mut total_mb) } == 0 && total_mb > 0 {
             reading.gpu.memory_total_bytes = Some(u64::from(total_mb) * 1024 * 1024);
@@ -187,10 +237,10 @@ impl Adlx {
             .performance
             .as_ref()
             .expect("initialized performance service");
-        let support: Interface<Support> = output(|out| unsafe {
+        let support: Interface<Support> = output_at("GPU metric-support request", |out| unsafe {
             (perf.table().supported_gpu_metrics)(perf.raw(), gpu.raw(), out)
         })?;
-        let metrics: Interface<Metrics> = output(|out| unsafe {
+        let metrics: Interface<Metrics> = output_at("current GPU-metrics request", |out| unsafe {
             (perf.table().current_gpu_metrics)(perf.raw(), gpu.raw(), out)
         })?;
         let supported = |index: usize| {

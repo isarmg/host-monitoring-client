@@ -1,12 +1,13 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-if "%~3"=="" goto :usage
-if not "%~4"=="" goto :usage
+if "%~4"=="" goto :usage
+if not "%~5"=="" goto :usage
 
 set "PRODUCT_VERSION=%~1"
 set "CLIENT_EXE=%~f2"
 set "MAINTENANCE_EXE=%~f3"
+set "SMARTMONTOOLS_DIR=%~f4"
 set "SCRIPT_ROOT=%~dp0"
 
 if not exist "%CLIENT_EXE%" (
@@ -15,6 +16,14 @@ if not exist "%CLIENT_EXE%" (
 )
 if not exist "%MAINTENANCE_EXE%" (
   echo Maintenance executable not found: "%MAINTENANCE_EXE%" 1>&2
+  exit /b 2
+)
+if not exist "%SMARTMONTOOLS_DIR%\bin\smartctl.exe" (
+  echo smartctl executable not found below: "%SMARTMONTOOLS_DIR%" 1>&2
+  exit /b 2
+)
+if not exist "%SMARTMONTOOLS_DIR%\..\smartmontools-7.5.tar.gz" (
+  echo smartmontools source archive not found beside payload: "%SMARTMONTOOLS_DIR%\.." 1>&2
   exit /b 2
 )
 
@@ -31,12 +40,13 @@ dotnet build "%SCRIPT_ROOT%HostMonitor.Installer.wixproj" ^
   --nologo ^
   -p:ProductVersion="%PRODUCT_VERSION%" ^
   -p:ClientExe="%CLIENT_EXE%" ^
-  -p:MaintenanceExe="%MAINTENANCE_EXE%"
+  -p:MaintenanceExe="%MAINTENANCE_EXE%" ^
+  -p:SmartmontoolsDir="%SMARTMONTOOLS_DIR%"
 if errorlevel 1 exit /b %errorlevel%
 
 echo MSI created below "%SCRIPT_ROOT%bin\x64\Release".
 exit /b 0
 
 :usage
-echo Usage: build-msi.cmd VERSION CLIENT_EXE MAINTENANCE_EXE 1>&2
+echo Usage: build-msi.cmd VERSION CLIENT_EXE MAINTENANCE_EXE SMARTMONTOOLS_DIR 1>&2
 exit /b 2
