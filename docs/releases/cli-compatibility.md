@@ -1,26 +1,18 @@
-# CLI 预发布兼容矩阵
+# Host Monitoring Client 0.9.35 当前兼容边界
 
-本次发布版本为 `0.9.28`，支持 Windows x64、Linux x64 和 macOS Apple Silicon；Intel macOS 不再适配或发行。部署时同时核对版本与源码身份。
+Client 支持 Windows x64、Linux x64 与 macOS Apple Silicon。部署时核对安装包版本、源码身份、Server 版本及配置状态。
 
-| 维度 | 契约 |
+| 维度 | 当前契约 |
 | --- | --- |
-| 程序版本 | `0.9.28`，GitHub Release |
-| CLI JSON | `schema_version = 1` |
-| 配置格式 | 写入固定 `0.9.4`；结构相同的 `0.9.3` 透明读取；保留历史字段名 `application_version` |
-| 身份与配对状态格式 | 写入固定 `0.9.4`；结构相同的 `0.9.3` 透明读取 |
-| Client Foundation | `0.9.14`，固定提交 `8b8ea8517a3cf68e566f8230e87bae9ab40b4106` |
-| IPC | Foundation `GetStatus/1`，进程世代与绑定校验 |
-| 业务协议 | 既有 Host 协议；本次 UI 删除没有更换协议依赖 |
+| Client 程序 | 0.9.35 |
+| Server | 0.9.31；报告 schema 3 |
+| Client 配置与身份 | 写入格式 0.9.4；结构相同的 0.9.3 可读取 |
+| 本地队列 | 保留 Host UUID、报告 ID 和待发送报告的原有归属 |
+| CLI JSON | schema_version 1；--format json 为机器输出入口 |
+| Client Foundation | 0.9.15，固定提交 8890ced415793b144997ebb04728f52fbe3e7e59 |
+| Host 协议 crate | 0.9.30，固定提交 9c8facb7fc355dd7afe809bbaf2014e5560e0f35；与 Server 0.9.31 的 schema 3 报告字段一致 |
+| IPC | Foundation GetStatus/1，校验进程世代与绑定 |
 
-| 来源 → 目标 | 配置、身份、队列 | 安装与回退边界 |
-| --- | --- | --- |
-| 基线 `0315844963badace5362ac8488f8a303a61ad4d1` → CLI 验证提交 | 格式保持，原有效绑定与队列归属保持 | 先停服务；使用已验证的产品安装器。保留状态卸载后重装纳入原生生命周期验收 |
-| CLI 验证提交 → 同一提交重装 | 格式保持，不生成新身份 | MSI、PKG 的保留状态重装按 CI 结果判定；不能绕过安装器的版本或账户检查 |
-| CLI 验证提交 → 上述基线 | 持久格式可读性保持，但程序行为和启动来源不同 | 不能据此承诺自动降级；先停止服务，核对该基线及安装器的恢复能力，不覆盖当前队列或配对事务 |
-| `0.9.3` 配置/配对/绑定/授权 → `0.9.28` | 透明读取，后续正常提交写 `0.9.4`；Host UUID 与 spool 不变 | 无需手工改版本字段或删除状态 |
-| 其他历史账户状态 → `0.9.28` | 返回 `pairing_state_incompatible`；显式 `pair recover` 归档账户文件 | 恢复前验证 spool，保留 Host UUID 和全部采集数据 |
-| 未知或损坏的 spool → `0.9.28` | 返回 `important_state_incompatible`，不猜测转换 | 不删除、不覆盖、不因重新配对而绕过；恢复兼容程序或归档供人工审查 |
+安装器负责程序和服务的覆盖或修复，并按平台保留配置、身份与待发送队列；具体步骤见平台安装指南。配置或账户资料不兼容时，Client 返回明确错误；管理员须先验证队列，再通过受支持的配对恢复命令归档不兼容账户文件。未知或损坏的队列不能通过删除状态或重新配对绕过校验。
 
-0.9.3 兼容读取不重写持久字节；未知格式也不会在 `run`、`status` 或 `doctor` 中自动修改。只有管理员显式运行 `pair recover` 才会以唯一名称归档不兼容账户文件，且该流程不包含 Host UUID 或 spool。Server 的 SQLite 恢复命令不能用于 Client。
-
-`--output json` 保留为本次 CLI 格式参数的兼容别名。`--tray-*` 属于已删除 UI 的私有入口，不保留。安装后统一使用 `setup` 完成配对、服务策略和连接验证；卸载默认保留身份、待发送数据和配对恢复信息。
+Server 数据库的备份或恢复流程不适用于 Client 状态。Client 不提供跨平台状态复制，也不承诺自动降级。

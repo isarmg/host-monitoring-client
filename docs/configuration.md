@@ -1,6 +1,6 @@
 # Host Monitoring Client 配置指南
 
-本文适用于 `host-monitor` `0.9.34`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
+本文适用于 `host-monitor` `0.9.35`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
 
 ## 1. 路径与准备
 
