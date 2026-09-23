@@ -1,6 +1,6 @@
 # Host Monitoring Client
 
-`host-monitor` `0.9.31` 是 Host Monitoring 的只读主机遥测客户端。它采集 CPU、内存、磁盘健康、网络、硬件传感器和 NVIDIA / AMD / Intel 显卡指标，通过 HTTPS 主动上报到 Server，并在网络不可用时使用有界本地队列重试。
+`host-monitor` `0.9.32` 是 Host Monitoring 的只读主机遥测客户端。它采集 CPU、内存、磁盘健康、网络、硬件传感器和 NVIDIA / AMD / Intel 显卡指标，通过 HTTPS 主动上报到 Server，并在网络不可用时使用有界本地队列重试。
 
 当前支持 Windows x64、Linux x64 和 macOS Apple Silicon。Client 不开放入站端口，也不提供托盘或本地 Web；安装包和系统服务能力以对应 Release 为准。
 

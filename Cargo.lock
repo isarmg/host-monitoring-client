@@ -594,7 +594,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "host-monitor"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1727,8 +1727,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-cli"
-version = "0.9.14"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8b8ea8517a3cf68e566f8230e87bae9ab40b4106#8b8ea8517a3cf68e566f8230e87bae9ab40b4106"
+version = "0.9.15"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8890ced415793b144997ebb04728f52fbe3e7e59#8890ced415793b144997ebb04728f52fbe3e7e59"
 dependencies = [
  "libc",
  "serde",
@@ -1742,8 +1742,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-error"
-version = "0.9.14"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8b8ea8517a3cf68e566f8230e87bae9ab40b4106#8b8ea8517a3cf68e566f8230e87bae9ab40b4106"
+version = "0.9.15"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8890ced415793b144997ebb04728f52fbe3e7e59#8890ced415793b144997ebb04728f52fbe3e7e59"
 dependencies = [
  "serde",
  "serde_json",
@@ -1752,8 +1752,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-fs-safety"
-version = "0.9.14"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8b8ea8517a3cf68e566f8230e87bae9ab40b4106#8b8ea8517a3cf68e566f8230e87bae9ab40b4106"
+version = "0.9.15"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8890ced415793b144997ebb04728f52fbe3e7e59#8890ced415793b144997ebb04728f52fbe3e7e59"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
@@ -1763,8 +1763,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-runtime"
-version = "0.9.14"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8b8ea8517a3cf68e566f8230e87bae9ab40b4106#8b8ea8517a3cf68e566f8230e87bae9ab40b4106"
+version = "0.9.15"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8890ced415793b144997ebb04728f52fbe3e7e59#8890ced415793b144997ebb04728f52fbe3e7e59"
 dependencies = [
  "async-trait",
  "getrandom 0.4.3",
@@ -1783,8 +1783,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-client-secret"
-version = "0.9.14"
-source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8b8ea8517a3cf68e566f8230e87bae9ab40b4106#8b8ea8517a3cf68e566f8230e87bae9ab40b4106"
+version = "0.9.15"
+source = "git+https://github.com/isarmg/sarmg-foundation-client.git?rev=8890ced415793b144997ebb04728f52fbe3e7e59#8890ced415793b144997ebb04728f52fbe3e7e59"
 dependencies = [
  "zeroize",
 ]
