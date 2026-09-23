@@ -64,7 +64,8 @@ impl Spool {
     }
 
     pub fn oldest(&self) -> anyhow::Result<Option<PendingReport>> {
-        // Isolate incompatible queued reports without treating an upgrade as disk failure.
+        // Quarantine reports with an incompatible contract or schema; leave valid
+        // records available for delivery.
         for _ in 0..32 {
             let Some(record) = self.inner.next()? else {
                 return Ok(None);

@@ -70,10 +70,8 @@ pub const MAX_REPORT_INTERVAL_SECONDS: u64 = host_protocol::CLIENT_REPORT_MAX_IN
 
 /// 共享协议契约下限的 Client 配置别名。
 ///
-/// 下限与上限同样需要显式常量。采集侧对实测间隔的兜底若只写成"防除零"的 `.max(0.001)`，
-/// 就比服务端要求的 0.1 **低两个数量级**：当前主循环最小 sleep 0.5 秒触及不到，
-/// 但那是巧合而非约束，一旦调整 jitter 或引入更短的周期，报文就会被判为 400
-/// （永久拒绝）**直接丢弃**。采集侧引用本常量，使这条边界有守卫而不是靠巧合成立。
+/// 采集侧按此下限约束实测间隔，配置校验与报告编码均使用共享协议的有效区间。
+/// 服务端会永久拒绝区间之外的报告，因此采样调度不能只依赖当前 sleep 长度。
 pub const MIN_REPORT_INTERVAL_SECONDS: f64 = host_protocol::CLIENT_REPORT_MIN_INTERVAL_SECONDS;
 
 /// 编译期守卫：契约区间必须自洽。写成 `const _` 而非测试，是因为这两个常量的关系
@@ -101,8 +99,8 @@ pub enum OutputMode {
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentPackageVersion;
 
-/// Frozen wire discriminator. The legacy field name remains application_version,
-/// but a binary-only release must not change the persisted configuration format.
+/// Persisted configuration discriminator. The wire field is `application_version`;
+/// this binary writes 0.9.4 and also reads the compatible 0.9.3 format.
 pub const CONFIG_FORMAT_VERSION: &str = "0.9.4";
 const LEGACY_COMPATIBLE_CONFIG_FORMAT: &str = "0.9.3";
 

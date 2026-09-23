@@ -6,6 +6,8 @@
 
 ## 配置概览
 
+以下命令以 Linux/macOS 终端为例；Windows 请在管理员 PowerShell 中运行相同的 `host-monitor` 命令，不使用 `sudo`。具体安装路径见[平台安装指南](docs/platform-setup.md)。
+
 安装后先确认版本并停止后台服务，再初始化配置：
 
 ```sh

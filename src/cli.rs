@@ -1499,7 +1499,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
     }
     let command = args.words.join(" ");
     let result = execute(&args);
-    // Legacy collector commands own their single result output.
+    // Collector commands write their own single result and exit status.
     if result
         .as_ref()
         .is_ok_and(|v| v.get("legacy_output") == Some(&Value::Bool(true)))
