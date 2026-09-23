@@ -381,7 +381,7 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
         "configuration": config_check,
         "tls": tls_check,
         "identity": host.check,
-        "credential": credential.check,
+        "report_auth": credential.check,
         "spool": spool_check,
         "pairing": {
             "status": if pairing_error.is_some() { "error" } else { "ok" },

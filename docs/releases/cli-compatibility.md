@@ -1,10 +1,10 @@
-# Host Monitoring Client 0.9.35 当前兼容边界
+# Host Monitoring Client 0.9.36 当前兼容边界
 
 Client 支持 Windows x64、Linux x64 与 macOS Apple Silicon。部署时核对安装包版本、源码身份、Server 版本及配置状态。
 
 | 维度 | 当前契约 |
 | --- | --- |
-| Client 程序 | 0.9.35 |
+| Client 程序 | 0.9.36 |
 | Server | 0.9.31；报告 schema 3 |
 | Client 配置与身份 | 写入格式 0.9.4；结构相同的 0.9.3 可读取 |
 | 本地队列 | 保留 Host UUID、报告 ID 和待发送报告的原有归属 |

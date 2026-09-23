@@ -1,6 +1,6 @@
 # Host Monitoring Client 配置指南
 
-本文适用于 `host-monitor` `0.9.35`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
+本文适用于 `host-monitor` `0.9.36`。以下命令覆盖初始化、修改、校验、配对、启动和诊断；平台安装命令见[平台安装指南](platform-setup.md)。
 
 ## 1. 路径与准备
 
@@ -180,6 +180,8 @@ host-monitor status --check --format json
 host-monitor doctor --network --format json
 sudo host-monitor doctor --delivery --format json
 ```
+
+`status --format json` 的 `checks.report_auth.status` 表示本机上报凭据的读取结果，`credential_present` 表示是否找到可用凭据；不会显示凭据内容。`doctor --format json` 在 `checks` 数组中以 `id=credential` 返回同一检查。
 
 `doctor --network` 只验证公开网络入口；`doctor --delivery` 会使用当前凭据产生真实投递。需要区分采集与投递问题时：
 

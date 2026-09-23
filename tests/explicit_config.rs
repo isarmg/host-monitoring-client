@@ -362,7 +362,7 @@ fn credential_diagnostics_are_bounded_read_only_and_reject_unsafe_files() {
             assert!(!String::from_utf8_lossy(&output.stderr).contains(&valid_credential));
             let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             let credential = if name == "status" {
-                &value["checks"]["credential"]
+                &value["checks"]["report_auth"]
             } else {
                 value["checks"]
                     .as_array()
