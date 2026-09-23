@@ -9,7 +9,7 @@ Client 支持 Windows x64、Linux x64 与 macOS Apple Silicon。部署时核对�
 | Client 配置与身份 | 写入格式 0.9.4；结构相同的 0.9.3 可读取 |
 | 本地队列 | 保留 Host UUID、报告 ID 和待发送报告的原有归属 |
 | CLI JSON | schema_version 1；--format json 为机器输出入口 |
-| Client Foundation | 0.9.15，固定提交 8890ced415793b144997ebb04728f52fbe3e7e59 |
+| Client Foundation | 0.9.16，固定提交 9bf6eec21f42188c73105eef2f369bf47c8b8f86 |
 | Host 协议 crate | 0.9.30，固定提交 9c8facb7fc355dd7afe809bbaf2014e5560e0f35；与 Server 0.9.31 的 schema 3 报告字段一致 |
 | IPC | Foundation GetStatus/1，校验进程世代与绑定 |
 
