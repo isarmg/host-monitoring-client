@@ -564,6 +564,20 @@ fn bound_hardware(h: &mut HardwareSnapshot, report_time: chrono::DateTime<Utc>) 
         });
         changed |= before != n.ip_addresses.len();
     }
+    for n in &mut h.physical_networks {
+        changed |= bound_required_text(&mut n.id, MAX_HARDWARE_TEXT, "unknown-adapter");
+        changed |= bound_required_text(&mut n.name, MAX_HARDWARE_TEXT, "unknown-adapter");
+        changed |= bound_optional_nonempty_text(&mut n.interface_name, MAX_HARDWARE_TEXT);
+        changed |= bound_optional_nonempty_text(&mut n.mac_address, MAX_HARDWARE_TEXT);
+        changed |= clean_number(&mut n.link_speed_mbps, 0.0, f64::MAX);
+        changed |= bound_required_text(&mut n.source, MAX_HARDWARE_TEXT, "unknown");
+    }
+    let mut adapter_ids = std::collections::HashSet::new();
+    let length = h.physical_networks.len();
+    h.physical_networks
+        .retain(|n| adapter_ids.insert((n.source.clone(), n.id.clone())));
+    changed |= length != h.physical_networks.len();
+    changed |= truncate(&mut h.physical_networks, MAX_HARDWARE_NETWORKS);
     changed |= truncate(&mut h.sensors, MAX_HARDWARE_SENSORS);
     let length = h.sensors.len();
     h.sensors.retain(|s| {
@@ -805,6 +819,50 @@ mod tests {
         assert!(!bound_report(&mut value));
         assert_eq!(value, once);
         assert_eq!(value.client.collector_errors, 1);
+    }
+
+    #[test]
+    fn physical_adapter_inventory_satisfies_the_server_contract() {
+        let mut value = report();
+        let adapters = (0..MAX_HARDWARE_NETWORKS + 2)
+            .map(|index| PhysicalNetworkAdapter {
+                id: match index {
+                    0 => "\n".into(),
+                    1 => "unknown-adapter".into(),
+                    _ => format!("adapter-{index}"),
+                },
+                name: "\n".into(),
+                interface_name: Some("eth\n0".into()),
+                mac_address: Some("\n".into()),
+                link_speed_mbps: Some(-1.0),
+                source: "collector".into(),
+            })
+            .collect();
+        value.system.hardware = Some(HardwareSnapshot {
+            collected_at: value.collected_at,
+            cpu: CpuHardware::default(),
+            networks: Vec::new(),
+            physical_networks: adapters,
+            sensors: Vec::new(),
+            disk_health: Vec::new(),
+        });
+
+        assert!(bound_report(&mut value));
+        let physical = &value.system.hardware.as_ref().unwrap().physical_networks;
+        assert_eq!(physical.len(), MAX_HARDWARE_NETWORKS);
+        assert_eq!(physical[0].id, "unknown-adapter");
+        assert_eq!(physical[0].name, "unknown-adapter");
+        assert_eq!(physical[0].interface_name.as_deref(), Some("eth0"));
+        assert_eq!(physical[0].mac_address, None);
+        assert_eq!(physical[0].link_speed_mbps, None);
+        assert!(
+            physical
+                .iter()
+                .all(|adapter| !adapter.id.chars().any(char::is_control))
+        );
+        let once = value.clone();
+        assert!(!bound_report(&mut value));
+        assert_eq!(value, once);
     }
 
     #[test]

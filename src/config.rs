@@ -1328,8 +1328,7 @@ mod tests {
     /// 契约上限是对**实测周期**的约束；投递已经解耦，因此正常运行时该周期只由
     /// ticker jitter 决定。默认 jitter 非零时，恰好等于上限仍必然越界。
     ///
-    /// 回归：此前这里断言的是 `is_ok()`，于是一个"通过了启动校验"的配置在运行时
-    /// 每一份报文都被判 400 并直接丢弃。
+    /// 启动校验须拒绝等于上限且带 jitter 的配置，使每份运行时报文仍满足契约。
     #[test]
     fn rejects_interval_at_the_contract_limit_because_jitter_pushes_it_over() {
         let config = config_with_interval(MAX_REPORT_INTERVAL_SECONDS);

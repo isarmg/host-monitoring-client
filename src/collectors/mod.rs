@@ -802,8 +802,8 @@ mod tests {
 
     /// 报文里的 `interval_seconds` 必须**始终**落在服务端契约区间内。
     ///
-    /// 回归：此前只钳了下限。区间之外的值会被服务端判为 400（永久拒绝），投递
-    /// worker 随后会把它从 spool 确认丢弃——一次不可恢复的数据缺口。
+    /// 即使 ticker 调度延迟或休眠恢复，报文中的周期也须保持在契约范围内，
+    /// 以便服务端接受并持久化采样。
     #[test]
     fn the_reported_interval_always_satisfies_the_server_contract() {
         use crate::config::{MAX_REPORT_INTERVAL_SECONDS, MIN_REPORT_INTERVAL_SECONDS};
