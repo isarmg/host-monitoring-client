@@ -182,6 +182,33 @@ mod tests {
         assert_eq!(cadence.deadline(), start + Duration::from_secs(35));
     }
 
+    #[test]
+    fn first_run_report_advertises_the_next_sampling_cadence() {
+        let mut sampler = SystemSampler::new();
+        let mut report = sampler.collect(transient_host_identity(Uuid::new_v4()), 3600, 0);
+        let measured_network_rates: Vec<_> = report.system.networks.iter()
+            .map(|network| (network.received_bytes_per_second, network.transmitted_bytes_per_second))
+            .collect();
+        let measured_disk_rates: Vec<_> = report.system.disks.iter()
+            .map(|disk| (disk.read_bytes_per_second, disk.written_bytes_per_second))
+            .collect();
+        let mut first_report = true;
+
+        advertise_first_sampling_cadence(&mut report, Duration::from_secs(3600), &mut first_report);
+        assert_eq!(report.interval_seconds, 3600.0);
+        assert!(!first_report);
+        assert_eq!(report.system.networks.iter()
+            .map(|network| (network.received_bytes_per_second, network.transmitted_bytes_per_second))
+            .collect::<Vec<_>>(), measured_network_rates);
+        assert_eq!(report.system.disks.iter()
+            .map(|disk| (disk.read_bytes_per_second, disk.written_bytes_per_second))
+            .collect::<Vec<_>>(), measured_disk_rates);
+
+        report.interval_seconds = 25.0;
+        advertise_first_sampling_cadence(&mut report, Duration::from_secs(3600), &mut first_report);
+        assert_eq!(report.interval_seconds, 25.0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn delivery_worker_shutdown_has_a_hard_upper_bound() {
         let worker = tokio::spawn(async {

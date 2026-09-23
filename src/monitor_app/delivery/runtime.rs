@@ -26,6 +26,20 @@ impl SamplingCadence {
     }
 }
 
+fn advertise_first_sampling_cadence(
+    report: &mut ClientReport,
+    configured: Duration,
+    first_report: &mut bool,
+) {
+    if *first_report {
+        // The first sample measures only the time since sampler construction. The Server uses
+        // this field to estimate when the next report is due; rate fields were already computed
+        // from the measured elapsed time in SystemSampler::collect.
+        report.interval_seconds = configured.as_secs_f64();
+        *first_report = false;
+    }
+}
+
 pub(super) async fn run_loop(
     config: ClientConfig,
     host: host_monitor::HostIdentity,
@@ -45,6 +59,7 @@ pub(super) async fn run_loop(
     let mut spool_read_health = SpoolHealth::default();
     let mut spool_write_health = SpoolHealth::default();
     let mut cadence = SamplingCadence::starting_now();
+    let mut first_report = true;
 
     loop {
         tokio::select! {
@@ -73,11 +88,12 @@ pub(super) async fn run_loop(
                     }
                 };
                 host_monitor::runtime_status::observe("last_collection_at",serde_json::json!(chrono::Utc::now().timestamp()));
-                let report = sampler.collect(
+                let mut report = sampler.collect(
                     host_receiver.borrow().clone(),
                     config.slow_interval_seconds,
                     pending,
                 );
+                advertise_first_sampling_cadence(&mut report, config.interval(), &mut first_report);
                 spool_write_health.try_enqueue(&spool, &report)?;
                 if !delivery_trigger.notify() {
                     warn!(report_id = %report.report_id, "delivery worker stopped before notification");

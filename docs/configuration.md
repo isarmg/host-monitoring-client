@@ -66,6 +66,8 @@ sudo host-monitor config show --format json
 
 通常只需修改 Server endpoint、采集间隔、队列上限和可选 OTLP 设置。`state_dir` 不能通过普通配置提交迁移；已经配对后，更换 Server endpoint 必须使用 `pair replace`。
 
+常驻 `run` 启动后立即采集第一份报告。首报的 `interval_seconds` 向 Server 声明配置的下次采样周期，供在线状态估算；网络和磁盘速率仍按从采样器初始化到首报的实测时间计算。后续报告的 `interval_seconds` 使用实测采样周期，并限制在协议范围内。
+
 ## 3. 修改、校验和提交
 
 最简单的方式是使用受保护编辑器。程序会校验内容并以当前 revision 原子提交：
