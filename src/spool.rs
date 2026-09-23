@@ -227,7 +227,8 @@ mod version_tests {
     #[test]
     fn old_reports_are_isolated_without_a_queue_failure() {
         let root = tempfile::tempdir().unwrap();
-        let spool = Spool::open(&root.path().join("state"), 1024 * 1024).unwrap();
+        let state = root.path().canonicalize().unwrap().join("state");
+        let spool = Spool::open(&state, 1024 * 1024).unwrap();
         for _ in 0..4 {
             spool
                 .inner

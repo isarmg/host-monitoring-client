@@ -446,7 +446,7 @@ impl GpuRuntime {
 
     fn collect(&mut self) -> GpuCollection {
         #[allow(unused_mut)] // macOS baseline build intentionally has no private GPU collector.
-        let mut gpus = Vec::new();
+        let mut gpus: Vec<GpuSnapshot> = Vec::new();
         let mut capabilities = Vec::new();
         #[allow(unused_mut)]
         let mut sensors = Vec::new();
