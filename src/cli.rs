@@ -1407,6 +1407,13 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     }))
 }
 
+fn validate_product_paths(args: Args) -> Result<Args> {
+    if let Some(path) = args.get("--file") {
+        absolute(Path::new(path))?;
+    }
+    Ok(args)
+}
+
 pub fn entry(raw: Vec<String>) -> u8 {
     let parse_format = requested_error_format(&raw);
     #[cfg(windows)]
@@ -1421,7 +1428,9 @@ pub fn entry(raw: Vec<String>) -> u8 {
             "--expected-binding",
         ],
         &["--network", "--delivery", "--confirm-replace"],
-    ) {
+    )
+    .and_then(validate_product_paths)
+    {
         Ok(a) => a,
         Err(e) => return emit_host("parse", parse_format, &Err(e)),
     };
@@ -1883,6 +1892,30 @@ fn runtime_error(error: anyhow::Error) -> Failure {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
+
+    #[test]
+    fn product_file_path_is_validated_independently_of_common_options() {
+        let root = std::env::current_dir().unwrap();
+        for path in [
+            PathBuf::from("candidate.json"),
+            root.join("../candidate.json"),
+        ] {
+            let mut args = Args::parse(Vec::new(), &[], &[]).unwrap();
+            args.options
+                .insert("--file".into(), path.display().to_string());
+            let error = validate_product_paths(args)
+                .err()
+                .expect("unsafe path rejected");
+            assert_eq!(error.code, "absolute_path_required");
+            assert_eq!(error.exit, 2);
+        }
+        let mut args = Args::parse(Vec::new(), &[], &[]).unwrap();
+        args.options.insert(
+            "--file".into(),
+            root.join("candidate.json").display().to_string(),
+        );
+        assert!(validate_product_paths(args).is_ok());
+    }
 
     #[test]
     fn host_owns_pairing_error_presentation() {
