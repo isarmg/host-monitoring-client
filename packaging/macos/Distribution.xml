@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>xsoc</title>
+  <welcome file="welcome.html" mime-type="text/html" />
+  <conclusion file="conclusion.html" mime-type="text/html" />
+  <options customize="never" require-scripts="false" rootVolumeOnly="true"
+           hostArchitectures="arm64" />
+  <choices-outline>
+    <line choice="default" />
+  </choices-outline>
+  <choice id="default" visible="false">
+    <pkg-ref id="org.sarmg.xsoc" />
+  </choice>
+  <pkg-ref id="org.sarmg.xsoc">xsoc-component.pkg</pkg-ref>
+</installer-gui-script>

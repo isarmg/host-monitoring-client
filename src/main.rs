@@ -1,0 +1,14 @@
+mod cli;
+mod monitor_app;
+#[cfg(all(test, unix))]
+mod test_https;
+fn main() -> std::process::ExitCode {
+    #[cfg(windows)]
+    if xsoc::service::windows_service_requested(std::env::args_os()) {
+        return match monitor_app::entry() {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(_) => std::process::ExitCode::from(8),
+        };
+    }
+    std::process::ExitCode::from(cli::entry(std::env::args().skip(1).collect()))
+}

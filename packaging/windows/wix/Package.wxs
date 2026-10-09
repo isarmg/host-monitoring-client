@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package
+    UpgradeCode="B4A341EC-D4B2-419F-A00B-E8E504DE9798"
+    Name="xsoc"
+    Manufacturer="xsos"
+    Version="$(var.ProductVersion)"
+    Language="1033"
+    Codepage="1252"
+    Scope="perMachine"
+    InstallerVersion="500"
+    Compressed="yes">
+
+    <SummaryInformation
+      Description="xsos read-only host telemetry client"
+      Keywords="xsos,client,telemetry,service"
+      Manufacturer="xsos" />
+    <MajorUpgrade DowngradeErrorMessage="A newer xsoc version is installed." Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Launch
+      Condition="VersionNT64"
+      Message="[ProductName] requires 64-bit Windows." />
+    <!-- ACL and state changes are explicitly transactional; never run without rollback. -->
+    <Launch
+      Condition="NOT RollbackDisabled"
+      Message="[ProductName] setup requires Windows Installer rollback to remain enabled." />
+    <Launch
+      Condition="NOT PURGE OR PURGE = &quot;1&quot;"
+      Message="PURGE accepts only the value 1. Omit it for a state-preserving uninstall." />
+    <Launch
+      Condition="NOT XSOC_MAINTENANCE_DIAGNOSTICS OR XSOC_MAINTENANCE_DIAGNOSTICS = &quot;1&quot;"
+      Message="XSOC_MAINTENANCE_DIAGNOSTICS accepts only the value 1. Omit it to disable maintenance diagnostics." />
+
+    <Property Id="ARPCONTACT" Value="xsos maintainers" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/isarmg/xsoc" />
+    <Property Id="PURGE" Secure="yes" />
+    <Property Id="XSOC_MAINTENANCE_DIAGNOSTICS" Value="1" Secure="yes" />
+    <!-- WixUI_InstallDir already defines ARPNOMODIFY. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="xsoc">
+        <Directory Id="SMARTMONTOOLSDIRECTORY" Name="smartmontools">
+          <Directory Id="SMARTMONTOOLS_BINDIRECTORY" Name="bin" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="STATEDIRECTORY" Name="xsoc" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component
+        Id="ClientServiceComponent"
+        Guid="{C7D313C7-1B72-4826-8FA4-5BF10928349E}"
+        Bitness="always64">
+        <File
+          Id="ClientExecutable"
+          Source="$(var.ClientExe)"
+          Name="xsoc.exe"
+          KeyPath="yes"
+          Checksum="yes" />
+        <Environment
+          Id="XsocMachinePath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Action="set"
+          Part="last"
+          Permanent="no"
+          System="yes" />
+
+        <!-- Remove only this product's registered legacy UI entries. -->
+        <RemoveRegistryValue Id="RemoveLegacyTrayRun" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="xsoc-tray" />
+        <RemoveFile Id="RemoveLegacyTrayFile" Name="xsoc-tray.exe" On="install" />
+        <RemoveFile Id="RemoveLegacyTrayShortcut" Directory="ProgramMenuFolder" Name="xsoc.lnk" On="install" />
+
+        <ServiceInstall
+          Id="XsocServiceInstall"
+          Name="xsoc"
+          DisplayName="xsoc"
+          Description="Collects and securely reports read-only host telemetry to xsos."
+          Type="ownProcess"
+          Start="demand"
+          ErrorControl="normal"
+          Account="NT AUTHORITY\LocalService"
+          Arguments="--windows-service run --config &quot;[CommonAppDataFolder]xsoc\config.json&quot;"
+          Vital="yes">
+          <util:ServiceConfig
+            FirstFailureActionType="restart"
+            SecondFailureActionType="restart"
+            ThirdFailureActionType="restart"
+            RestartServiceDelayInSeconds="60"
+            ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl
+          Id="XsocServiceControl"
+          Name="xsoc"
+          Stop="both"
+          Remove="uninstall"
+          Wait="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="SMARTMONTOOLS_BINDIRECTORY">
+      <Component Id="SmartmontoolsRuntimeComponent" Guid="{4FB7E776-817C-4C70-AB62-2DB7111DD15A}" Bitness="always64">
+        <File Id="SmartctlExecutable" Source="$(var.SmartctlExe)" Name="smartctl.exe" KeyPath="yes" Checksum="yes" />
+        <File Id="SmartmontoolsDriveDatabase" Source="$(var.SmartDriveDb)" Name="drivedb.h" Checksum="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="SMARTMONTOOLSDIRECTORY">
+      <Component Id="SmartmontoolsComplianceComponent" Guid="{67F64859-953F-411A-A6E6-A3D65466EEEF}" Bitness="always64">
+        <File Id="SmartmontoolsLicense" Source="$(var.SmartLicense)" Name="COPYING.txt" KeyPath="yes" />
+        <File Id="SmartmontoolsSource" Source="$(var.SmartSource)" Name="smartmontools-7.5-source.tar.gz" />
+        <File Id="SmartmontoolsNotice" Source="$(var.SmartNotice)" Name="NOTICE.txt" />
+      </Component>
+    </DirectoryRef>
+
+    <!--
+      This component records the fixed mutable root but deliberately creates or owns neither the
+      directory nor any runtime file below it. The transactional native helper creates and secures
+      the directory before StartServices. Windows Installer therefore cannot recreate it between
+      purge quarantine and rollback, and preserves config, identity, credentials and spool on an
+      ordinary uninstall.
+    -->
+    <DirectoryRef Id="STATEDIRECTORY">
+      <Component
+        Id="ClientStateDirectoryComponent"
+        Guid="{55346DF8-69D2-425D-B574-F80379CB87A2}"
+        Bitness="always64">
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\xsos\xsoc"
+          Name="ManagedStateDirectory"
+          Type="string"
+          Value="[STATEDIRECTORY]"
+          KeyPath="yes" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\xsos\xsoc"
+          Name="InstallLocation"
+          Type="string"
+          Value="[INSTALLFOLDER]" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature
+      Id="ClientFeature"
+      Title="xsoc"
+      Level="1"
+      AllowAbsent="no"
+      AllowAdvertise="no">
+      <ComponentRef Id="ClientServiceComponent" />
+      <ComponentRef Id="ClientStateDirectoryComponent" />
+      <ComponentRef Id="SmartmontoolsRuntimeComponent" />
+      <ComponentRef Id="SmartmontoolsComplianceComponent" />
+    </Feature>
+
+
+
+    <!-- The same helper is embedded once and is never left behind as another utility. -->
+    <Binary Id="XsocMaintenance.exe" SourceFile="$(var.MaintenanceExe)" />
+
+    <CustomAction
+      Id="RollbackClientInstall"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="rollback-install &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="rollback"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="PrepareClientInstall"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="prepare-install &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="ApplyClientInstall"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="apply-install &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="CommitClientInstall"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="commit-install &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="commit"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="RollbackUninstallPreflight"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="rollback-uninstall-preflight &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="rollback"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="PreflightClientUninstall"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="preflight-uninstall &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="RollbackPreservedState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="rollback-uninstall &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="rollback"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="PreserveClientState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="preserve-state &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="CommitPreservedState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="commit-uninstall &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="commit"
+      Impersonate="no"
+      Return="ignore" />
+    <CustomAction
+      Id="RollbackPurgedState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="rollback-purge &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="rollback"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="PreparePurgedState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="prepare-purge &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="CommitPurgedState"
+      BinaryRef="XsocMaintenance.exe"
+      ExeCommand="commit-purge &quot;[#ClientExecutable]&quot; [XSOC_MAINTENANCE_DIAGNOSTICS]"
+      Execute="commit"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="PrepareSetupState"
+      FileRef="ClientExecutable"
+      ExeCommand="installer prepare-setup"
+      Execute="commit"
+      Impersonate="no"
+      Return="check" />
+    <InstallExecuteSequence>
+
+
+      <!--
+        Register rollback, then record the service's original running state before Windows
+        Installer reaches StopServices. The native helper stops and waits for the service
+        before snapshotting ACLs, so sampling cannot change the snapshot's file list.
+        This is also earlier than directory/file installation.
+        REMOVE is reliable only after InstallValidate; every action below is later.
+      -->
+      <Custom
+        Action="RollbackClientInstall"
+        Before="PrepareClientInstall"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="PrepareClientInstall"
+        Before="StopServices"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="ApplyClientInstall"
+        After="InstallServices"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="CommitClientInstall"
+        After="ApplyClientInstall"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="PrepareSetupState"
+        After="CommitClientInstall"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <!--
+        Standard MSI service/file removal is name/path based, so it must never run until the
+        helper has rejected a replaced service and file/junction/reparse root. Register a narrow
+        preflight rollback first so a preflight failure can remove its journal. State rollback is
+        deliberately registered only after StopServices: reverse execution then restores the MSI
+        service before the helper restores state ACLs, SID settings and prior running state.
+      -->
+      <Custom
+        Action="RollbackUninstallPreflight"
+        Before="PreflightClientUninstall"
+        Condition="REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="PreflightClientUninstall"
+        Before="StopServices"
+        Condition="REMOVE~=&quot;ALL&quot;" />
+      <Custom
+        Action="RollbackPreservedState"
+        After="StopServices"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT (PURGE = &quot;1&quot;)" />
+      <Custom
+        Action="PreserveClientState"
+        After="RollbackPreservedState"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT (PURGE = &quot;1&quot;)" />
+      <Custom
+        Action="CommitPreservedState"
+        After="PreserveClientState"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT (PURGE = &quot;1&quot;)" />
+
+      <!--
+        Purge first performs a full no-reparse scan and atomically quarantines the state root.
+        Rollback can restore that rename until the transaction reaches commit. Commit deletion is
+        irreversible: if it cannot finish, the protected quarantine may remain for explicit
+        administrator cleanup, but Windows Installer must not roll an already uninstalled product
+        back onto a partially deleted state tree.
+        Major upgrades preserve state through the ordinary uninstall path.
+      -->
+      <Custom
+        Action="RollbackPurgedState"
+        After="StopServices"
+        Condition="REMOVE~=&quot;ALL&quot; AND PURGE = &quot;1&quot;" />
+      <Custom
+        Action="PreparePurgedState"
+        After="RollbackPurgedState"
+        Condition="REMOVE~=&quot;ALL&quot; AND PURGE = &quot;1&quot;" />
+      <Custom
+        Action="CommitPurgedState"
+        After="PreparePurgedState"
+        Condition="REMOVE~=&quot;ALL&quot; AND PURGE = &quot;1&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

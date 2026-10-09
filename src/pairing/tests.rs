@@ -1,0 +1,2463 @@
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        path::PathBuf,
+        sync::mpsc,
+        thread,
+    };
+
+    use super::*;
+    const MAX_PAIRING_STATE_BYTES: usize = StateFile::Pairing.max_bytes();
+    #[cfg(unix)]
+    const MAX_ACTIVE_BINDING_BYTES: usize = StateFile::Binding.max_bytes();
+    #[cfg(unix)]
+    const MAX_AUTH_STATE_BYTES: usize = StateFile::Authorization.max_bytes();
+
+    // Deliberately incomplete authorization fixture for malformed-state tests.
+    // Production has no unconditional authorize/invalidate entry points.
+    fn persist_auth_state(config: &ClientConfig, state: &LocalAuthState) -> anyhow::Result<()> {
+        let transaction = lock_state(config)?;
+        persist_auth_state_unlocked(&transaction, state)
+    }
+
+    fn write_private_fixture(
+        path: impl AsRef<std::path::Path>,
+        bytes: impl AsRef<[u8]>,
+    ) -> std::io::Result<()> {
+        let path = path.as_ref();
+        #[cfg(windows)]
+        {
+            crate::private_fs::write_atomic(path, bytes.as_ref())
+        }
+        #[cfg(not(windows))]
+        {
+        std::fs::write(path, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+        }
+    }
+
+    fn test_config(directory: PathBuf) -> ClientConfig {
+        let config_path = directory.join("config.json");
+        ClientConfig {
+            endpoint: "https://xsos.example/api/v1/xsoc/report".into(),
+            config_path: Some(config_path),
+            state_dir: directory,
+            ..ClientConfig::default()
+        }
+    }
+
+    fn test_host() -> HostIdentity {
+        HostIdentity {
+            id: Uuid::new_v4().to_string(),
+            os: "test".into(),
+            os_version: None,
+            kernel_version: None,
+            arch: "test".into(),
+            client_version: "test".into(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activating_commit_and_reporter_snapshot_stay_under_the_locked_directory() {
+        let base = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("host-state-rebound-{}", Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();
+        let config = test_config(base.join("state"));
+        let transaction = lock_state(&config).unwrap();
+        let reader = StateReader::open(&config.state_dir).unwrap();
+        let instance_id = Uuid::new_v4();
+        let activating = StoredPairingState::Activating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            instance_id,
+            activation_url: "https://xsos.example/activate".into(),
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 2,
+            pairing_endpoint: config.pairing_endpoint(),
+            report_endpoint: config.endpoint.clone(),
+            bearer_secret: std::sync::Arc::new(xcsc_secret::SecretString::new(
+                "a".repeat(64),
+            )),
+        };
+        persist_state_unlocked(&transaction, &activating).unwrap();
+        fs::rename(&config.state_dir, base.join("held")).unwrap();
+        let replacement = StateTransaction::begin(&config.state_dir).unwrap();
+        for file in [
+            StateFile::Identity,
+            StateFile::Credential,
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+        ] {
+            replacement
+                .write(file, "replacement-must-not-be-touched")
+                .unwrap();
+        }
+        finish_activating_unlocked(&config, &transaction, activating).unwrap();
+        assert!(
+            matches!(load_state(&transaction).unwrap(), Some(StoredPairingState::Active { instance_id: id, .. }) if id == instance_id)
+        );
+        // A reader opened before the rename shares the same anchored namespace.
+        assert!(matches!(
+            load_state(&reader).unwrap(),
+            Some(StoredPairingState::Active { .. })
+        ));
+        let binding = load_active_binding(&config, &transaction).unwrap().unwrap();
+        assert!(
+            reporter_for_active_binding_unlocked(&config, &transaction, &binding)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            crate::transport::read_secret(&transaction, "test credential")
+                .unwrap()
+                .expose(),
+            "a".repeat(64)
+        );
+        for file in [
+            StateFile::Identity,
+            StateFile::Credential,
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+        ] {
+            assert_eq!(
+                replacement.read(file).unwrap(),
+                b"replacement-must-not-be-touched"
+            );
+        }
+        drop(replacement);
+        drop(reader);
+        drop(transaction);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_state_readers_reject_oversized_and_linked_files_without_mutating_state() {
+        use std::os::unix::fs::symlink;
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("host-private-read-{}", Uuid::new_v4()));
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let config = test_config(directory.clone());
+        type Reader = fn(&ClientConfig) -> anyhow::Result<()>;
+        let cases: [(&str, usize, serde_json::Value, Reader); 3] = [
+            (
+                PAIRING_STATE_FILE,
+                MAX_PAIRING_STATE_BYTES,
+                serde_json::json!({
+                    "version": "1.0.0", "phase": "active", "generation": Uuid::new_v4(),
+                    "request_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(),
+                    "activation_url": "https://xsos.example/activate", "report_endpoint": config.endpoint,
+                    "completed_at": Utc::now()
+                }),
+                |config| {
+                    load_state(&StateReader::open(&config.state_dir)?)
+                        .map(|value| assert!(value.is_some()))
+                },
+            ),
+            (
+                ACTIVE_BINDING_FILE,
+                MAX_ACTIVE_BINDING_BYTES,
+                serde_json::json!({
+                    "version": "1.0.0", "generation": Uuid::new_v4(),
+                    "request_id": Uuid::new_v4(), "instance_id": Uuid::new_v4(), "report_endpoint": config.endpoint
+                }),
+                |config| {
+                    load_active_binding(config, &StateReader::open(&config.state_dir)?)
+                        .map(|value| assert!(value.is_some()))
+                },
+            ),
+            (
+                AUTH_STATE_FILE,
+                MAX_AUTH_STATE_BYTES,
+                serde_json::json!({
+                    "version": "1.0.0", "status": "authorized", "reason": "paired", "changed_at": Utc::now()
+                }),
+                |config| local_auth_state(config).map(|value| assert!(value.is_some())),
+            ),
+        ];
+        for (name, max_bytes, value, read) in cases {
+            let path = directory.join(name);
+            let mut bytes = serde_json::to_vec(&value).unwrap();
+            bytes.resize(max_bytes, b' ');
+            write_private_fixture(&path, &bytes).unwrap();
+            read(&config).unwrap();
+            bytes.push(b' ');
+            write_private_fixture(&path, &bytes).unwrap();
+            assert!(format!("{:#}", read(&config).unwrap_err()).contains("budget"));
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            fs::remove_file(&path).unwrap();
+            let victim = directory.join("victim");
+            write_private_fixture(&victim, serde_json::to_vec(&value).unwrap()).unwrap();
+            symlink(&victim, &path).unwrap();
+            assert!(read(&config).is_err());
+            fs::remove_file(&path).unwrap();
+            fs::hard_link(&victim, &path).unwrap();
+            assert!(read(&config).is_err());
+            fs::remove_file(&path).unwrap();
+            fs::remove_file(victim).unwrap();
+        }
+        assert_eq!(
+            fs::read_dir(&directory).unwrap().count(),
+            0,
+            "readers must not create locks or state files"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pairing_status_url_appends_path_segments_without_query_or_fragment_ambiguity() {
+        let request_id = Uuid::new_v4();
+        let endpoint = pairing_status_endpoint(
+            "https://xsos.example/api/v1/xsoc/pairing-requests/",
+            request_id,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint.as_str(),
+            format!(
+                "https://xsos.example/api/v1/xsoc/pairing-requests/{request_id}/status"
+            )
+        );
+
+        for invalid in [
+            "https://xsos.example/api/v1/xsoc/pairing-requests?tenant=one",
+            "https://xsos.example/api/v1/xsoc/pairing-requests#bootstrap",
+        ] {
+            assert!(pairing_status_endpoint(invalid, request_id).is_err());
+        }
+    }
+
+    #[test]
+    fn persisted_pairing_endpoints_are_revalidated_before_network_use() {
+        let request_id = Uuid::new_v4();
+        let remote_plaintext = "http://192.0.2.10/api/v1/xsoc/pairing-requests";
+        assert!(pairing_status_endpoint(remote_plaintext, request_id).is_err());
+        assert!(activation_endpoint(remote_plaintext).is_err());
+    }
+
+    #[tokio::test]
+    async fn persisted_creating_state_cannot_reuse_remote_plaintext_endpoint() {
+        let state = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            pairing_endpoint: "http://192.0.2.10/api/v1/xsoc/pairing-requests".into(),
+            report_endpoint: "http://192.0.2.10/api/v1/xsoc/report".into(),
+            host: test_host(),
+            bearer_secret: random_secret().unwrap(),
+            polling_secret: random_secret().unwrap(),
+        };
+        let config = ClientConfig {
+            ..ClientConfig::default()
+        };
+
+        let error = finish_create_request(&config, state)
+            .await
+            .expect_err("old state must be checked under the current pairing transport policy");
+        assert!(format!("{error:#}").contains("browser pairing requires HTTPS"));
+    }
+
+    fn one_shot_pairing_server() -> (String, PathBuf, thread::JoinHandle<()>) {
+        one_shot_pairing_server_with_activation_url(|request_id| format!("/activate/{request_id}"))
+    }
+
+    fn one_shot_pairing_server_with_activation_url(
+        activation_url: impl FnOnce(Uuid) -> String + Send + 'static,
+    ) -> (String, PathBuf, thread::JoinHandle<()>) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let request_id = Uuid::new_v4();
+        let handle = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with("POST /api/v1/xsoc/pairing-requests ")
+            );
+            let body = serde_json::to_vec(&serde_json::json!({
+                "request_id": request_id,
+                "activation_url": activation_url(request_id),
+                "expires_in": 600,
+                "poll_interval": 1
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        });
+        (origin, ca_path, handle)
+    }
+
+    fn one_shot_pairing_error_server(
+        expected_path: &'static str,
+        request_id: Uuid,
+    ) -> (String, PathBuf, thread::JoinHandle<()>) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let handle = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(std::str::from_utf8(&request[..read]).unwrap().contains(expected_path));
+            let body = format!(
+                r#"{{"code":"pairing_transaction_not_found","message":"pairing transaction no longer exists","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+            );
+            write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        (origin, ca_path, handle)
+    }
+
+    #[tokio::test]
+    async fn structured_missing_transaction_expires_matching_activate_and_poll_state() {
+        for operation in [PairingHttpOperation::Activate, PairingHttpOperation::Poll] {
+            let directory = std::env::temp_dir().canonicalize().unwrap().join(format!(
+                "xsos-missing-pairing-{operation:?}-{}",
+                Uuid::new_v4()
+            ));
+            crate::private_fs::ensure_private_directory(&directory).unwrap();
+            let expected_path = match operation {
+                PairingHttpOperation::Activate => "POST /api/v1/xsoc/activate ",
+                PairingHttpOperation::Poll => "/status ",
+                PairingHttpOperation::Create => unreachable!(),
+            };
+            let request_id = Uuid::new_v4();
+            let (server, ca_path, server_thread) =
+                one_shot_pairing_error_server(expected_path, request_id);
+            let config = ClientConfig {
+                endpoint: format!("{server}/api/v1/xsoc/report"),
+                pairing_endpoint: Some(format!("{server}/api/v1/xsoc/pairing-requests")),
+                tls_ca_pem: Some(ca_path),
+                state_dir: directory.clone(),
+                ..ClientConfig::default()
+            };
+            let generation = Uuid::new_v4();
+            persist_state(
+                &config,
+                &StoredPairingState::Pending {
+                    version: PAIRING_STATE_VERSION,
+                    generation,
+                    request_id,
+                    activation_url: format!("{server}/activate/{request_id}"),
+                    expires_at: Utc::now() + TimeDelta::minutes(10),
+                    poll_interval: 1,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    bearer_secret: random_secret().unwrap(),
+                    polling_secret: random_secret().unwrap(),
+                },
+            )
+            .unwrap();
+            write_private_fixture(directory.join("client-token"), "preserved-token").unwrap();
+            write_private_fixture(directory.join("host-id"), Uuid::new_v4().to_string()).unwrap();
+
+            let error = match operation {
+                PairingHttpOperation::Activate => activate_pending_with_code(
+                    &config,
+                    generation,
+                    request_id,
+                    "uci_test_authorization_key",
+                )
+                .await
+                .unwrap_err(),
+                PairingHttpOperation::Poll => poll_existing(&config).await.unwrap_err(),
+                PairingHttpOperation::Create => unreachable!(),
+            };
+            assert!(error.downcast_ref::<PairingHttpError>().unwrap().transaction_missing());
+            assert!(matches!(
+                load_state(&StateReader::open(&directory).unwrap()).unwrap(),
+                Some(StoredPairingState::Expired { generation: saved, request_id: saved_request, .. })
+                    if saved == generation && saved_request == request_id
+            ));
+            assert_eq!(fs::read_to_string(directory.join("client-token")).unwrap(), "preserved-token");
+            assert!(directory.join("host-id").is_file());
+            server_thread.join().unwrap();
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn create_rejects_cross_origin_activation_url_before_showing_or_persisting_it() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-pairing-untrusted-activation-{}",
+            Uuid::new_v4()
+        ));
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let (server, ca_path, server_thread) =
+            one_shot_pairing_server_with_activation_url(|request_id| {
+                format!("https://attacker.example/activate/{request_id}")
+            });
+        let config = ClientConfig {
+            endpoint: format!("{server}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{server}/api/v1/xsoc/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
+            state_dir: directory.clone(),
+            ..ClientConfig::default()
+        };
+
+        let error = start_or_resume(&config, &test_host())
+            .await
+            .expect_err("an untrusted browser destination must fail during request creation");
+        assert!(error.to_string().contains("does not match"));
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Creating { .. })
+        ));
+
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn delayed_active_server(
+        instance_id: Uuid,
+    ) -> (
+        String,
+        mpsc::Receiver<()>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+        PathBuf,
+    ) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .contains("/status ")
+            );
+            seen_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "active",
+                "instance_id": instance_id
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        });
+        (origin, seen_rx, release_tx, handle, ca_path)
+    }
+
+    fn delayed_activation_server(
+        instance_id: Uuid,
+    ) -> (
+        String,
+        mpsc::Receiver<()>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+        PathBuf,
+    ) {
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with("POST /api/v1/xsoc/activate ")
+            );
+            seen_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "active",
+                "instance_id": instance_id
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        });
+        (origin, seen_rx, release_tx, handle, ca_path)
+    }
+
+    #[test]
+    fn generated_secrets_have_256_bits_and_hash_the_transmitted_form() {
+        let secret = random_secret().unwrap();
+        assert_eq!(secret.expose().len(), 64);
+        assert!(secret.expose().bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(sha256_hex(&secret).len(), 64);
+        assert_ne!(secret.expose(), sha256_hex(&secret));
+    }
+
+    #[test]
+    fn polling_authorization_is_explicit_sensitive_and_redacts_errors() {
+        use xcsc_secret::SecretString;
+        let secret = SecretString::new("private-polling-credential".into());
+        let header = pairing_authorization(&secret).unwrap();
+        assert_eq!(
+            header.to_str().unwrap(),
+            "Pairing private-polling-credential"
+        );
+        assert!(header.is_sensitive());
+        assert!(!format!("{header:?}/{secret:?}/{secret}").contains(secret.expose()));
+        let bad = SecretString::new("private-polling-credential\r\nextra".into());
+        let error = pairing_authorization(&bad).unwrap_err();
+        assert!(!format!("{error:#}").contains("private-polling-credential"));
+    }
+
+    #[test]
+    fn journal_secret_snapshots_share_ownership_and_serialization_is_bounded() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("host-secret-journal-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        let secret = random_secret().unwrap();
+        let mut state = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            pairing_endpoint: config.pairing_endpoint(),
+            report_endpoint: config.endpoint.clone(),
+            host: test_host(),
+            bearer_secret: secret.clone(),
+            polling_secret: random_secret().unwrap(),
+        };
+        let StoredPairingState::Creating {
+            bearer_secret: cloned,
+            ..
+        } = state.clone()
+        else {
+            unreachable!()
+        };
+        assert!(std::sync::Arc::ptr_eq(&secret, &cloned));
+        assert!(!format!("{cloned:?}").contains(secret.expose()));
+        persist_state(&config, &state).unwrap();
+        let original = fs::read(state_path(&config)).unwrap();
+        // Only the explicitly opted-in private journal exposes the plaintext.
+        assert!(
+            std::str::from_utf8(&original)
+                .unwrap()
+                .contains(secret.expose())
+        );
+        if let StoredPairingState::Creating {
+            report_endpoint, ..
+        } = &mut state
+        {
+            *report_endpoint = "x".repeat(MAX_PAIRING_STATE_BYTES);
+        }
+        assert!(persist_state(&config, &state).is_err());
+        assert_eq!(fs::read(state_path(&config)).unwrap(), original);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2); // stable lock + journal
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_private_journal_does_not_quote_secret_in_error_chain() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("host-secret-errors-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        let transaction = lock_state(&config).unwrap();
+        let malformed = format!(
+            r#"{{"phase":"private-secret-as-invalid-phase","version":"{}"}}"#,
+            PERSISTED_STATE_FORMAT
+        );
+        transaction.write(StateFile::Pairing, &malformed).unwrap();
+        let error = load_state(&transaction)
+            .err()
+            .expect("invalid journal must fail");
+        assert!(!format!("{error:#}").contains("private-secret"));
+        assert!(!format!("{error:?}").contains("private-secret"));
+        assert_eq!(fs::read_to_string(state_path(&config)).unwrap(), malformed);
+        drop(transaction);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn create_request_contract_contains_hashes_but_not_raw_secrets() {
+        let host = HostIdentity {
+            id: Uuid::new_v4().to_string(),
+            os: "test".into(),
+            os_version: None,
+            kernel_version: None,
+            arch: "test".into(),
+            client_version: "test".into(),
+        };
+        let bearer_secret = random_secret().unwrap();
+        let polling_secret = random_secret().unwrap();
+        let value = serde_json::to_value(CreatePairingRequest {
+            protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
+            mode: PairMode::Fresh,
+            host,
+            token_hash: sha256_hex(&bearer_secret),
+            polling_secret_hash: sha256_hex(&polling_secret),
+        })
+        .unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 5);
+        assert_eq!(object["protocol_version"], HOST_PAIRING_PROTOCOL_VERSION);
+        assert!(object.contains_key("host"));
+        assert_eq!(object["token_hash"], sha256_hex(&bearer_secret));
+        assert_eq!(object["polling_secret_hash"], sha256_hex(&polling_secret));
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(!serialized.contains(bearer_secret.expose()));
+        assert!(!serialized.contains(polling_secret.expose()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_mode_is_derived_only_from_the_existing_durable_host_identity() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("host-recovery-mode-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(directory.clone());
+        let old_host_id = Uuid::new_v4();
+        write_private_fixture(directory.join("host-id"), format!("{old_host_id}\n")).unwrap();
+        let recovered = crate::collectors::transient_host_identity(old_host_id);
+        let fresh = crate::collectors::transient_host_identity(Uuid::new_v4());
+        assert_eq!(inferred_mode(&config, &recovered), PairMode::RecoverIdentity);
+        assert_eq!(inferred_mode(&config, &fresh), PairMode::Fresh);
+        assert!(validate_requested_mode(&config, &recovered, PairMode::RecoverIdentity).is_ok());
+        assert!(validate_requested_mode(&config, &recovered, PairMode::Fresh).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn checked_in_pairing_fixture_is_emitted_by_the_current_client_serializer() {
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../../contracts/host-pairing-v1.json")).unwrap();
+        let actual = serde_json::to_value(CreatePairingRequest {
+            protocol_version: HOST_PAIRING_PROTOCOL_VERSION,
+            mode: PairMode::Fresh,
+            host: HostIdentity {
+                id: "018f1f4b-7a5d-7b5f-8d31-123456789abc".into(),
+                os: "windows".into(),
+                os_version: None,
+                kernel_version: None,
+                arch: "x86_64".into(),
+                client_version: "0.9.999".into(),
+            },
+            token_hash: "a".repeat(64),
+            polling_secret_hash: "b".repeat(64),
+        })
+        .unwrap();
+        assert_eq!(actual, expected);
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../compatibility.json")).unwrap();
+        assert_eq!(manifest["host_pairing_protocol"], HOST_PAIRING_PROTOCOL_VERSION);
+        assert_eq!(
+            manifest["host_report_schema"],
+            xsos_protocol::CLIENT_REPORT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn status_contract_accepts_only_current_waiting_value() {
+        let response: PairingStatusResponse = serde_json::from_value(serde_json::json!({
+            "status": "waiting"
+        }))
+        .unwrap();
+        assert!(matches!(response.status, PairingStatus::Waiting));
+        assert!(response.instance_id.is_none());
+        assert!(
+            serde_json::from_value::<PairingStatusResponse>(serde_json::json!({
+                "status": "pending"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PairingStatusResponse>(serde_json::json!({
+                "status": "waiting",
+                "pending": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PairingStatusResponse>(serde_json::json!({
+                "status": "active",
+                "instance_id": Uuid::new_v4().to_string().to_uppercase()
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn current_pairing_responses_and_local_auth_state_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<CreatePairingResponse>(serde_json::json!({
+                "request_id": Uuid::new_v4(),
+                "activation_url": "https://xsos.example/client/activate/request",
+                "expires_in": 300,
+                "poll_interval": 2,
+                "enrollment_secret": "unexpected"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<CreatePairingResponse>(serde_json::json!({
+                "request_id": Uuid::new_v4().to_string().replace('-', ""),
+                "activation_url": "https://xsos.example/client/activate/request",
+                "expires_in": 300,
+                "poll_interval": 2
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ActivatePairingResponse>(serde_json::json!({
+                "instance_id": Uuid::new_v4(),
+                "status": "active",
+                "token": "unexpected"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ActivatePairingResponse>(serde_json::json!({
+                "instance_id": Uuid::new_v4(),
+                "status": "pending"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ActivatePairingResponse>(serde_json::json!({
+                "instance_id": Uuid::new_v4().to_string().to_uppercase(),
+                "status": "active"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<LocalAuthState>(serde_json::json!({
+                "version": "1.0.0",
+                "status": "authorized",
+                "reason": "browser pairing completed",
+                "changed_at": Utc::now(),
+                "unknown_extension": true
+            }))
+            .is_err()
+        );
+        for version in [
+            serde_json::Value::Null,
+            serde_json::json!(1),
+            serde_json::json!("0.0.0"),
+        ] {
+            let mut state = serde_json::json!({
+                "version": "1.0.0",
+                "status": "authorized",
+                "reason": "browser pairing completed",
+                "changed_at": Utc::now()
+            });
+            if version.is_null() {
+                state.as_object_mut().unwrap().remove("version");
+            } else {
+                state["version"] = version;
+            }
+            assert!(serde_json::from_value::<LocalAuthState>(state).is_err());
+        }
+    }
+
+    #[test]
+    fn non_json_success_points_to_the_server_origin_without_leaking_the_body() {
+        let endpoint = "http://127.0.0.1/api/v1/xsoc/pairing-requests";
+        let body = b"<!doctype html><title>POETIZE private marker</title>";
+        let error = parse_pairing_json::<CreatePairingResponse>(
+            body,
+            "text/html; charset=utf-8",
+            endpoint,
+            "pairing response",
+        )
+        .expect_err("HTML must not be accepted as a pairing response");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Server origin http://127.0.0.1"));
+        assert!(!rendered.contains("/api/v1/xsoc/pairing-requests"));
+        assert!(rendered.contains("Content-Type: text/html"));
+        assert!(rendered.contains("address or port may be wrong"));
+        assert!(rendered.contains("including its port"));
+        assert!(!rendered.contains("POETIZE"));
+        assert!(!rendered.contains("private marker"));
+
+        let valid_json = serde_json::to_vec(&serde_json::json!({
+            "request_id": Uuid::new_v4(),
+            "activation_url": "/client/activate/request",
+            "expires_in": 600,
+            "poll_interval": 2
+        }))
+        .unwrap();
+        assert!(
+            parse_pairing_json::<CreatePairingResponse>(
+                &valid_json,
+                "text/plain",
+                endpoint,
+                "pairing response"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pairing_json::<CreatePairingResponse>(
+                &valid_json,
+                "application/vnd.xsos+json",
+                endpoint,
+                "pairing response"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pairing_operations_accept_only_their_current_http_statuses() {
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let response = crate::transport::HttpResponse {
+                status,
+                headers: Default::default(),
+                body: b"reflected-pairing-secret".to_vec(),
+            };
+            let error =
+                ensure_pairing_status(response.status, &[StatusCode::OK], PairingHttpOperation::Poll)
+                    .unwrap_err();
+            assert!(!format!("{error:#}/{error:?}").contains("reflected-pairing-secret"));
+        }
+        assert!(
+            ensure_pairing_status(
+                StatusCode::OK,
+                &[StatusCode::OK, StatusCode::CREATED],
+                PairingHttpOperation::Create
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_pairing_status(
+                StatusCode::CREATED,
+                &[StatusCode::OK, StatusCode::CREATED],
+                PairingHttpOperation::Create
+            )
+            .is_ok()
+        );
+        for operation in [PairingHttpOperation::Poll, PairingHttpOperation::Activate] {
+            assert!(ensure_pairing_status(StatusCode::OK, &[StatusCode::OK], operation).is_ok());
+            assert!(
+                ensure_pairing_status(StatusCode::NO_CONTENT, &[StatusCode::OK], operation)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn pairing_protocol_error_retains_only_bounded_machine_version_details() {
+        let body = br#"{"code":"unsupported_client_protocol","message":"Client pairing protocol is unsupported","retryable":false,"details":{"received":2,"supported":[1]}}"#;
+        let error = ensure_pairing_response(
+            StatusCode::BAD_REQUEST,
+            "application/json",
+            body,
+            &[StatusCode::OK, StatusCode::CREATED],
+            PairingHttpOperation::Create,
+        )
+        .unwrap_err();
+        let http = error.downcast_ref::<PairingHttpError>().unwrap();
+        assert_eq!(http.code, Some("unsupported_client_protocol"));
+        assert_eq!(http.received, Some(2));
+        assert_eq!(http.supported, vec![1]);
+    }
+
+    #[test]
+    fn pairing_error_parser_accepts_only_known_codes_and_never_reflects_messages() {
+        let request_id = Uuid::new_v4();
+        let body = format!(
+            r#"{{"code":"pairing_transaction_not_found","message":"secret marker","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+        );
+        let missing = ensure_pairing_response(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            body.as_bytes(),
+            &[StatusCode::OK],
+            PairingHttpOperation::Poll,
+        )
+        .unwrap_err();
+        let http = missing.downcast_ref::<PairingHttpError>().unwrap();
+        assert!(http.transaction_missing());
+        assert!(http.transaction_ended_for(request_id));
+        assert!(!http.transaction_ended_for(Uuid::new_v4()));
+        assert!(!format!("{missing:#}").contains("secret marker"));
+
+        let expired_body = format!(
+            r#"{{"code":"pairing_transaction_expired","message":"expired","retryable":false,"details":{{"request_id":"{request_id}"}}}}"#
+        );
+        let expired = ensure_pairing_response(
+            StatusCode::GONE,
+            "application/json",
+            expired_body.as_bytes(),
+            &[StatusCode::OK],
+            PairingHttpOperation::Activate,
+        )
+        .unwrap_err();
+        let expired = expired.downcast_ref::<PairingHttpError>().unwrap();
+        assert!(expired.transaction_expired());
+        assert!(expired.transaction_ended_for(request_id));
+
+        let generic_not_found = ensure_pairing_response(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            br#"{"code":"not_found","message":"route missing","retryable":false}"#,
+            &[StatusCode::OK],
+            PairingHttpOperation::Poll,
+        )
+        .unwrap_err();
+        assert!(
+            !generic_not_found
+                .downcast_ref::<PairingHttpError>()
+                .unwrap()
+                .transaction_missing()
+        );
+
+        let unknown = ensure_pairing_response(
+            StatusCode::BAD_REQUEST,
+            "application/json",
+            br#"{"code":"attacker_controlled","message":"authorization-secret","retryable":false}"#,
+            &[StatusCode::OK],
+            PairingHttpOperation::Create,
+        )
+        .unwrap_err();
+        let http = unknown.downcast_ref::<PairingHttpError>().unwrap();
+        assert_eq!(http.code, None);
+        assert!(!format!("{unknown:#}").contains("authorization-secret"));
+    }
+
+    #[test]
+    fn malformed_json_source_and_endpoint_secrets_are_fully_redacted() {
+        let marker = "uci_SECRET_MARKER_MUST_NOT_LEAK";
+        let body = format!(r#"{{"status":"{marker}"}}"#);
+        let endpoint = format!(
+            "https://user:{marker}@xsos.example/api/v1/xsoc/pairing-requests?key={marker}#{marker}"
+        );
+        let error = parse_pairing_json::<PairingStatusResponse>(
+            body.as_bytes(),
+            "application/json",
+            &endpoint,
+            "pairing status response",
+        )
+        .expect_err("an unknown status must not be accepted");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Server origin https://xsos.example"));
+        assert!(rendered.contains("Content-Type: application/json"));
+        assert!(!rendered.contains(marker));
+        assert!(!rendered.contains("unknown variant"));
+        assert!(!rendered.contains("Caused by"));
+    }
+
+    #[test]
+    fn diagnostic_content_type_does_not_echo_parameters_or_unknown_values() {
+        let marker = "uci_SECRET_MARKER_MUST_NOT_LEAK";
+        assert_eq!(
+            pairing_content_type_for_diagnostics(&format!("text/html; reflected={marker}")),
+            "text/html"
+        );
+        assert_eq!(
+            pairing_content_type_for_diagnostics(&format!("application/{marker}")),
+            "<unexpected>"
+        );
+    }
+
+    #[test]
+    fn relative_activation_url_is_resolved_to_the_console_origin() {
+        assert_eq!(
+            resolve_activation_url(
+                "https://xsos.example/api/v1/xsoc/pairing-requests",
+                "/activate/00000000-0000-4000-8000-000000000001",
+            )
+            .unwrap(),
+            "https://xsos.example/activate/00000000-0000-4000-8000-000000000001"
+        );
+    }
+
+    #[test]
+    fn insecure_override_never_applies_to_remote_activation_pages() {
+        assert!(
+            resolve_activation_url(
+                "http://192.0.2.10/api/v1/xsoc/pairing-requests",
+                "/activate/00000000-0000-4000-8000-000000000001",
+            )
+            .is_err()
+        );
+        assert!(resolve_activation_url(
+            "http://127.0.0.1:8081/api/v1/xsoc/pairing-requests",
+            "/activate/00000000-0000-4000-8000-000000000001",
+        ).is_err());
+        assert!(resolve_activation_url(
+            "http://[::1]:8081/api/v1/xsoc/pairing-requests",
+            "/activate/00000000-0000-4000-8000-000000000001",
+        ).is_err());
+    }
+
+    #[test]
+    fn activation_endpoint_and_public_url_stay_bound_to_the_pairing_origin() {
+        let request_id = Uuid::new_v4();
+        assert_eq!(
+            activation_endpoint(
+                "https://xsos.example/prefix/api/v1/xsoc/pairing-requests"
+            )
+            .unwrap()
+            .as_str(),
+            "https://xsos.example/prefix/api/v1/xsoc/activate"
+        );
+        validate_activation_url_request(
+            &format!("https://xsos.example/activate/{request_id}"),
+            "https://xsos.example/prefix/api/v1/xsoc/pairing-requests",
+            request_id,
+        )
+        .unwrap();
+        assert!(
+            validate_activation_url_request(
+                &format!("https://attacker.example/activate/{request_id}"),
+                "https://xsos.example/api/v1/xsoc/pairing-requests",
+                request_id,
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn service_activation_commit_wins_the_post_response_race_idempotently() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-activation-race-{}",
+            Uuid::new_v4()
+        ));
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let instance_id = Uuid::new_v4();
+        let (server, request_seen, release_response, server_thread, ca_path) =
+            delayed_activation_server(instance_id);
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let config = ClientConfig {
+            endpoint: format!("{server}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{server}/api/v1/xsoc/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
+            state_dir: directory.clone(),
+            ..ClientConfig::default()
+        };
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: format!("{server}/activate/{request_id}"),
+                expires_at: Utc::now() + TimeDelta::minutes(10),
+                poll_interval: 1,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+        )
+        .unwrap();
+
+        let activation_config = config.clone();
+        let activation = tokio::spawn(async move {
+            activate_pending_with_code(
+                &activation_config,
+                generation,
+                request_id,
+                "uci_test_authorization_key",
+            )
+            .await
+        });
+        request_seen
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: format!("{server}/activate/{request_id}"),
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        release_response.send(()).unwrap();
+        assert_eq!(activation.await.unwrap().unwrap(), Some(instance_id));
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pending_state_round_trips_privately() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("xsos-pairing-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        let state = StoredPairingState::Pending {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            activation_url: "https://xsos.example/client/activate/test".into(),
+            expires_at: Utc::now(),
+            poll_interval: 5,
+            pairing_endpoint: config.pairing_endpoint(),
+            report_endpoint: config.endpoint.clone(),
+            bearer_secret: random_secret().unwrap(),
+            polling_secret: random_secret().unwrap(),
+        };
+        persist_state(&config, &state).unwrap();
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Pending { .. })
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(state_path(&config))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn creating_state_round_trips_the_same_secrets_for_idempotent_retry() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("xsos-creating-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        let bearer_secret = random_secret().unwrap();
+        let polling_secret = random_secret().unwrap();
+        let state = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            pairing_endpoint: config.pairing_endpoint(),
+            report_endpoint: config.endpoint.clone(),
+            host: HostIdentity {
+                id: Uuid::new_v4().to_string(),
+                os: "test".into(),
+                os_version: None,
+                kernel_version: None,
+                arch: "test".into(),
+                client_version: "test".into(),
+            },
+            bearer_secret: bearer_secret.clone(),
+            polling_secret: polling_secret.clone(),
+        };
+        let mut encoded = serde_json::to_value(&state).unwrap();
+        // The persistent format stays fixed when the application patch version changes.
+        assert_eq!(encoded["version"], "1.0.0");
+        encoded["version"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<StoredPairingState>(encoded).is_err());
+        persist_state(&config, &state).unwrap();
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Creating {
+                bearer_secret: saved_bearer,
+                polling_secret: saved_polling,
+                ..
+            }) if saved_bearer.expose() == bearer_secret.expose() && saved_polling.expose() == polling_secret.expose()
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn current_account_documents_are_read_and_other_formats_are_classified() {
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        let endpoint = "https://xsos.example/api/v1/xsoc/report";
+        let mut pairing = serde_json::json!({
+            "phase": "active",
+            "version": PERSISTED_STATE_FORMAT,
+            "generation": generation,
+            "request_id": request_id,
+            "activation_url": "https://xsos.example/activate",
+            "instance_id": instance_id,
+            "report_endpoint": endpoint,
+            "completed_at": Utc::now()
+        });
+        let _: StoredPairingState =
+            decode_pairing_document(&serde_json::to_vec(&pairing).unwrap(), "pairing-state")
+                .unwrap();
+        let binding = serde_json::json!({
+            "version": PERSISTED_STATE_FORMAT,
+            "generation": generation,
+            "request_id": request_id,
+            "instance_id": instance_id,
+            "report_endpoint": endpoint
+        });
+        let _: ActiveBinding =
+            decode_pairing_document(&serde_json::to_vec(&binding).unwrap(), "active-binding")
+                .unwrap();
+        let authorization = serde_json::json!({
+            "version": PERSISTED_STATE_FORMAT,
+            "status": "authorized",
+            "reason": "paired",
+            "changed_at": Utc::now()
+        });
+        let _: LocalAuthState = decode_pairing_document(
+            &serde_json::to_vec(&authorization).unwrap(),
+            "authorization-state",
+        )
+        .unwrap();
+
+        pairing["version"] = serde_json::json!("0.9.3");
+        let error = match decode_pairing_document::<StoredPairingState>(
+            &serde_json::to_vec(&pairing).unwrap(),
+            "pairing-state",
+        ) {
+            Ok(_) => panic!("unknown state format must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.chain().any(|cause| matches!(
+            cause.downcast_ref::<PairingStateCompatibilityError>(),
+            Some(PairingStateCompatibilityError::Unsupported {
+                artifact: "pairing-state",
+                detected,
+                supported: PERSISTED_STATE_FORMAT,
+            }) if detected == "0.9.3"
+        )));
+    }
+
+    #[test]
+    fn incompatible_account_archive_preserves_identity_and_spool() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("host-account-recovery-{}", Uuid::new_v4()));
+        let transaction = StateTransaction::begin(&root).unwrap();
+        transaction.write(StateFile::Identity, "host-identity").unwrap();
+        for file in [
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+            StateFile::Credential,
+        ] {
+            transaction.write(file, "legacy-account-data").unwrap();
+        }
+        drop(transaction);
+        let spool = root.join("spool");
+        crate::private_fs::ensure_private_directory(&spool).unwrap();
+        write_private_fixture(spool.join("evidence"), b"important-report-bytes").unwrap();
+
+        let archived = archive_incompatible_account_state(&test_config(root.clone())).unwrap();
+        assert_eq!(archived.len(), 4);
+        assert_eq!(fs::read(root.join("host-id")).unwrap(), b"host-identity");
+        assert_eq!(
+            fs::read(spool.join("evidence")).unwrap(),
+            b"important-report-bytes"
+        );
+        for file in [
+            StateFile::Pairing,
+            StateFile::Authorization,
+            StateFile::Binding,
+            StateFile::Credential,
+        ] {
+            assert!(!root.join(file.name()).exists());
+            assert!(archived.iter().any(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("{}.incompatible-", file.name()))
+            }));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_pending_request_cannot_be_silently_moved_to_another_server() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("xsos-pending-origin-{}", Uuid::new_v4()));
+        let mut config = test_config(directory.clone());
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let config_path = directory.join("config.json");
+        config.config_path = Some(config_path.clone());
+        let old_config = serde_json::to_vec(&config).unwrap();
+        write_private_fixture(&config_path, &old_config).unwrap();
+        write_private_fixture(directory.join("client-token"), "existing-long-lived-token").unwrap();
+        let state = StoredPairingState::Pending {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            activation_url: "https://old.example/client/activate/test".into(),
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 5,
+            pairing_endpoint: "https://old.example/api/v1/xsoc/pairing-requests".into(),
+            report_endpoint: "https://old.example/api/v1/xsoc/report".into(),
+            bearer_secret: random_secret().unwrap(),
+            polling_secret: random_secret().unwrap(),
+        };
+        persist_state(&config, &state).unwrap();
+        config.endpoint = "https://new.example/api/v1/xsoc/report".into();
+        let error = start_or_resume(&config, &test_host())
+            .await
+            .expect_err("a live request must stay bound to its original server");
+        assert!(
+            error
+                .to_string()
+                .contains("different xsos server")
+        );
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Pending { pairing_endpoint, .. })
+                if pairing_endpoint.starts_with("https://old.example/")
+        ));
+        assert_eq!(fs::read(&config_path).unwrap(), old_config);
+        assert_eq!(
+            fs::read_to_string(directory.join("client-token")).unwrap(),
+            "existing-long-lived-token"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn live_pending_request_for_same_server_is_reused() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-pending-resume-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: format!("https://xsos.example/activate/{request_id}"),
+                expires_at: Utc::now() + TimeDelta::minutes(10),
+                poll_interval: 5,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+        )
+        .unwrap();
+
+        let PairingStart::Waiting(session) = prepare_start(&config, &test_host()).unwrap() else {
+            panic!("live same-server pending request was not reused")
+        };
+        assert_eq!(session.generation, generation);
+        assert_eq!(session.request_id, request_id);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_create_cannot_be_silently_moved_to_another_server() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-creating-origin-{}",
+            Uuid::new_v4()
+        ));
+        let mut config = test_config(directory.clone());
+        let state = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            pairing_endpoint: "https://old.example/api/v1/xsoc/pairing-requests".into(),
+            report_endpoint: "https://old.example/api/v1/xsoc/report".into(),
+            host: test_host(),
+            bearer_secret: random_secret().unwrap(),
+            polling_secret: random_secret().unwrap(),
+        };
+        persist_state(&config, &state).unwrap();
+        config.endpoint = "https://new.example/api/v1/xsoc/report".into();
+        let error = start_or_resume(&config, &test_host())
+            .await
+            .expect_err("an interrupted create must stay bound to its original server");
+        assert!(
+            error
+                .to_string()
+                .contains("different xsos server")
+        );
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Creating { pairing_endpoint, .. })
+                if pairing_endpoint.starts_with("https://old.example/")
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn expired_pending_requires_a_remote_check_and_explicit_replacement_rotates_creating() {
+        for phase in ["creating", "expired_pending"] {
+            let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+                "xsos-same-origin-replace-{phase}-{}",
+                Uuid::new_v4()
+            ));
+            let mut config = test_config(directory.clone());
+            let old_generation = Uuid::new_v4();
+            let old_bearer = random_secret().unwrap();
+            let old_polling = random_secret().unwrap();
+            let state = if phase == "creating" {
+                StoredPairingState::Creating {
+                    version: PAIRING_STATE_VERSION,
+                    generation: old_generation,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    host: test_host(),
+                    bearer_secret: old_bearer.clone(),
+                    polling_secret: old_polling.clone(),
+                }
+            } else {
+                let request_id = Uuid::new_v4();
+                StoredPairingState::Pending {
+                    version: PAIRING_STATE_VERSION,
+                    generation: old_generation,
+                    request_id,
+                    activation_url: format!(
+                        "https://xsos.example/client/activate/{request_id}"
+                    ),
+                    expires_at: Utc::now() - TimeDelta::minutes(1),
+                    poll_interval: 5,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    bearer_secret: old_bearer.clone(),
+                    polling_secret: old_polling.clone(),
+                }
+            };
+            persist_state(&config, &state).unwrap();
+
+            match (phase, prepare_start(&config, &test_host()).unwrap()) {
+                ("creating", PairingStart::Create(resumed)) => match *resumed {
+                    StoredPairingState::Creating {
+                        generation,
+                        bearer_secret,
+                        polling_secret,
+                        ..
+                    } => {
+                        assert_eq!(generation, old_generation);
+                        assert_eq!(bearer_secret.expose(), old_bearer.expose());
+                        assert_eq!(polling_secret.expose(), old_polling.expose());
+                    }
+                    _ => panic!("creating state was not resumed"),
+                },
+                ("expired_pending", PairingStart::CheckExpired(session)) => {
+                    assert_eq!(session.generation, old_generation);
+                    assert!(matches!(
+                        load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+                        Some(StoredPairingState::Pending { generation, .. })
+                            if generation == old_generation
+                    ));
+                }
+                _ => panic!("ordinary pairing did not select the expected saved state"),
+            }
+
+            config.replace_pending_pairing = true;
+            let PairingStart::Create(replacement) = prepare_start(&config, &test_host()).unwrap()
+            else {
+                panic!("explicit replacement did not create a fresh generation");
+            };
+            let StoredPairingState::Creating {
+                generation: new_generation,
+                bearer_secret: new_bearer,
+                polling_secret: new_polling,
+                ..
+            } = *replacement
+            else {
+                panic!("explicit replacement did not persist a creating state");
+            };
+            assert_ne!(new_generation, old_generation);
+            assert_ne!(new_bearer.expose(), old_bearer.expose());
+            assert_ne!(new_polling.expose(), old_polling.expose());
+            assert!(matches!(
+                load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+                Some(StoredPairingState::Creating {
+                    generation,
+                    bearer_secret,
+                    polling_secret,
+                    ..
+                }) if generation == new_generation
+                    && bearer_secret.expose() == new_bearer.expose()
+                    && polling_secret.expose() == new_polling.expose()
+            ));
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn locally_expired_pending_recovers_a_server_activated_credential() {
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .expect("physical test temporary directory")
+            .join(format!("xsos-expired-active-{}", Uuid::new_v4()));
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        let bearer_secret = random_secret().unwrap();
+        let config = ClientConfig {
+            endpoint: format!("{origin}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{origin}/api/v1/xsoc/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
+            state_dir: directory.clone(),
+            ..ClientConfig::default()
+        };
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: format!("{origin}/activate/{request_id}"),
+                expires_at: Utc::now() - TimeDelta::seconds(1),
+                poll_interval: 1,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: bearer_secret.clone(),
+                polling_secret: random_secret().unwrap(),
+            },
+        )
+        .unwrap();
+        let server_thread = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with(&format!(
+                        "POST /api/v1/xsoc/pairing-requests/{request_id}/status "
+                    ))
+            );
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "active", "instance_id": instance_id
+            }))
+            .unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        let session = start_or_resume(&config, &test_host()).await.unwrap();
+        assert_eq!(session.generation, generation);
+        assert_eq!(session.request_id, request_id);
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Active {
+                generation: saved_generation,
+                request_id: saved_request_id,
+                instance_id: saved_instance,
+                ..
+            }) if saved_generation == generation
+                && saved_request_id == request_id
+                && saved_instance == instance_id
+        ));
+        assert_eq!(
+            fs::read_to_string(directory.join("client-token")).unwrap(),
+            bearer_secret.expose()
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("host-id")).unwrap(),
+            instance_id.to_string()
+        );
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_pending_is_preserved_when_status_cannot_be_confirmed() {
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .expect("physical test temporary directory")
+            .join(format!("xsos-expired-unknown-{}", Uuid::new_v4()));
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let request_id = Uuid::new_v4();
+        let config = ClientConfig {
+            endpoint: format!("{origin}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{origin}/api/v1/xsoc/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
+            state_dir: directory.clone(),
+            ..ClientConfig::default()
+        };
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation: Uuid::new_v4(),
+                request_id,
+                activation_url: format!("{origin}/activate/{request_id}"),
+                expires_at: Utc::now() - TimeDelta::seconds(1),
+                poll_interval: 1,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+        )
+        .unwrap();
+        let before = fs::read(directory.join("pairing-state.json")).unwrap();
+        let server_thread = thread::spawn(move || {
+            let mut stream = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with(&format!(
+                        "POST /api/v1/xsoc/pairing-requests/{request_id}/status "
+                    ))
+            );
+            write!(
+                stream,
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+
+        let error = start_or_resume(&config, &test_host()).await.unwrap_err();
+        assert!(error.to_string().contains("preserving it"));
+        assert_eq!(fs::read(directory.join("pairing-state.json")).unwrap(), before);
+        assert!(!directory.join("client-token").exists());
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_missing_expired_request_can_create_a_new_generation() {
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .expect("physical test temporary directory")
+            .join(format!("xsos-expired-confirmed-{}", Uuid::new_v4()));
+        let server = crate::test_https::TestHttpsServer::new();
+        let origin = server.origin.clone();
+        let ca_path = server.ca_path.clone();
+        let old_generation = Uuid::new_v4();
+        let old_request_id = Uuid::new_v4();
+        let new_request_id = Uuid::new_v4();
+        let config = ClientConfig {
+            endpoint: format!("{origin}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{origin}/api/v1/xsoc/pairing-requests")),
+            tls_ca_pem: Some(ca_path),
+            state_dir: directory.clone(),
+            ..ClientConfig::default()
+        };
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                activation_url: format!("{origin}/activate/{old_request_id}"),
+                expires_at: Utc::now() - TimeDelta::seconds(1),
+                poll_interval: 1,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+        )
+        .unwrap();
+        let server_thread = thread::spawn(move || {
+            let mut status = server.accept();
+            let mut request = [0_u8; 16 * 1024];
+            let read = status.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with(&format!(
+                        "POST /api/v1/xsoc/pairing-requests/{old_request_id}/status "
+                    ))
+            );
+            let body = format!(
+                r#"{{"code":"pairing_transaction_not_found","message":"pairing transaction no longer exists","retryable":false,"details":{{"request_id":"{old_request_id}"}}}}"#
+            );
+            write!(
+                status,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            status.write_all(body.as_bytes()).unwrap();
+            drop(status);
+
+            let mut create = server.accept();
+            let read = create.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with("POST /api/v1/xsoc/pairing-requests ")
+            );
+            let body = serde_json::to_vec(&serde_json::json!({
+                "request_id": new_request_id,
+                "activation_url": format!("/activate/{new_request_id}"),
+                "expires_in": 600,
+                "poll_interval": 1
+            }))
+            .unwrap();
+            write!(
+                create,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            create.write_all(&body).unwrap();
+        });
+
+        let session = start_or_resume(&config, &test_host()).await.unwrap();
+        assert_ne!(session.generation, old_generation);
+        assert_eq!(session.request_id, new_request_id);
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Pending {
+                generation,
+                request_id,
+                ..
+            }) if generation == session.generation && request_id == new_request_id
+        ));
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_replacement_can_replace_mismatched_incomplete_states() {
+        for old_state in ["creating", "pending"] {
+            let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+                "xsos-confirmed-replace-{old_state}-{}",
+                Uuid::new_v4()
+            ));
+            let (server, ca_path, server_thread) = one_shot_pairing_server();
+            let mut config = ClientConfig {
+                endpoint: format!("{server}/api/v1/xsoc/report"),
+                state_dir: directory.clone(),
+                replace_pending_pairing: true,
+                tls_ca_pem: Some(ca_path),
+                ..ClientConfig::default()
+            };
+            config.pairing_endpoint =
+                Some(format!("{server}/api/v1/xsoc/pairing-requests"));
+            let state = if old_state == "creating" {
+                StoredPairingState::Creating {
+                    version: PAIRING_STATE_VERSION,
+                    generation: Uuid::new_v4(),
+                    pairing_endpoint: "https://old.example/api/v1/xsoc/pairing-requests"
+                        .into(),
+                    report_endpoint: "https://old.example/api/v1/xsoc/report".into(),
+                    host: test_host(),
+                    bearer_secret: random_secret().unwrap(),
+                    polling_secret: random_secret().unwrap(),
+                }
+            } else {
+                StoredPairingState::Pending {
+                    version: PAIRING_STATE_VERSION,
+                    generation: Uuid::new_v4(),
+                    request_id: Uuid::new_v4(),
+                    activation_url: "https://old.example/client/activate/test".into(),
+                    expires_at: Utc::now() + TimeDelta::minutes(10),
+                    poll_interval: 5,
+                    pairing_endpoint: "https://old.example/api/v1/xsoc/pairing-requests"
+                        .into(),
+                    report_endpoint: "https://old.example/api/v1/xsoc/report".into(),
+                    bearer_secret: random_secret().unwrap(),
+                    polling_secret: random_secret().unwrap(),
+                }
+            };
+            persist_state(&config, &state).unwrap();
+            let session = start_or_resume(&config, &test_host())
+                .await
+                .expect("the explicitly confirmed new origin should replace incomplete state");
+            assert!(session.activation_url.starts_with(&server));
+            assert!(matches!(
+                load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+                Some(StoredPairingState::Pending { pairing_endpoint, .. })
+                    if pairing_endpoint == format!("{server}/api/v1/xsoc/pairing-requests")
+            ));
+            server_thread.join().unwrap();
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_old_activation_cannot_overwrite_a_replacement_generation() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("xsos-delayed-active-{}", Uuid::new_v4()));
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let old_instance_id = Uuid::new_v4();
+        let (old_server, request_seen, release_response, old_thread, old_ca_path) =
+            delayed_active_server(old_instance_id);
+        let old_config_path = directory.join("config.json");
+        let old_pairing_endpoint = format!("{old_server}/api/v1/xsoc/pairing-requests");
+        let old_report_endpoint = format!("{old_server}/api/v1/xsoc/report");
+        let old_config = ClientConfig {
+            endpoint: old_report_endpoint.clone(),
+            pairing_endpoint: Some(old_pairing_endpoint.clone()),
+            state_dir: directory.clone(),
+            config_path: Some(old_config_path.clone()),
+            tls_ca_pem: Some(old_ca_path),
+            ..ClientConfig::default()
+        };
+        let old_config_bytes = serde_json::to_vec(&old_config).unwrap();
+        write_private_fixture(&old_config_path, &old_config_bytes).unwrap();
+        write_private_fixture(directory.join("client-token"), "old-long-lived-token").unwrap();
+        let old_host_id = Uuid::new_v4();
+        write_private_fixture(directory.join("host-id"), old_host_id.to_string()).unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let old_state = StoredPairingState::Pending {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            request_id,
+            activation_url: format!("{old_server}/client/activate/{request_id}"),
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 1,
+            pairing_endpoint: old_pairing_endpoint.clone(),
+            report_endpoint: old_report_endpoint.clone(),
+            bearer_secret: random_secret().unwrap(),
+            polling_secret: random_secret().unwrap(),
+        };
+        persist_state(&old_config, &old_state).unwrap();
+        let polling_config = old_config.clone();
+        let stale_poll = tokio::spawn(async move { poll_existing(&polling_config).await });
+        request_seen
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+
+        let (new_server, new_ca_path, new_thread) = one_shot_pairing_server();
+        let new_config = ClientConfig {
+            endpoint: format!("{new_server}/api/v1/xsoc/report"),
+            pairing_endpoint: Some(format!("{new_server}/api/v1/xsoc/pairing-requests")),
+            state_dir: directory.clone(),
+            config_path: Some(old_config_path.clone()),
+            replace_pending_pairing: true,
+            tls_ca_pem: Some(new_ca_path),
+            ..ClientConfig::default()
+        };
+        let new_session = start_or_resume(&new_config, &test_host()).await.unwrap();
+        release_response.send(()).unwrap();
+        let stale_error = stale_poll
+            .await
+            .unwrap()
+            .expect_err("the delayed old Active response must lose its generation CAS");
+        assert!(stale_error.is::<PairingSuperseded>());
+        assert!(matches!(
+            load_state(&StateReader::open(&new_config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Pending {
+                generation: saved_generation,
+                pairing_endpoint,
+                ..
+            }) if saved_generation == new_session.generation
+                && pairing_endpoint.starts_with(&new_server)
+        ));
+        assert_eq!(
+            fs::read_to_string(directory.join("client-token")).unwrap(),
+            "old-long-lived-token"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("host-id")).unwrap(),
+            old_host_id.to_string()
+        );
+        assert_eq!(fs::read(&old_config_path).unwrap(), old_config_bytes);
+        old_thread.join().unwrap();
+        new_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn activating_journal_recovers_all_endpoint_bound_files() {
+        for preexisting in [false, true] {
+            let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+                "xsos-activating-recovery-{preexisting}-{}",
+                Uuid::new_v4()
+            ));
+            crate::private_fs::ensure_private_directory(&directory).unwrap();
+            // Model an administrator-owned system config that the service cannot replace. A
+            // directory is deterministic even when this test happens to run as root.
+            let config_path = directory.join("operator-config");
+            fs::create_dir(&config_path).unwrap();
+            let mut config = ClientConfig {
+                endpoint: "https://old.example/api/v1/xsoc/report".into(),
+                state_dir: directory.clone(),
+                config_path: Some(config_path.clone()),
+                ..ClientConfig::default()
+            };
+            if preexisting {
+                write_private_fixture(directory.join("client-token"), "old-token").unwrap();
+                write_private_fixture(directory.join("host-id"), Uuid::new_v4().to_string())
+                    .unwrap();
+            }
+            let generation = Uuid::new_v4();
+            let request_id = Uuid::new_v4();
+            let instance_id = Uuid::new_v4();
+            let new_token = random_secret().unwrap();
+            persist_state(
+                &config,
+                &StoredPairingState::Activating {
+                    version: PAIRING_STATE_VERSION,
+                    generation,
+                    request_id,
+                    activation_url: "https://new.example/client/activate/test".into(),
+                    expires_at: Utc::now() + TimeDelta::minutes(10),
+                    poll_interval: 1,
+                    instance_id,
+                    pairing_endpoint: "https://new.example/api/v1/xsoc/pairing-requests"
+                        .into(),
+                    report_endpoint: "https://new.example/api/v1/xsoc/report".into(),
+                    bearer_secret: new_token.clone(),
+                },
+            )
+            .unwrap();
+
+            let progress = poll_existing(&config).await.unwrap().unwrap();
+            assert!(matches!(
+                progress,
+                PairingProgress::Active {
+                    generation: saved_generation,
+                    request_id: saved_request,
+                    instance_id: saved_instance,
+                    ..
+                } if saved_generation == generation
+                    && saved_request == request_id
+                    && saved_instance == instance_id
+            ));
+            assert_eq!(
+                fs::read_to_string(directory.join("client-token")).unwrap(),
+                new_token.expose()
+            );
+            assert_eq!(
+                fs::read_to_string(directory.join("host-id")).unwrap(),
+                instance_id.to_string()
+            );
+            assert_eq!(
+                load_active_binding(&config, &StateReader::open(&config.state_dir).unwrap())
+                    .unwrap(),
+                Some(ActiveBinding {
+                    version: PAIRING_STATE_VERSION,
+                    generation,
+                    request_id,
+                    instance_id,
+                    report_endpoint: "https://new.example/api/v1/xsoc/report".into(),
+                })
+            );
+            let binding_before_status = fs::read(active_binding_path(&config)).unwrap();
+            let status = local_status(&config).unwrap();
+            assert_eq!(
+                status.active_report_endpoint.as_deref(),
+                Some("https://new.example/api/v1/xsoc/report")
+            );
+            assert_eq!(
+                fs::read(active_binding_path(&config)).unwrap(),
+                binding_before_status
+            );
+            assert!(config_path.is_dir());
+            assert!(matches!(
+                load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+                Some(StoredPairingState::Active {
+                    generation: saved_generation,
+                    ..
+                }) if saved_generation == generation
+            ));
+            let mut host = test_host();
+            activate_reporter_snapshot(
+                &mut config,
+                &mut host,
+                generation,
+                request_id,
+                instance_id,
+                "https://new.example/api/v1/xsoc/report",
+            )
+            .unwrap();
+            assert_eq!(
+                config.endpoint,
+                "https://new.example/api/v1/xsoc/report"
+            );
+            assert!(config_path.is_dir());
+            assert!(matches!(
+                poll_existing(&config).await.unwrap(),
+                Some(PairingProgress::Active {
+                    generation: saved_generation,
+                    ..
+                }) if saved_generation == generation
+            ));
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn active_state_without_binding_is_rejected() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-missing-binding-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        write_private_fixture(directory.join("client-token"), "current-token").unwrap();
+        write_private_fixture(directory.join("host-id"), instance_id.to_string()).unwrap();
+        persist_auth_state(
+            &config,
+            &LocalAuthState {
+                version: PAIRING_STATE_VERSION,
+                status: CredentialAuthorization::Authorized,
+                reason: "existing installation".into(),
+                changed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+
+        assert!(!active_binding_path(&config).exists());
+        assert!(
+            local_status(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        let error = reporter_for_current_active_state(&config)
+            .err()
+            .expect("missing binding must fail");
+        assert!(error.to_string().contains("missing"));
+        assert!(!active_binding_path(&config).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mismatched_active_binding_is_never_silently_replaced() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-binding-mismatch-{}",
+            Uuid::new_v4()
+        ));
+        let mut config = test_config(directory.clone());
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        write_private_fixture(directory.join("client-token"), "current-token").unwrap();
+        write_private_fixture(directory.join("host-id"), instance_id.to_string()).unwrap();
+        persist_auth_state(
+            &config,
+            &LocalAuthState {
+                version: PAIRING_STATE_VERSION,
+                status: CredentialAuthorization::Authorized,
+                reason: "test".into(),
+                changed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        let mismatched = ActiveBinding {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id,
+            instance_id,
+            report_endpoint: config.endpoint.clone(),
+        };
+        persist_active_binding_unlocked(&config, &lock_state(&config).unwrap(), &mismatched)
+            .unwrap();
+
+        let status_error =
+            local_status(&config).expect_err("status must reject a mismatched binding");
+        assert!(status_error.to_string().contains("does not match"));
+        let reporter_error = match reporter_for_current_active_state(&config) {
+            Ok(_) => panic!("a mismatched binding must fail closed"),
+            Err(error) => error,
+        };
+        assert!(reporter_error.to_string().contains("does not match"));
+        let config_error = commit_active_configuration(
+            &mut config,
+            generation,
+            request_id,
+            instance_id,
+            "https://xsos.example/api/v1/xsoc/report",
+        )
+        .expect_err("config synchronization must not replace a mismatched binding");
+        assert!(config_error.to_string().contains("does not match"));
+        assert_eq!(
+            load_active_binding(&config, &StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(mismatched)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn replacing_current_active_state_preserves_its_endpoint_binding() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-binding-before-create-{}",
+            Uuid::new_v4()
+        ));
+        let mut config = test_config(directory.clone());
+        let old_generation = Uuid::new_v4();
+        let old_request_id = Uuid::new_v4();
+        let old_instance_id = Uuid::new_v4();
+        let old_endpoint = config.endpoint.clone();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                activation_url: "https://xsos.example/client/activate/old".into(),
+                instance_id: old_instance_id,
+                report_endpoint: old_endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        persist_active_binding_unlocked(
+            &config,
+            &lock_state(&config).unwrap(),
+            &ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                instance_id: old_instance_id,
+                report_endpoint: old_endpoint.clone(),
+            },
+        )
+        .unwrap();
+        config.endpoint = "https://new.example/api/v1/xsoc/report".into();
+        config.pairing_endpoint =
+            Some("https://new.example/api/v1/xsoc/pairing-requests".into());
+
+        let PairingStart::Create(creating) = prepare_start(&config, &test_host()).unwrap() else {
+            panic!("an Active state must allow a new explicitly requested pairing generation");
+        };
+        assert!(matches!(
+            *creating,
+            StoredPairingState::Creating { ref report_endpoint, .. }
+                if report_endpoint == "https://new.example/api/v1/xsoc/report"
+        ));
+        assert_eq!(
+            load_active_binding(&config, &StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                instance_id: old_instance_id,
+                report_endpoint: old_endpoint,
+            })
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn run_keeps_the_current_credential_during_an_incomplete_pairing_attempt() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-current-reporter-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        write_private_fixture(directory.join("client-token"), "b".repeat(64)).unwrap();
+        let active_generation = Uuid::new_v4();
+        let active_request_id = Uuid::new_v4();
+        let active_instance_id = Uuid::new_v4();
+        write_private_fixture(directory.join("host-id"), active_instance_id.to_string()).unwrap();
+        persist_active_binding_unlocked(
+            &config,
+            &lock_state(&config).unwrap(),
+            &ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation: active_generation,
+                request_id: active_request_id,
+                instance_id: active_instance_id,
+                report_endpoint: config.endpoint.clone(),
+            },
+        )
+        .unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let states = [
+            StoredPairingState::Creating {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                host: test_host(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+            StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                expires_at: Utc::now() + TimeDelta::minutes(10),
+                poll_interval: 5,
+                pairing_endpoint: config.pairing_endpoint(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: random_secret().unwrap(),
+                polling_secret: random_secret().unwrap(),
+            },
+        ];
+        persist_state(&config, &states[1]).unwrap();
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_none(),
+            "a token and pairing journal without current authorized state must be rejected"
+        );
+        persist_auth_state(
+            &config,
+            &LocalAuthState {
+                version: PAIRING_STATE_VERSION,
+                status: CredentialAuthorization::Authorized,
+                reason: "current pairing completed".into(),
+                changed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        for state in states {
+            persist_state(&config, &state).unwrap();
+            assert!(existing_reporter_for_run(&config).unwrap().is_some());
+            assert!(has_current_authorized_identity(&config).unwrap());
+        }
+
+        persist_state(
+            &config,
+            &StoredPairingState::Denied {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_some(),
+            "a denied pairing attempt must not discard the still-authorized credential"
+        );
+        assert!(has_current_authorized_identity(&config).unwrap());
+
+        persist_state(
+            &config,
+            &StoredPairingState::Expired {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_some(),
+            "an expired pairing attempt must not discard the still-authorized credential"
+        );
+        assert!(has_current_authorized_identity(&config).unwrap());
+
+        fs::remove_file(directory.join(PAIRING_STATE_FILE)).unwrap();
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_none(),
+            "a raw token without current package-version pairing state must be rejected"
+        );
+
+        write_private_fixture(directory.join("client-token"), "active-token").unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                instance_id: Uuid::new_v4(),
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        assert!(existing_reporter_for_run(&config).unwrap().is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn local_inspection_does_not_create_a_lock_or_state_directory() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-read-only-status-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+
+        assert!(local_progress(&config).unwrap().is_none());
+        assert!(local_auth_state(&config).unwrap().is_none());
+        assert!(
+            !directory.exists(),
+            "read-only status inspection must not create the state directory"
+        );
+    }
+
+    #[test]
+    fn local_inspection_does_not_publish_an_activating_credential() {
+        let directory = std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!(
+            "xsos-read-only-activating-{}",
+            Uuid::new_v4()
+        ));
+        let config = test_config(directory.clone());
+        let state = StoredPairingState::Activating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            activation_url: "https://xsos.example/client/activate/test".into(),
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 5,
+            instance_id: Uuid::new_v4(),
+            pairing_endpoint: config.pairing_endpoint(),
+            report_endpoint: config.endpoint.clone(),
+            bearer_secret: random_secret().unwrap(),
+        };
+        persist_state(&config, &state).unwrap();
+        let state_path = state_path(&config);
+        let before = fs::read(&state_path).unwrap();
+
+        assert!(matches!(
+            local_progress(&config).unwrap(),
+            Some(PairingProgress::Creating { .. })
+        ));
+        assert_eq!(fs::read(&state_path).unwrap(), before);
+        assert!(!directory.join("client-token").exists());
+        assert!(!directory.join("host-id").exists());
+        assert!(!directory.join("auth-state.json").exists());
+        assert!(!active_binding_path(&config).exists());
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn activation_atomically_commits_server_identity_and_token() {
+        let directory =
+            std::env::temp_dir().canonicalize().expect("physical test temporary directory").join(format!("xsos-activation-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        crate::private_fs::ensure_private_directory(&directory).unwrap();
+        write_private_fixture(directory.join("host-id"), Uuid::new_v4().to_string()).unwrap();
+        write_private_fixture(directory.join("client-token"), "old-token").unwrap();
+        let instance_id = Uuid::new_v4();
+        let bearer_secret = random_secret().unwrap();
+        let polling_secret = random_secret().unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let pairing_endpoint = config.pairing_endpoint();
+        persist_state(
+            &config,
+            &StoredPairingState::Pending {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://xsos.example/client/activate/test".into(),
+                expires_at: Utc::now() + TimeDelta::minutes(10),
+                poll_interval: 5,
+                pairing_endpoint: pairing_endpoint.clone(),
+                report_endpoint: config.endpoint.clone(),
+                bearer_secret: bearer_secret.clone(),
+                polling_secret: polling_secret.clone(),
+            },
+        )
+        .unwrap();
+
+        persist_active_credentials(
+            &config,
+            load_state(&StateReader::open(&config.state_dir).unwrap())
+                .unwrap()
+                .unwrap(),
+            instance_id,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(directory.join("host-id")).unwrap(),
+            instance_id.to_string()
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("client-token")).unwrap(),
+            bearer_secret.expose()
+        );
+        let binding: ActiveBinding =
+            serde_json::from_slice(&fs::read(directory.join(ACTIVE_BINDING_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(
+            binding,
+            ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+            }
+        );
+        assert!(matches!(
+            load_state(&StateReader::open(&config.state_dir).unwrap()).unwrap(),
+            Some(StoredPairingState::Active {
+                instance_id: saved,
+                ..
+            }) if saved == instance_id
+        ));
+        assert_eq!(
+            local_auth_state(&config).unwrap().unwrap().status,
+            CredentialAuthorization::Authorized
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

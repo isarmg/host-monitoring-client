@@ -1,0 +1,18 @@
+{
+  "application_version": "1.0.0",
+  "endpoint": "https://xsos.example.com/api/v1/xsoc/report",
+  "pairing_endpoint": "https://xsos.example.com/api/v1/xsoc/pairing-requests",
+  "otlp_endpoint": null,
+  "otlp_token": null,
+  "interval_seconds": 10,
+  "slow_interval_seconds": 30,
+  "smart": { "enabled": true, "interval_seconds": 300, "executable": null },
+  "request_timeout_seconds": 10,
+  "jitter_percent": 10,
+  "state_dir": "/var/lib/xsoc",
+  "spool_max_bytes": 67108864,
+  "tls_identity_pem": null,
+  "tls_identity_pkcs12": null,
+  "tls_identity_password": null,
+  "tls_ca_pem": null
+}

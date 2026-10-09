@@ -1,0 +1,18 @@
+format = 1
+product_id = "xsos"
+source_roots = ["."]
+
+# Foundation generation and exact crate version; Cargo manifests pin the immutable source revision.
+[foundation]
+platform_generation = 1
+version = "1.0.0"
+
+[[components]]
+id = "client"
+profile = "desktop-client"
+capabilities = ["private-state", "bounded-spool", "https-delivery", "doctor", "authenticated-local-status", "desktop-cli-lifecycle", "protected-terminal-input"]
+
+[components.client_limits]
+max_record_bytes = 524288
+max_spool_bytes = 268435456
+max_spool_entries = 4096

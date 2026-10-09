@@ -1,0 +1,345 @@
+name: xsoc CI
+
+on:
+  workflow_call:
+  push:
+    branches: [main, 'codex/client-cli-*']
+    tags: ['v*']
+  pull_request:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  XSOC_BUILD_SHA: ${{ github.sha }}
+  RUSTFLAGS: -D warnings
+  RUSTUP_TOOLCHAIN: 1.99.0
+
+jobs:
+  xsoc:
+    name: Desktop xsoc (${{ matrix.os }})
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --component clippy
+      - name: Install explicit Apple Silicon desktop target
+        if: runner.os == 'macOS'
+        run: rustup target add --toolchain 1.99.0 aarch64-apple-darwin
+      - name: Verify release inputs
+        run: python scripts/collect-release.py --check
+      - name: Resolve Windows MSI version from Cargo metadata
+        if: runner.os == 'Windows'
+        id: xsoc_version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
+          $clientPackage = @($metadata.packages | Where-Object name -eq "xsoc")
+          if ($clientPackage.Count -ne 1) {
+              throw "cargo metadata did not contain exactly one xsoc package."
+          }
+          $version = $clientPackage[0].version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Windows MSI requires a strict MAJOR.MINOR.PATCH Cargo version; found '$version'."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Clippy
+        run: cargo clippy --locked -p xsoc --all-targets -- -D warnings
+      - name: Check Linux TLS fixture tools
+        if: runner.os == 'Linux'
+        run: |
+          openssl version
+          python3 -c 'import ssl; assert ssl.HAS_TLSv1_3; print(ssl.OPENSSL_VERSION)'
+      - name: Test
+        if: runner.os != 'Windows'
+        # Linux tests generate ephemeral keys and run a loopback Python TLS peer.
+        run: cargo test --locked -p xsoc
+      - name: Test native Windows permissions with a bounded deadline
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        # Show failures before a later network fixture can block suite completion.
+        run: cargo test --locked -p xsoc -- --test-threads=1 --nocapture
+      - name: Install pinned Node.js for the Server contract fixture
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+          check-latest: false
+      - name: Validate current pairing JSON against latest Server
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/isarmg/xsos.git "$RUNNER_TEMP/xsos"
+          npm ci --prefix "$RUNNER_TEMP/xsos/web"
+          (
+            cd "$RUNNER_TEMP/xsos"
+            web/node_modules/.bin/xcss-build-server \
+              --config foundation-web-build.json --mode development --web-only --no-install
+          )
+          cargo run --locked --quiet --target x86_64-unknown-linux-gnu --manifest-path "$RUNNER_TEMP/xsos/Cargo.toml" -p xsos --example validate-client-pairing < contracts/host-pairing-v1.json
+      - name: Check without optional features
+        run: cargo check --locked -p xsoc --no-default-features --all-targets
+      - name: Check OTLP only
+        run: cargo check --locked -p xsoc --no-default-features --features otlp --all-targets
+      - name: Check NVIDIA only
+        run: cargo check --locked -p xsoc --no-default-features --features nvidia --all-targets
+      - name: Validate Linux packaging lifecycle
+        if: runner.os == 'Linux'
+        run: sh packaging/linux/tests/test-lifecycle.sh
+      - name: Validate Linux package builder
+        if: runner.os == 'Linux'
+        run: sh packaging/linux/tests/test-build-packages.sh
+      - name: Build native Windows service and maintenance helper
+        if: runner.os == 'Windows'
+        run: >-
+          cargo build --locked --release -p xsoc --target x86_64-pc-windows-msvc
+          --bin xsoc --bin xsoc-maintenance
+      - name: Validate installer defaults with release HTTPS policy
+        if: runner.os == 'Windows'
+        run: cargo test --locked --release -p xsoc --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_https_policy
+      - name: Verify native Windows PE subsystems
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\tests\Test-PeSubsystems.ps1
+      - name: Validate WiX MSI authoring
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\tests\Test-WixAuthoring.ps1
+      - name: Fetch verified smartmontools payload
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\packaging\windows\fetch-smartmontools.ps1 -OutputDirectory "$env:RUNNER_TEMP\xsoc-smartmontools"
+      - name: Build WiX 4 MSI
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          XSOC_VERSION: ${{ steps.xsoc_version.outputs.version }}
+        run: >-
+          packaging\windows\wix\build-msi.cmd %XSOC_VERSION%
+          target\x86_64-pc-windows-msvc\release\xsoc.exe
+          target\x86_64-pc-windows-msvc\release\xsoc-maintenance.exe
+          "%RUNNER_TEMP%\xsoc-smartmontools\payload"
+      - name: Exercise real MSI service install and rollback lifecycle
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          XSOC_VERSION: ${{ steps.xsoc_version.outputs.version }}
+        run: |
+          $packages = @(Get-ChildItem packaging/windows/wix/bin/x64/Release -Filter '*.msi' -Recurse)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one native MSI' }
+          .\packaging\windows\tests\Test-MsiLifecycle.ps1 -ProductVersion $env:XSOC_VERSION -ArtifactDirectory $packages[0].DirectoryName -LogDirectory "$env:RUNNER_TEMP\xsoc-msi-logs"
+      - name: Validate macOS packaging lifecycle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sh packaging/macos/tests/validate-packaging.sh
+      - name: Build native Linux executable
+        if: runner.os == 'Linux'
+        run: cargo build --locked --release -p xsoc --bin xsoc
+      - name: Build native Apple Silicon executable
+        if: runner.os == 'macOS'
+        run: >-
+          cargo build --locked --release -p xsoc
+          --target aarch64-apple-darwin --bin xsoc
+      - name: Verify executable source identity
+        run: python scripts/verify-binary-identity.py
+      - name: Build Linux DEB and RPM
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          NFPM_BIN="$(go env GOPATH)/bin/nfpm" sh packaging/linux/build-packages.sh
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - name: Build unsigned native macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          OUTPUT_DIRECTORY="$PWD/dist/smartmontools-macos-arm64" sh packaging/macos/build-smartmontools.sh
+          SMART_PAYLOAD="$PWD/dist/smartmontools-macos-arm64" BINARY="$PWD/target/aarch64-apple-darwin/release/xsoc" VERSION="$VERSION" OUTPUT="$PWD/dist/xsoc-$VERSION-macos-arm64-unsigned.pkg" sh packaging/macos/build-pkg.sh
+      - name: Exercise native macOS install, preserved state, reinstall and purge
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash packaging/macos/tests/smoke-pkg.sh --allow-system-changes
+      - name: Collect source-bound native release assets
+        run: python scripts/collect-release.py
+      - name: Upload native installers and checksums
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xsoc-${{ matrix.os }}
+          path: release-dist/*
+          if-no-files-found: error
+
+  android-xsoc-library:
+    name: Mobile xsoc library (Android / ${{ matrix.target }})
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain and Android target
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup target add --toolchain 1.99.0 ${{ matrix.target }}
+      - name: Check host-driven library boundary
+        run: >-
+          cargo check --locked -p xsoc --target ${{ matrix.target }}
+          --lib --no-default-features
+
+  apple-mobile-xsoc-library:
+    name: Mobile xsoc library (${{ matrix.scope }} / ${{ matrix.target }})
+    permissions:
+      contents: read
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scope: iOS/iPadOS device
+            target: aarch64-apple-ios
+          - scope: iOS/iPadOS simulator
+            target: aarch64-apple-ios-sim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain and Apple target
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup target add --toolchain 1.99.0 ${{ matrix.target }}
+      - name: Check host-driven library boundary
+        run: >-
+          cargo check --locked -p xsoc --target ${{ matrix.target }}
+          --lib --no-default-features
+
+  otlp:
+    name: xsoc OTLP end-to-end
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      collector:
+        image: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+        ports:
+          - 4318:4318
+    env:
+      XSOC_TEST_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
+      XSOC_TEST_REQUIRE_OTLP: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Wait for Collector
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null -w '%{http_code}' \
+                 -X POST http://127.0.0.1:4318/v1/metrics \
+                 -H 'content-type: application/x-protobuf' --data-binary '' | grep -qE '^(200|400|415)$'; then
+              echo "collector is accepting connections"; exit 0
+            fi
+            sleep 2
+          done
+          echo "collector did not become ready" >&2; exit 1
+      - name: Validate OTLP protobuf encoding
+        run: >-
+          cargo test --locked -p xsoc --no-default-features --features otlp
+          --test otlp_encoding
+      - name: OTLP end-to-end
+        run: >-
+          cargo test --locked -p xsoc --no-default-features --features otlp
+          --test otlp_live
+
+  publish:
+    name: Publish GitHub Release
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs:
+      - xsoc
+      - android-xsoc-library
+      - apple-mobile-xsoc-library
+      - otlp
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download verified native packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: xsoc-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the complete source-bound release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          test -f "docs/releases/${version}.md"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifests = sorted(Path("dist").glob("xsoc-*-manifest.json"))
+          assert len(manifests) == 3, f"expected three platform manifests, found {manifests}"
+          platforms = set()
+          for path in manifests:
+              manifest = json.loads(path.read_text(encoding="utf-8"))
+              assert manifest["version"] == os.environ["GITHUB_REF_NAME"][1:]
+              assert manifest["commit"] == os.environ["GITHUB_SHA"]
+              platforms.add(manifest["os"])
+          assert platforms == {"Darwin", "Linux", "Windows"}, platforms
+          PY
+          test "$(find dist -maxdepth 1 -type f -name 'SHA256SUMS-*' | wc -l)" -eq 3
+          (
+            cd dist
+            for sums in SHA256SUMS-*; do sha256sum --check "$sums"; done
+          )
+      - name: Publish the immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Refusing to reuse or overwrite existing release $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --notes-file "docs/releases/${version}.md" \
+            --title "xsoc $GITHUB_REF_NAME"

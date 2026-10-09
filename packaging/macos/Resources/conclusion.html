@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style>body{font:13px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.45}h1{font-size:22px}code{font-family:ui-monospace,Menlo,monospace}</style>
+<h1>Installed — pairing is still required</h1>
+<p>The LaunchDaemon has started, but it will not send authorized telemetry until it is paired.</p>
+<p>Create a one-time activation key in xsos, then run in Terminal:</p>
+<p><code>sudo -u _xsoc /usr/local/bin/xsoc pair --config '/Library/Application Support/xsoc/config.json' --server https://xsos.example.com --output human</code></p>
+<p>Replace the example URL with your console origin. To inspect the service later, use
+<code>sudo launchctl print system/org.sarmg.xsoc</code>.</p>
+</html>

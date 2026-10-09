@@ -1,0 +1,51 @@
+<Project Sdk="WixToolset.Sdk/4.0.6">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <Platform>x64</Platform>
+    <Cultures>en-US</Cultures>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Callers must provide x64 executables for this exact package version. -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <ClientExe Condition="'$(ClientExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\xsoc.exe</ClientExe>
+    <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\x86_64-pc-windows-msvc\release\xsoc-maintenance.exe</MaintenanceExe>
+    <SmartmontoolsDir Condition="'$(SmartmontoolsDir)' == ''">$(MSBuildThisFileDirectory)obj\smartmontools\payload</SmartmontoolsDir>
+    <DefineConstants>ProductVersion=$(ProductVersion);ClientExe=$(ClientExe);MaintenanceExe=$(MaintenanceExe);LicenseRtf=$(MSBuildThisFileDirectory)..\License.rtf;SmartctlExe=$(SmartmontoolsDir)\bin\smartctl.exe;SmartDriveDb=$(SmartmontoolsDir)\bin\drivedb.h;SmartLicense=$(SmartmontoolsDir)\doc\COPYING.txt;SmartSource=$(SmartmontoolsDir)\..\smartmontools-7.5.tar.gz;SmartNotice=$(MSBuildThisFileDirectory)..\smartmontools-NOTICE.txt</DefineConstants>
+    <OutputName>xsoc-$(ProductVersion)-x64</OutputName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.6" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="4.0.6" />
+  </ItemGroup>
+
+  <Target Name="ValidateInputs" BeforeTargets="BeforeBuild">
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) != true"
+      Text="ProductVersion must contain exactly three numeric fields (for example 1.0.0)." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Major) &gt; 255"
+      Text="The ProductVersion major field must be between 0 and 255." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Minor) &gt; 255"
+      Text="The ProductVersion minor field must be between 0 and 255." />
+    <Error
+      Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProductVersion)', '^\d+\.\d+\.\d+$')) AND $([System.Version]::Parse('$(ProductVersion)').Build) &gt; 65535"
+      Text="The ProductVersion build field must be between 0 and 65535." />
+    <Error Condition="!Exists('$(ClientExe)')" Text="ClientExe does not exist: $(ClientExe)" />
+    <Error Condition="!Exists('$(MaintenanceExe)')" Text="MaintenanceExe does not exist: $(MaintenanceExe)" />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\bin\smartctl.exe')" Text="Bundled smartctl does not exist below SmartmontoolsDir: $(SmartmontoolsDir)" />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\bin\drivedb.h')" Text="Bundled smartmontools drive database is missing." />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\doc\COPYING.txt')" Text="Bundled smartmontools license is missing." />
+    <Error Condition="!Exists('$(SmartmontoolsDir)\..\smartmontools-7.5.tar.gz')" Text="Bundled smartmontools corresponding source is missing." />
+    <Exec
+      Command="&quot;$(ClientExe)&quot; --version"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="DetectedClientVersion" />
+    </Exec>
+    <Error
+      Condition="'$(DetectedClientVersion)' != 'xsoc $(ProductVersion)'"
+      Text="ProductVersion $(ProductVersion) does not match ClientExe version '$(DetectedClientVersion)'. Build all payloads from the current package before creating the MSI." />
+  </Target>
+</Project>
