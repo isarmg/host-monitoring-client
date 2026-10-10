@@ -9,7 +9,7 @@ use sysinfo::{
 };
 use uuid::Uuid;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", all(target_os = "windows", feature = "nvidia")))]
 use crate::model::CLIENT_REPORT_MAX_GPUS;
 use crate::model::{
     CLIENT_REPORT_MAX_CAPABILITIES, CLIENT_REPORT_MAX_CPU_CORES, CLIENT_REPORT_MAX_DISKS,
