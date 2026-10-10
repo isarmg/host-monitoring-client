@@ -32,6 +32,8 @@ jobs:
           persist-credentials: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.99.0 --profile minimal --component clippy
+      - name: Verify locked client support boundary
+        run: python scripts/check-xcsc-source.py
       - name: Install explicit Apple Silicon desktop target
         if: runner.os == 'macOS'
         run: rustup target add --toolchain 1.99.0 aarch64-apple-darwin
@@ -85,7 +87,7 @@ jobs:
           (
             cd "$RUNNER_TEMP/xsos"
             web/node_modules/.bin/xcss-build-server \
-              --config foundation-web-build.json --mode development --web-only --no-install
+              --config xcss-web-build.json --mode development --web-only --no-install
           )
           cargo run --locked --quiet --target x86_64-unknown-linux-gnu --manifest-path "$RUNNER_TEMP/xsos/Cargo.toml" -p xsos --example validate-client-pairing < contracts/host-pairing-v1.json
       - name: Check without optional features
@@ -204,6 +206,8 @@ jobs:
         run: |
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add --toolchain 1.99.0 ${{ matrix.target }}
+      - name: Verify locked client support boundary
+        run: python scripts/check-xcsc-source.py
       - name: Check host-driven library boundary
         run: >-
           cargo check --locked -p xsoc --target ${{ matrix.target }}
@@ -231,6 +235,8 @@ jobs:
         run: |
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add --toolchain 1.99.0 ${{ matrix.target }}
+      - name: Verify locked client support boundary
+        run: python scripts/check-xcsc-source.py
       - name: Check host-driven library boundary
         run: >-
           cargo check --locked -p xsoc --target ${{ matrix.target }}
@@ -256,6 +262,8 @@ jobs:
           persist-credentials: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Verify locked client support boundary
+        run: python scripts/check-xcsc-source.py
       - name: Wait for Collector
         run: |
           set -euo pipefail

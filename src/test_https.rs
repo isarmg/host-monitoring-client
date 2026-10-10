@@ -33,10 +33,10 @@ impl TestHttpsServer {
         // rejects paths that traverse symlinks, so keep the fixture's CA path
         // in its canonical, physical form.
         let ca_root = directory.path().canonicalize().unwrap().join("trust");
-        let private = xcsc_fs_safety::PrivateDirectory::create(&ca_root).unwrap();
-        xcsc_fs_safety::AtomicFile::create(
+        let private = xcsc::fs_safety::PrivateDirectory::create(&ca_root).unwrap();
+        xcsc::fs_safety::AtomicFile::create(
             &private,
-            &xcsc_fs_safety::EntryName::new("test-root.pem").unwrap(),
+            &xcsc::fs_safety::EntryName::new("test-root.pem").unwrap(),
             cert.pem().as_bytes(),
         )
         .unwrap();

@@ -3,7 +3,7 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 uninstaller="$script_dir/../uninstall.sh"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/xsos-macos-uninstall.XXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/xsoc-macos-uninstall.XXXXXX")"
 
 cleanup() {
   rm -rf "$test_root"

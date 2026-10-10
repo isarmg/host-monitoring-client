@@ -3,7 +3,7 @@
 #[cfg(unix)]
 use anyhow::Context;
 use std::path::Path;
-use xcsc_secret::SecretBytes;
+use xcsc::secret::SecretBytes;
 
 use crate::MAX_TLS_INPUT_BYTES;
 
@@ -16,7 +16,7 @@ pub(crate) enum TlsInput {
 pub(crate) fn read(path: &Path, kind: TlsInput) -> anyhow::Result<SecretBytes> {
     #[cfg(unix)]
     let bytes = {
-        use xcsc_fs_safety::{ConfigurationDirectory, EntryName, InputVisibility};
+        use xcsc::fs_safety::{ConfigurationDirectory, EntryName, InputVisibility};
         let path = std::path::absolute(path)?;
         let directory =
             ConfigurationDirectory::open(path.parent().context("TLS input has no parent")?)?;

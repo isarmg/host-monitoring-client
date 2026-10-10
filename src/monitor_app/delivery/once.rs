@@ -60,13 +60,13 @@ pub(super) async fn run_once(
     };
     if let Err(error) = send {
         if error.is_permanent() {
-            xcsc_runtime::DeliveryQueue::acknowledge(spool, &queued)?;
+            xcsc::runtime::DeliveryQueue::acknowledge(spool, &queued)?;
             return Err(anyhow::anyhow!(error)
                 .context("report was rejected permanently and was not spooled"));
         }
         return Err(anyhow::anyhow!(error).context("report was retained in the local spool"));
     }
-    xcsc_runtime::DeliveryQueue::acknowledge(spool, &queued)?;
+    xcsc::runtime::DeliveryQueue::acknowledge(spool, &queued)?;
     let Some(otlp) = finish_before_shutdown(shutdown, reporter.send_otlp(&queued.report)).await else {
         // xsos has acknowledged this report already. OTLP is optional, so there is nothing
         // left to retain when shutdown wins this final best-effort export.

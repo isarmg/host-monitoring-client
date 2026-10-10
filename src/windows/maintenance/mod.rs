@@ -881,12 +881,12 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 pub(crate) fn entry() {
     if windows_maintenance::run().is_err() {
-        let _ = xcss_log::LogRecord::server(
+        let _ = xcsc::log::LogRecord::client(
             "xsoc",
             "windows-maintenance",
             "xsoc.windows.maintenance_failed",
             "Windows maintenance failed.",
-            xcss_log::Level::Error,
+            xcsc::log::Level::Error,
         )
         .and_then(|record| record.with_error_code("windows_maintenance_failed"))
         .and_then(|record| record.emit());

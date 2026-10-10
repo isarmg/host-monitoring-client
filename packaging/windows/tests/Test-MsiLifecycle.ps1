@@ -374,6 +374,17 @@ function Assert-ArpVersion([string]$ExpectedVersion) {
     if ($entries.Count -ne 1 -or $entries[0].DisplayVersion -ne $ExpectedVersion) {
         throw "Apps & Features does not contain exactly xsoc $ExpectedVersion."
     }
+    if ($entries[0].Publisher -ne 'sarmg') {
+        throw 'Apps & Features does not identify the current sarmg publisher.'
+    }
+}
+
+function Assert-InstallLocation([string]$ExpectedRoot) {
+    $location = (Get-ItemProperty -LiteralPath 'HKLM:\Software\sarmg\xsoc' `
+        -Name InstallLocation -ErrorAction Stop).InstallLocation
+    if ([string]::IsNullOrWhiteSpace($location) -or $location -ine $ExpectedRoot) {
+        throw "The current Client registry namespace did not retain the selected installation path: $location"
+    }
 }
 
 function Get-InstalledPathEntryCount {
@@ -413,6 +424,10 @@ function Assert-ClientCompletelyAbsent {
     $entries = @(Get-XsocArpEntries)
     if ($entries.Count -ne 0) {
         throw "Apps & Features still contains xsoc."
+    }
+    if (Get-ItemProperty -LiteralPath 'HKLM:\Software\sarmg\xsoc' `
+        -Name InstallLocation -ErrorAction SilentlyContinue) {
+        throw 'The Client installation directory registration survived purge.'
     }
     Assert-MachinePathAbsent
 }
@@ -665,6 +680,7 @@ Invoke-Msi /x $currentMsi "purge-orphan-fixture" "PURGE=1"
 Assert-ClientCompletelyAbsent
 
 Invoke-Msi /i $currentMsi "fresh-install"
+Assert-InstallLocation $installedRoot
 Assert-MachinePathInstalled
 if ((Get-Service xsoc).Status -ne "Stopped") { throw "Fresh install must not start before pairing" }
 $bundledSmartctl = Join-Path $installedRoot 'smartmontools\bin\smartctl.exe'
@@ -1044,6 +1060,7 @@ foreach ($entry in $postUninstallLogs) {
 # Reinstall must preserve the canonical 1.0.0 ownership marker byte for byte.
 $preservedMarkerHash = (Get-FileHash -LiteralPath (Join-Path $stateRoot $stateMarker)).Hash
 Invoke-Msi /i $currentMsi "reinstall"
+Assert-InstallLocation $installedRoot
 if ((Get-FileHash -LiteralPath (Join-Path $stateRoot $stateMarker)).Hash -ne $preservedMarkerHash) {
     throw 'Reinstall changed the canonical persistent-state ownership marker'
 }
@@ -1054,6 +1071,7 @@ foreach ($entry in $preservedLogHashes.GetEnumerator()) {
 $expectedExeHash = (Get-FileHash (Join-Path $installedRoot 'xsoc.exe')).Hash
 Set-Content -LiteralPath (Join-Path $installedRoot 'xsoc.exe') -Value 'damaged payload'
 & (Join-Path $PSScriptRoot "../install-xsoc.ps1") -Msi $currentMsi -Quiet
+Assert-InstallLocation $installedRoot
 if ((Get-FileHash (Join-Path $installedRoot 'xsoc.exe')).Hash -ne $expectedExeHash) { throw 'Repair did not force replacement of damaged executable' }
 if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) { throw 'Repair changed device identity' }
 Assert-RuntimeLogsAcl $installedServiceSid
@@ -1079,6 +1097,7 @@ Assert-MaintenanceDiagnosticAbsent "After MSI lifecycle smoke test"
 # maintenance validation without weakening the fixed ProgramData state root.
 $customInstallRoot = Join-Path $env:ProgramFiles "xsoc-custom-$ProductVersion"
 Invoke-Msi /i $currentMsi "custom-path-install" "INSTALLFOLDER=`"$customInstallRoot`""
+Assert-InstallLocation $customInstallRoot
 if (-not (Test-Path -LiteralPath (Join-Path $customInstallRoot 'xsoc.exe') -PathType Leaf)) {
     throw 'Custom installation directory did not receive the Client executable.'
 }
@@ -1092,6 +1111,7 @@ if (-not $customImagePath.StartsWith("`"$customInstallRoot\xsoc.exe`"", [StringC
 Set-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Value $fixtureIdentity -NoNewline
 Invoke-Msi /x $currentMsi "custom-path-preserve-uninstall"
 Invoke-Msi /i $currentMsi "custom-path-retain-state" "INSTALLFOLDER=`"$customInstallRoot`""
+Assert-InstallLocation $customInstallRoot
 if ((Get-Content -LiteralPath (Join-Path $stateRoot 'host-id') -Raw) -ne $fixtureIdentity) {
     throw 'Reinstall with the fixed feature set changed device identity.'
 }

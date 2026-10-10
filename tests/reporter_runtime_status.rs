@@ -1,7 +1,7 @@
 #![cfg(all(feature = "desktop", unix))]
 
 // Compile the production application helper in a separate test executable:
-// Foundation's runtime-status snapshot is process-global, so publishing it in
+// xcsc's runtime-status snapshot is process-global, so publishing it in
 // the binary's parallel unit tests would mix observations from other reporters.
 mod delivery {
     use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
@@ -48,7 +48,7 @@ mod delivery {
         let _publisher = xsoc::runtime_status::publish(
             &config.state_dir,
             host.id.clone(),
-            xcsc_cli::revision(&serde_json::to_vec(&config).unwrap()),
+            xcsc::cli::revision(&serde_json::to_vec(&config).unwrap()),
         )
         .unwrap();
         let (_sender, shutdown) = shutdown_channel();
@@ -117,7 +117,7 @@ mod delivery {
             assert_eq!(current["service_epoch"], before["service_epoch"]);
             assert_eq!(
                 current["effective_revision"],
-                xcsc_cli::revision(&serde_json::to_vec(&config).unwrap())
+                xcsc::cli::revision(&serde_json::to_vec(&config).unwrap())
             );
             assert_eq!(current["last_collection_at"], collection_at);
             for field in [

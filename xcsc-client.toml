@@ -1,8 +1,8 @@
 format = 1
-product_id = "xsos"
+product_id = "xsoc"
 source_roots = ["."]
 
-# Foundation generation and exact crate version; Cargo manifests pin the immutable source revision.
+# xcsc generation and exact crate version; Cargo manifests pin the immutable source revision.
 [foundation]
 platform_generation = 1
 version = "1.0.0"

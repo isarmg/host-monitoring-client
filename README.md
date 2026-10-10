@@ -2,7 +2,7 @@
 
 `xsoc` `1.0.0` 是 xsos 的只读主机遥测客户端。它采集 CPU、内存、磁盘健康、网络、硬件传感器、Mac 显卡清单及 NVIDIA / AMD / Intel 的可用显卡指标，通过 HTTPS 主动上报到 Server，并在网络不可用时使用有界本地队列重试。
 
-`1.0.0` 使用 Foundation Client 1.0.0 的私有状态、CLI 和有界进程机制，以及 Foundation Server xcss-log 1.0.0 的后台服务持久日志；正常运行只接受当前配置与账户格式，其他格式保全后明确报错。Rust 固定 1.99.0，依赖由受控 Git 来源和根锁文件记录，发行按最终源码执行原生 CI。改动见[发行说明](docs/releases/1.0.0.md)。
+`1.0.0` 使用 xcsc 1.0.0 的私有状态、CLI 和有界进程机制，以及 xcsc 包内 xcsc::log 1.0.0 的后台服务持久日志；正常运行只接受当前配置与账户格式，其他格式保全后明确报错。Rust 固定 1.99.0，依赖由受控 Git 来源和根锁文件记录，发行按最终源码执行原生 CI。改动见[发行说明](docs/releases/1.0.0.md)。
 
 当前支持 Windows x64、Linux x64 和 macOS Apple Silicon。Client 不开放入站端口，也不提供托盘或本地 Web；安装包和系统服务能力以对应 Release 为准。
 
@@ -70,3 +70,5 @@ cargo +1.99.0 test --locked --all-features
 当前发布版本：**1.0.0**。参见 [1.0.0 发布说明](docs/releases/1.0.0.md)和[项目命名](docs/naming.md)。
 
 CLI 参数、输出与兼容性约定见 [CLI 兼容性](docs/cli-compatibility.md)。
+
+公共支撑的职责、单体依赖、平台边界与验证方法见[公共支撑说明](docs/common-support.md)。

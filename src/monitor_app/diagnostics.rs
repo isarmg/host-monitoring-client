@@ -235,7 +235,7 @@ fn inspect_spool(config: &ClientConfig) -> SpoolInspection {
                 started,
             )),
         },
-        Err(xcsc_runtime::Error::Filesystem(xcsc_fs_safety::Error::Io(error)))
+        Err(xcsc::runtime::Error::Filesystem(xcsc::fs_safety::Error::Io(error)))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
             SpoolInspection {
@@ -311,7 +311,7 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
         .then(|| active_endpoint.unwrap_or(config.endpoint.as_str()));
     let authorization = authorization_result.ok().flatten();
     let reauth_required = authorization.as_ref().is_some_and(|state| {
-        state.status == xcsc_runtime::CredentialAuthorization::ReauthorizationRequired
+        state.status == xcsc::runtime::CredentialAuthorization::ReauthorizationRequired
     });
     let pairing_pending = pairing.as_ref().is_some_and(|progress| {
         matches!(
@@ -360,7 +360,7 @@ pub(crate) fn local_status_snapshot(config: &ClientConfig) -> anyhow::Result<ser
         )
     };
     let next_action = if pairing_incompatible || authorization_incompatible {
-        "preserve the local queue, create a new Host authorization code, then run `xsoc pair recover --interactive`; incompatible account files will be archived"
+        "preserve the local queue, create a new xsoc authorization code, then run `xsoc pair recover --interactive`; incompatible account files will be archived"
     } else {
         match overall_state {
             "degraded" => "repair the failed local check, then run `xsoc doctor`",
@@ -588,26 +588,26 @@ mod tests {
         let absent = inspect_spool(&config);
         assert_eq!(absent.check.unwrap().status, "missing");
         assert!(!config.state_dir.exists());
-        xcsc_fs_safety::PrivateDirectory::create(&config.state_dir).unwrap();
+        xcsc::fs_safety::PrivateDirectory::create(&config.state_dir).unwrap();
         let path = config.state_dir.join("spool");
-        let spool = xcsc_runtime::Spool::open(
+        let spool = xcsc::runtime::Spool::open(
             &path,
-            xcsc_runtime::SpoolLimits {
+            xcsc::runtime::SpoolLimits {
                 max_record_bytes: xsoc::model::CLIENT_REPORT_MAX_BODY_BYTES,
-                max_entries: xcsc_runtime::MAX_SPOOL_ENTRIES,
+                max_entries: xcsc::runtime::MAX_SPOOL_ENTRIES,
                 max_bytes: config.spool_max_bytes,
             },
         )
         .unwrap();
         let id = spool
             .enqueue(
-                xcsc_runtime::ContractId::new("example.current").unwrap(),
+                xcsc::runtime::ContractId::new("example.current").unwrap(),
                 1,
-                xcsc_runtime::BoundedBytes::new(vec![1], 1).unwrap(),
+                xcsc::runtime::BoundedBytes::new(vec![1], 1).unwrap(),
             )
             .unwrap();
         spool
-            .quarantine(&id, xcsc_runtime::QuarantineReason::Corrupt)
+            .quarantine(&id, xcsc::runtime::QuarantineReason::Corrupt)
             .unwrap();
         let inspection = inspect_spool(&config);
         assert_eq!(inspection.pending_batches, 0);
@@ -620,13 +620,13 @@ mod tests {
         assert_eq!(spool.doctor().unwrap().quarantined_entries, 1);
         let id = spool
             .enqueue(
-                xcsc_runtime::ContractId::new("example.current").unwrap(),
+                xcsc::runtime::ContractId::new("example.current").unwrap(),
                 2,
-                xcsc_runtime::BoundedBytes::new(vec![2], 1).unwrap(),
+                xcsc::runtime::BoundedBytes::new(vec![2], 1).unwrap(),
             )
             .unwrap();
         spool
-            .quarantine(&id, xcsc_runtime::QuarantineReason::IdentityMismatch)
+            .quarantine(&id, xcsc::runtime::QuarantineReason::IdentityMismatch)
             .unwrap();
         let snapshot = || {
             let mut entries = fs::read_dir(&path)
@@ -673,9 +673,9 @@ mod tests {
             .canonicalize()
             .expect("physical test temporary directory")
             .join(format!("xsos-diagnostic-host-{}", Uuid::new_v4()));
-        let root = xcsc_fs_safety::PrivateDirectory::create(&directory).unwrap();
-        let name = xcsc_fs_safety::EntryName::new("host-id").unwrap();
-        xcsc_fs_safety::AtomicFile::replace(
+        let root = xcsc::fs_safety::PrivateDirectory::create(&directory).unwrap();
+        let name = xcsc::fs_safety::EntryName::new("host-id").unwrap();
+        xcsc::fs_safety::AtomicFile::replace(
             &root,
             &name.as_relative(),
             b"BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
@@ -708,10 +708,10 @@ mod tests {
             Some("identity_missing")
         );
         assert!(!directory.exists());
-        let root = xcsc_fs_safety::PrivateDirectory::create(&directory).unwrap();
+        let root = xcsc::fs_safety::PrivateDirectory::create(&directory).unwrap();
         let identity = Uuid::new_v4().to_string();
-        let name = xcsc_fs_safety::EntryName::new("host-id").unwrap();
-        xcsc_fs_safety::AtomicFile::replace(&root, &name.as_relative(), identity.as_bytes())
+        let name = xcsc::fs_safety::EntryName::new("host-id").unwrap();
+        xcsc::fs_safety::AtomicFile::replace(&root, &name.as_relative(), identity.as_bytes())
             .unwrap();
         assert_eq!(
             inspect_host_identity(&config).id.as_deref(),

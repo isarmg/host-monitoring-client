@@ -11,9 +11,9 @@ use flate2::{Compression, write::GzEncoder};
 use reqwest::{Certificate, Identity, Request, StatusCode, header};
 use url::Url;
 use uuid::Uuid;
-use xcsc_error::ErrorEnvelope;
-use xcsc_runtime::{ClientIdentity, CredentialSnapshot, CredentialStore};
-use xcsc_secret::{SecretBytes, SecretString};
+use xcsc::error::ErrorEnvelope;
+use xcsc::runtime::{ClientIdentity, CredentialSnapshot, CredentialStore};
+use xcsc::secret::{SecretBytes, SecretString};
 
 use xsos_protocol::{
     ClientReportAck, CredentialStatus, CredentialStatusResponse, HOST_PAIRING_PROTOCOL_VERSION,
@@ -730,7 +730,7 @@ pub enum SendError {
     Permanent(String),
     /// xsos 以 401 和稳定 `unauthorized` 机器码确认凭据不被接受。主机进入
     /// `reauth_required`，需要显式执行授权恢复配对；Client 不会自动生成或替换凭据，
-    /// 也不会在恢复过程中改换 Host UUID。代理/WAF 生成的未知 401 不得使用此变体。
+    /// 也不会在恢复过程中改换 xsoc UUID。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
     /// The Server rejected the wire version. Re-pairing cannot repair this; do not retry the report.
@@ -818,7 +818,7 @@ fn is_application_json(value: &str) -> bool {
 }
 
 /// Classify a xsos response using both HTTP status and the strict
-/// Foundation `ErrorEnvelope`. A proxy/WAF body, a non-contract `{message}` body or
+/// xcsc `ErrorEnvelope`. A proxy/WAF body, a non-contract `{message}` body or
 /// an envelope with unknown/missing fields is deliberately never allowed to
 /// trigger credential deletion or permanent spool removal.
 pub fn classify_xsos_response(
@@ -1244,7 +1244,7 @@ mod tests {
             let identity = ClientIdentity::new(
                 product,
                 &id,
-                xcsc_runtime::ContractId::new(contract).unwrap(),
+                xcsc::runtime::ContractId::new(contract).unwrap(),
             )
             .unwrap();
             let result = Reporter::with_client_and_credential(

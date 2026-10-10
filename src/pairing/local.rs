@@ -60,7 +60,7 @@ pub fn local_status(config: &ClientConfig) -> anyhow::Result<LocalPairingStatus>
             }
             None => {
                 return Err(corrupt_pairing_state("active-binding"))
-                    .context("active binding is missing; pair the Host again");
+                    .context("active binding is missing; pair xsoc again");
             }
         }
         return Ok(LocalPairingStatus {
@@ -205,7 +205,7 @@ pub fn existing_reporter_for_run(
         ) => match load_active_binding(config, store)? {
             Some(binding) => reporter_for_active_binding_unlocked(config, store, &binding),
             None => Err(corrupt_pairing_state("active-binding"))
-                .context("active binding is missing; pair the Host again"),
+                .context("active binding is missing; pair xsoc again"),
         },
         _ => Ok(None),
     }
@@ -347,7 +347,7 @@ pub fn mark_reauth_required_if_current(
     let transaction = lock_state(config)?;
     let result =
         HostCredentials::new(config, &transaction).invalidate(&revision, &reason.into())?;
-    Ok(result == xcsc_runtime::CredentialMutation::Applied)
+    Ok(result == xcsc::runtime::CredentialMutation::Applied)
 }
 
 pub fn local_auth_state(config: &ClientConfig) -> anyhow::Result<Option<LocalAuthState>> {

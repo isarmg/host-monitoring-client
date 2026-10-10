@@ -180,7 +180,7 @@ fn write_private_fixture(
     let path = path.as_ref();
     #[cfg(windows)]
     {
-        use xcsc_fs_safety::{AtomicFile, EntryName};
+        use xcsc::fs_safety::{AtomicFile, EntryName};
         let directory =
             xsoc::maintenance::open_runtime_directory(path.parent().expect("fixture parent"))
                 .map_err(std::io::Error::other)?;

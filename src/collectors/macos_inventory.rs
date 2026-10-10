@@ -94,7 +94,7 @@ fn collect() -> Inventory {
             .build()
             .map_err(|_| CapabilityErrorKind::Transient)?;
         runtime.block_on(async {
-            use xcsc_runtime::process::{ProcessCaptureError, ProcessLimits, capture_bounded};
+            use xcsc::runtime::process::{ProcessCaptureError, ProcessLimits, capture_bounded};
             let mut command = tokio::process::Command::new("/usr/sbin/system_profiler");
             command.args(["-json", "-detailLevel", "mini", "SPDisplaysDataType"]);
             let output = capture_bounded(

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use xcsc_cli::*;
+use xcsc::cli::*;
 use xsoc::{
     ClientCommand, ClientConfig,
     maintenance::Guard,
@@ -16,64 +16,62 @@ const MAX_SERVER_ORIGIN_BYTES: usize = 2_048;
 const MAX_AUTHORIZATION_CODE_BYTES: usize = 256;
 const MAX_CONFIRMATION_BYTES: usize = 16;
 
-struct HostErrorCatalog;
+struct XsocErrorCatalog;
 
-impl ProductErrorCatalog for HostErrorCatalog {
+impl ProductErrorCatalog for XsocErrorCatalog {
     fn message(&self, code: &'static str) -> Option<&'static str> {
         match code {
-            "awaiting_pairing" => Some("The Host client has not completed Server pairing."),
+            "awaiting_pairing" => Some("xsoc has not completed xsos pairing."),
             "active_setup_input_requires_pair_replace"
             | "binding_already_active_use_pair_replace" => Some(
-                "This Host is already bound; replacing it requires the explicit pair replace workflow.",
+                "This xsoc instance is already bound; replacing it requires the explicit pair replace workflow.",
             ),
             "pairing_authorization_rejected" | "pairing_rejected" => {
-                Some("The Host Server rejected the instance authorization code.")
+                Some("xsos rejected the instance authorization code.")
             }
-            "invalid_server_origin" => {
-                Some("The Host Server address must be a valid HTTPS origin.")
-            }
+            "invalid_server_origin" => Some("xsos address must be a valid HTTPS origin."),
             "no_pairing_transaction" | "pairing_transaction_missing" => {
-                Some("There is no saved Host pairing transaction to resume.")
+                Some("There is no saved xsoc pairing transaction to resume.")
             }
             "pairing_expired" => Some(
-                "The saved Host pairing transaction expired or no longer exists on the Server.",
+                "The saved xsoc pairing transaction expired or no longer exists on the Server.",
             ),
             "pairing_endpoint_not_found" => {
-                Some("The configured Host Server does not expose the required pairing endpoint.")
+                Some("The configured xsos does not expose the required pairing endpoint.")
             }
             "pairing_http_method_rejected" => {
-                Some("The Host Server or reverse proxy rejected the pairing HTTP method.")
+                Some("xsos or reverse proxy rejected the pairing HTTP method.")
             }
             "pairing_server_upgrade_required" => {
-                Some("The Host Server requires a different current pairing contract.")
+                Some("xsos requires a different current pairing contract.")
             }
-            "pairing_request_rejected" => Some("The Host Server rejected the pairing request."),
+            "pairing_request_rejected" => Some("xsos rejected the pairing request."),
             "pairing_unexpected_http_status" => {
-                Some("The Host Server returned an unexpected pairing HTTP status.")
+                Some("xsos returned an unexpected pairing HTTP status.")
             }
             "pairing_protocol_unsupported" => {
-                Some("The Host Client and Server do not support the same current protocol.")
+                Some("xsoc and xsos do not support the same current protocol.")
             }
-            "pairing_server_unavailable" | "server_unavailable_or_untrusted" => Some(
-                "The Host Server could not be reached or its TLS identity could not be trusted.",
-            ),
+            "pairing_server_unavailable" | "server_unavailable_or_untrusted" => {
+                Some("xsos could not be reached or its TLS identity could not be trusted.")
+            }
             "pairing_postcondition_unconfirmed" | "pairing_result_unconfirmed" => {
-                Some("Host pairing returned without a durable active binding.")
+                Some("xsoc pairing returned without a durable active binding.")
             }
             "server_replacement_requires_pair_replace" | "server_change_requires_pair_replace" => {
-                Some("Changing the Host Server requires the explicit pair replace workflow.")
+                Some("Changing the xsos requires the explicit pair replace workflow.")
             }
             "pairing_state_incompatible" => Some(
-                "The stored Host account or pairing data is incompatible or malformed; it was preserved.",
+                "The stored xsoc account or pairing data is incompatible or malformed; it was preserved.",
             ),
             "local_binding_incomplete" => {
-                Some("The local Host identity is present, but its account binding is incomplete.")
+                Some("The local xsoc identity is present, but its account binding is incomplete.")
             }
             "important_state_incompatible" => Some(
-                "Important saved Host collection data is incompatible or unreadable and was preserved.",
+                "Important saved xsoc collection data is incompatible or unreadable and was preserved.",
             ),
             "connection_unconfirmed" => Some(
-                "The running Host service did not produce a new verified Server acknowledgement before the Setup deadline.",
+                "The running xsoc service did not produce a new verified Server acknowledgement before the Setup deadline.",
             ),
             _ => None,
         }
@@ -83,34 +81,34 @@ impl ProductErrorCatalog for HostErrorCatalog {
         match error.code {
             "awaiting_pairing" | "no_pairing_transaction" | "pairing_transaction_missing" => {
                 Some(format!(
-                    "Run `{product} setup --interactive` to create a Host pairing transaction."
+                    "Run `{product} setup --interactive` to create an xsoc pairing transaction."
                 ))
             }
             "pairing_authorization_rejected" | "pairing_rejected" => Some(format!(
-                "Create or rotate this Host instance authorization code, then run `{product} setup --interactive`."
+                "Create or rotate this xsoc instance authorization code, then run `{product} setup --interactive`."
             )),
             "invalid_server_origin"
             | "pairing_postcondition_unconfirmed"
             | "pairing_result_unconfirmed" => Some(format!(
-                "Check the Host Server address and instance code, then run `{product} setup --interactive`."
+                "Check the xsos address and instance code, then run `{product} setup --interactive`."
             )),
             "pairing_server_unavailable" | "server_unavailable_or_untrusted" => Some(format!(
-                "Check the Host Server URL, TLS certificate and network, then retry `{product} setup`."
+                "Check the xsos URL, TLS certificate and network, then retry `{product} setup`."
             )),
             "pairing_expired" => Some(format!(
-                "Run `{product} setup --interactive`; a fresh Host transaction will be created."
+                "Run `{product} setup --interactive`; a fresh xsoc transaction will be created."
             )),
             "pairing_endpoint_not_found" | "pairing_http_method_rejected" => Some(
-                "Check the Host Server address and reverse-proxy routing, then retry Setup.".into(),
+                "Check the xsos address and reverse-proxy routing, then retry Setup.".into(),
             ),
             "pairing_server_upgrade_required" | "pairing_protocol_unsupported" => {
-                Some("Upgrade the older Host Client or Server to the same current contract.".into())
+                Some("Upgrade the older xsoc or xsos to the same current contract.".into())
             }
             "pairing_state_incompatible" => Some(format!(
-                "Create a new Host authorization code, then run `{product} pair recover --interactive`; incompatible account files will be archived while the Host identity and queue are preserved."
+                "Create a new xsoc authorization code, then run `{product} pair recover --interactive`; incompatible account files will be archived while xsoc identity and queue are preserved."
             )),
             "local_binding_incomplete" => Some(format!(
-                "Create a new Host authorization code, then run `{product} setup`; Setup will recover the existing Host identity and preserve its telemetry queue."
+                "Create a new xsoc authorization code, then run `{product} setup`; Setup will recover the existing xsoc identity and preserve its telemetry queue."
             )),
             "important_state_incompatible" => Some(
                 "Do not delete or replace the reported spool; restore it with a compatible Client or archive it for operator review."
@@ -125,7 +123,7 @@ impl ProductErrorCatalog for HostErrorCatalog {
 }
 
 fn emit_host(command: &str, format: &str, result: &Result<Value>) -> u8 {
-    emit("xsoc", command, format, result, &HostErrorCatalog)
+    emit("xsoc", command, format, result, &XsocErrorCatalog)
 }
 
 fn service() -> Service {
@@ -191,7 +189,7 @@ fn queue(c: &ClientConfig) -> Result<Value> {
         Ok(h) => Ok(
             json!({"pending_batches":h.spool_entries,"bytes":h.spool_bytes,"quarantined":h.quarantined_entries,"identity_mismatch":h.identity_mismatch_entries,"healthy":h.healthy}),
         ),
-        Err(xcsc_runtime::Error::Filesystem(xcsc_fs_safety::Error::Io(e)))
+        Err(xcsc::runtime::Error::Filesystem(xcsc::fs_safety::Error::Io(e)))
             if e.kind() == std::io::ErrorKind::NotFound =>
         {
             Ok(json!({"pending_batches":0,"bytes":0,"quarantined":0,"healthy":true}))
@@ -1033,7 +1031,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     let reauthorization_required = pairing::local_auth_state(&c)
         .map_err(|error| pairing_state_error(error).at_step("configuration"))?
         .is_some_and(|state| {
-            state.status == xcsc_runtime::CredentialAuthorization::ReauthorizationRequired
+            state.status == xcsc::runtime::CredentialAuthorization::ReauthorizationRequired
         });
     if existing.active_report_endpoint.is_some() && interactive {
         eprintln!("[setup] pairing: local_binding_found");
@@ -1116,7 +1114,7 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
                 eprintln!("[setup] configured_server: {configured}");
                 eprintln!("[setup] requested_server: {requested}");
                 recover_changed_server = ask_yes_no(
-                    "Server changed. Recover the existing Host identity on the requested Server?",
+                    "Server changed. Recover the existing xsoc identity on the requested Server?",
                     false,
                     deadline.expires_at,
                 )
@@ -1376,7 +1374,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
     // the remaining words of a malformed invocation.
     if args.has("--help") {
         println!(
-            "xsoc: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace|recover]; queue status|inspect|drain|archive; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup is interactive by default; direct pair commands use --interactive. Protected automation uses --input-stdin JSON containing server and authorization_code. `pair recover` preserves the current Host UUID and queued reports. `queue archive --reason server-state-lost` atomically retires an old binding queue. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
+            "xsoc: setup; config init|show|edit|validate|diff|apply; pair [status|resume|replace|recover]; queue status|inspect|drain|archive; status; doctor; service status|start|stop|restart|enable|disable; run; once; probe; version\nGlobal: --config ABSOLUTE_PATH --format human|json|ndjson --non-interactive --timeout 60s --no-color\nsetup is interactive by default; direct pair commands use --interactive. Protected automation uses --input-stdin JSON containing server and authorization_code. `pair recover` preserves the current xsoc UUID and queued reports. `queue archive --reason server-state-lost` atomically retires an old binding queue. Never pass secrets as arguments.\nconfig edit uses VISUAL or EDITOR and commits through the same revision check as config apply. Stop the service before writes."
         );
         return 0;
     }
@@ -1422,7 +1420,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
             );
         }
         #[cfg(windows)]
-        return follow_log_source("xsoc", args, &HostErrorCatalog, |args| {
+        return follow_log_source("xsoc", args, &XsocErrorCatalog, |args| {
             let path = args
                 .get("--config")
                 .map(PathBuf::from)
@@ -1432,10 +1430,10 @@ pub fn entry(raw: Vec<String>) -> u8 {
         });
         #[cfg(not(windows))]
         if let Err(error) = args.validate_options(&["--tail", "--since", "--follow"]) {
-            return xcsc_cli::emit("xsoc", "logs", &args.format, &Err(error), &HostErrorCatalog);
+            return xcsc::cli::emit("xsoc", "logs", &args.format, &Err(error), &XsocErrorCatalog);
         }
         #[cfg(not(windows))]
-        return follow_logs("xsoc", &service(), args, &HostErrorCatalog);
+        return follow_logs("xsoc", &service(), args, &XsocErrorCatalog);
     }
     if args.has("--watch") {
         if args.words != ["status"] || args.format != "ndjson" {
@@ -1719,7 +1717,7 @@ fn execute(args: &Args) -> Result<Value> {
                 .map_err(storage_error)?
                 .block_on(async {
                     tokio::time::timeout(args.timeout, async {
-                        use xcsc_runtime::DeliveryQueue;
+                        use xcsc::runtime::DeliveryQueue;
                         while let Some(p) = spool.oldest().map_err(storage_error)? {
                             reporter
                                 .send_queued_xsos(&p.report, &p.body)
@@ -1846,13 +1844,13 @@ fn runtime_error(error: anyhow::Error) -> Failure {
     }
     if error.chain().any(|e| {
         matches!(
-            e.downcast_ref::<xcsc_runtime::Error>(),
-            Some(xcsc_runtime::Error::AlreadyRunning)
+            e.downcast_ref::<xcsc::runtime::Error>(),
+            Some(xcsc::runtime::Error::AlreadyRunning)
         )
     }) || error.chain().any(|e| {
         matches!(
-            e.downcast_ref::<xcsc_fs_safety::Error>(),
-            Some(xcsc_fs_safety::Error::AlreadyLocked(_))
+            e.downcast_ref::<xcsc::fs_safety::Error>(),
+            Some(xcsc::fs_safety::Error::AlreadyLocked(_))
         )
     }) {
         fail(5, "busy")
@@ -1863,27 +1861,29 @@ fn runtime_error(error: anyhow::Error) -> Failure {
 
 #[cfg(windows)]
 fn windows_runtime_logs(
-    args: &xcsc_cli::Args,
+    args: &xcsc::cli::Args,
     path: &std::path::Path,
-) -> xcsc_cli::Result<serde_json::Value> {
-    use xcsc_cli::{fail, storage_error};
-    use xcsc_fs_safety::{EntryName, Error};
+) -> xcsc::cli::Result<serde_json::Value> {
+    use xcsc::cli::{fail, storage_error};
+    use xcsc::fs_safety::{EntryName, Error};
     let service_sid =
-        xcsc_fs_safety::service_sid(xsoc::service::WINDOWS_SERVICE_NAME).map_err(storage_error)?;
-    let directory = xcsc_fs_safety::PrivateDirectory::open_with_windows_access(
+        xcsc::fs_safety::service_sid(xsoc::service::WINDOWS_SERVICE_NAME).map_err(storage_error)?;
+    let directory = xcsc::fs_safety::PrivateDirectory::open_with_windows_access(
         path.join("logs"),
-        xcsc_fs_safety::WindowsPrivateAccess::for_service(&service_sid, "S-1-5-19")
+        xcsc::fs_safety::WindowsPrivateAccess::for_service(&service_sid, "S-1-5-19")
             .map_err(storage_error)?,
     )
     .map_err(storage_error)?;
     let level = args
         .get("--level")
         .map(|value| {
-            serde_json::from_value::<xcss_log::Level>(serde_json::json!(value.to_ascii_uppercase()))
+            serde_json::from_value::<xcsc::log::Level>(serde_json::json!(
+                value.to_ascii_uppercase()
+            ))
         })
         .transpose()
         .map_err(|_| fail(2, "invalid_log_level"))?;
-    xcsc_cli::query_rotating_logs(
+    xcsc::cli::query_rotating_logs(
         args,
         "xsoc",
         |name| match directory.read_private_bounded(
@@ -1895,9 +1895,9 @@ fn windows_runtime_logs(
             Err(_) => Err(fail(8, "unsafe_or_unreadable_runtime_log")),
         },
         |bytes| {
-            xcss_log::query(
+            xcsc::log::query(
                 std::io::Cursor::new(bytes),
-                xcss_log::LogFilter {
+                xcsc::log::LogFilter {
                     since: args.get("--since"),
                     instance_id: args.get("--instance-id"),
                     event: args.get("--event"),
@@ -1906,7 +1906,7 @@ fn windows_runtime_logs(
                     minimum_level: level,
                     ..Default::default()
                 },
-                xcss_log::QueryLimits {
+                xcsc::log::QueryLimits {
                     max_input_bytes: 1024 * 1024,
                     max_records: 16384,
                 },
@@ -1948,16 +1948,16 @@ mod setup_tests {
     }
 
     #[test]
-    fn host_owns_pairing_error_presentation() {
+    fn xsoc_owns_pairing_error_presentation() {
         assert_eq!(
-            HostErrorCatalog.message("pairing_endpoint_not_found"),
-            Some("The configured Host Server does not expose the required pairing endpoint.")
+            XsocErrorCatalog.message("pairing_endpoint_not_found"),
+            Some("The configured xsos does not expose the required pairing endpoint.")
         );
         let failure = fail(7, "pairing_authorization_rejected");
         assert!(
-            HostErrorCatalog
+            XsocErrorCatalog
                 .next_step("xsoc", &failure)
-                .is_some_and(|step| step.contains("Host instance authorization code"))
+                .is_some_and(|step| step.contains("xsoc instance authorization code"))
         );
     }
 
@@ -2030,7 +2030,7 @@ mod setup_tests {
                 .contains("preserved=true")
         );
         assert!(
-            HostErrorCatalog
+            XsocErrorCatalog
                 .next_step("xsoc", &account)
                 .unwrap()
                 .contains("pair recover --interactive")

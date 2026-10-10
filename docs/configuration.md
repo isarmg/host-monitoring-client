@@ -51,7 +51,7 @@ sudo xsoc service stop
 Windows 请在管理员 PowerShell 中去掉 `sudo`；若 PATH 尚未刷新，使用：
 
 ```powershell
-$InstallRoot = (Get-ItemProperty 'HKLM:\Software\xsos\xsoc').InstallLocation
+$InstallRoot = (Get-ItemProperty 'HKLM:\Software\sarmg\xsoc').InstallLocation
 $Client = Join-Path $InstallRoot 'xsoc.exe'
 & $Client version --format json
 & $Client service stop
@@ -232,4 +232,4 @@ sudo xsoc logs --tail 100
 
 ## 运行日志
 
-常驻 Client 使用 Foundation 同一 `xcss-log` 实现输出 UTC JSON 行到 stderr；由 systemd、launchd 或 Windows 服务宿主管理收集。Host 投递、授权和队列事件带 canonical Host `instance_id`，报告使用 `request_id` 关联，失败使用稳定 `error_code`。普通日志不输出任意 error chain、配置或授权 URL。日志字段/输出预算或写入失败会被记录并在下一轮采样检查时以 `LOGGING_UNAVAILABLE` 退出；服务管理器可据此定位日志目标故障。
+常驻 Client 使用 xcsc 内部 `xcsc::log` 实现输出 UTC JSON 行到 stderr；由 systemd、launchd 或 Windows 服务宿主管理收集。Host 投递、授权和队列事件带 canonical Host `instance_id`，报告使用 `request_id` 关联，失败使用稳定 `error_code`。普通日志不输出任意 error chain、配置或授权 URL。日志字段/输出预算或写入失败会被记录并在下一轮采样检查时以 `LOGGING_UNAVAILABLE` 退出；服务管理器可据此定位日志目标故障。

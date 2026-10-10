@@ -48,7 +48,7 @@ pub(crate) fn platform_ready_callback() -> Option<fn() -> anyhow::Result<bool>> 
     }
 }
 
-static STRUCTURED_LOGGING: std::sync::OnceLock<xcss_log::FoundationStructuredLayer> =
+static STRUCTURED_LOGGING: std::sync::OnceLock<xcsc::log::XcscStructuredLayer> =
     std::sync::OnceLock::new();
 
 fn verify_logging() -> anyhow::Result<()> {
@@ -63,7 +63,7 @@ fn verify_logging() -> anyhow::Result<()> {
 
 pub(crate) fn init_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::prelude::*;
-    let layer = xcss_log::FoundationStructuredLayer::new("xsoc")?;
+    let layer = xcsc::log::XcscStructuredLayer::new("xsoc")?;
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -116,7 +116,7 @@ pub(crate) async fn execute_config(
     let session = match command {
         ClientCommand::Run | ClientCommand::Once | ClientCommand::Doctor => {
             Some(std::sync::Arc::new(
-                xcsc_runtime::ClientSession::from_directory(xsoc::maintenance::runtime_directory(
+                xcsc::runtime::ClientSession::from_directory(xsoc::maintenance::runtime_directory(
                     &config.state_dir,
                 )?)
                 .context("failed to acquire the exclusive Client delivery session")?,
@@ -146,7 +146,7 @@ pub(crate) async fn execute_config(
             xsoc::runtime_status::publish(
                 &config.state_dir,
                 host.id.to_string(),
-                xcsc_cli::revision(&serde_json::to_vec(&config)?),
+                xcsc::cli::revision(&serde_json::to_vec(&config)?),
             )
             .context("service status IPC")?,
         )

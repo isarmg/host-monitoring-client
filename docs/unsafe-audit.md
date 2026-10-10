@@ -1,6 +1,8 @@
 # 依赖和 unsafe 审查
 
-本候选使用 Rust 1.99.0、rand 0.10、SHA-2 0.11，保留适用的 reqwest 0.13、sysinfo 0.39、Windows SDK 0.62/0.61 与 NVML 0.12。normal/build/dev/Cargo.lock 均无 rusqlite；本产品的当前 JSON 配置与有界报告队列没有引入 SQLite。Foundation Client 固定 0.10.5 / a3c827b7f0f69d84ff69f72be1533a7171ab63d6；中性日志固定 0.11.5 / d58b9ef0822984ee0d29fb8b8139cfd2787374fb。
+项目名称已按当前名称规范化；历史条目的版本、提交与当时验收事实保持不变。当前依赖基线另按 manifest 和 lock 中的实际输入记录。
+
+本候选使用 Rust 1.99.0、rand 0.10、SHA-2 0.11，保留适用的 reqwest 0.13、sysinfo 0.39、Windows SDK 0.62/0.61 与 NVML 0.12。normal/build/dev/Cargo.lock 均无 rusqlite；本产品的当前 JSON 配置与有界报告队列没有引入 SQLite。xcsc 固定 1.0.0 / 00770c007912b276f5bb1075abfefe3c31026276；xcsc::log 随单体 xcsc 固定 1.0.0 / 00770c007912b276f5bb1075abfefe3c31026276。
 
 | 保留的边界 | 必要性和约束 | 实际收敛与验证 |
 |---|---|---|
@@ -15,7 +17,7 @@
 
 测试的 Unix SIGTERM 已改用安全 rustix::process::kill_process 和从 Child 取得的类型化 PID，不再直接调用 libc::kill。macOS 网络采集的原生边界集中在 `collectors/macos_network.rs`，不执行系统命令或私有 API。
 
-删除重复 state_lock 和 windows_maintenance_gate，运行期文件锁与原子操作使用 Foundation 的单一实现。普通文件 raw CreateFileW/FromRawHandle 已由标准库所有权替代；IGCL 零初始化由安全显式 Default 替代。原生函数指针和行政 SDK 调用仍需要 unsafe，不能通过移除权限检查或硬件功能取得零 unsafe。Linux 和交叉检查只证明各自覆盖范围，Windows SCM、MSI 和私有状态必须由最终 Source 的原生 CI 验证。
+删除重复 state_lock 和 windows_maintenance_gate，运行期文件锁与原子操作使用 xcsc 的单一实现。普通文件 raw CreateFileW/FromRawHandle 已由标准库所有权替代；IGCL 零初始化由安全显式 Default 替代。原生函数指针和行政 SDK 调用仍需要 unsafe，不能通过移除权限检查或硬件功能取得零 unsafe。Linux 和交叉检查只证明各自覆盖范围，Windows SCM、MSI 和私有状态必须由最终 Source 的原生 CI 验证。
 
 ## 当前候选工程约束
 
@@ -25,7 +27,7 @@
 
 | 适用条款 | 当前实现与本轮验收 | 真实限制 |
 |---|---|---|
-| 2–5、19：职责、目录与身份 | 单包保留 src/collectors、pairing、monitor_app、windows 等既有职责；固定产品协议 source，公共私有目录、锁、CLI 与进程预算消费 Foundation，业务报告不进入公共层。xsos-protocol 1.0.0 固定官方源 44e2090f113a78d38b26d59c638756de37c60383；软件1.0.0、配置/账户1.0.0、report schema1 和 Windows 状态标签分别表达。 | Windows SDK、GPU设备和安装器属于产品必要平台差异，不能任意统一成纯 Rust。 |
+| 2–5、19：职责、目录与身份 | 单包保留 src/collectors、pairing、monitor_app、windows 等既有职责；固定产品协议 source，公共私有目录、锁、CLI 与进程预算消费 xcsc，业务报告不进入公共层。xsos-protocol 1.0.0 固定官方源 6458cb63bc1b868156ebb26eecdc09d563026df2；软件1.0.0、配置/账户1.0.0、report schema1 和 Windows 状态标签分别表达。 | Windows SDK、GPU设备和安装器属于产品必要平台差异，不能任意统一成纯 Rust。 |
 | 6–9、11–14：CLI、安全与状态 | core CLI、stdin秘密、文件→环境→显式输入、初始化和运行分离；旧账户明确拒绝且 status不写文件。pair recover先只读核验 Host UUID/spool再归档账户，不把旧报告换属新实例。报告队列和SMART/SDK读取有预算。 | 旧格式配置不自动迁移；需保全旧文档、按当前配置流程重建和校验。 |
 | 15：日志 | neutral typed事件、实例ID、脱敏、logs过滤及有界轮转；Windows protected 私有状态锚与精确继承的日志目录/叶分工明确。 | Windows SCM、DACL 和真实显卡行为须最终Source原生CI/设备证明。 |
 | 20–23：发行和验收 | workflow固定官方SHA、runner和timeout；只有依赖验证job的tag-push publication使用contents:write；打包验证版本、Source、hash和原生安装方式。 | Mac Rust/Clippy及安装器故障模拟不代替 Linux包、MSI/SCM、Android/iOS嵌入或OTLP真实Collector路径。 |

@@ -13,7 +13,7 @@ pub(super) fn collect() -> Inventory {
             .build()
             .map_err(|_| CapabilityErrorKind::Transient)?;
         runtime.block_on(async {
-            use xcsc_runtime::process::{ProcessCaptureError, ProcessLimits, capture_bounded};
+            use xcsc::runtime::process::{ProcessCaptureError, ProcessLimits, capture_bounded};
             #[cfg(target_os = "macos")]
             let mut command = {
                 let mut command = tokio::process::Command::new("/usr/sbin/system_profiler");

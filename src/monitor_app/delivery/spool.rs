@@ -5,7 +5,7 @@
 /// 读、写和补传各持有一个实例，避免“读取成功”掩盖“持续不可写”。
 #[derive(Default)]
 struct SpoolHealth {
-    failures: xcsc_runtime::QueueFailureStreak,
+    failures: xcsc::runtime::QueueFailureStreak,
 }
 
 impl SpoolHealth {
@@ -44,14 +44,14 @@ impl SpoolHealth {
     }
 }
 
-type FlushOutcome = xcsc_runtime::BatchOutcome<xsoc::transport::SendError>;
+type FlushOutcome = xcsc::runtime::BatchOutcome<xsoc::transport::SendError>;
 
 struct HostDeliveryAdapter<'a> {
     reporter: &'a Reporter,
     otlp_queue: Option<&'a OtlpQueue>,
 }
 
-impl xcsc_runtime::DeliveryAdapter<xsoc::spool::PendingReport>
+impl xcsc::runtime::DeliveryAdapter<xsoc::spool::PendingReport>
     for HostDeliveryAdapter<'_>
 {
     type Error = xsoc::transport::SendError;
@@ -62,8 +62,8 @@ impl xcsc_runtime::DeliveryAdapter<xsoc::spool::PendingReport>
             .await
     }
 
-    fn disposition(&self, error: &Self::Error) -> xcsc_runtime::FailureDisposition {
-        use xcsc_runtime::{FailureDisposition, QuarantineReason};
+    fn disposition(&self, error: &Self::Error) -> xcsc::runtime::FailureDisposition {
+        use xcsc::runtime::{FailureDisposition, QuarantineReason};
         match error {
             xsoc::transport::SendError::IdentityMismatch => FailureDisposition::Quarantine(QuarantineReason::IdentityMismatch),
             error if error.is_permanent() => FailureDisposition::Discard,
@@ -83,7 +83,7 @@ impl xcsc_runtime::DeliveryAdapter<xsoc::spool::PendingReport>
             "spool 中的报文被永久拒绝，已丢弃：{error}"
         );
     }
-    fn quarantined(&self, pending: &xsoc::spool::PendingReport, reason: xcsc_runtime::QuarantineReason) {
+    fn quarantined(&self, pending: &xsoc::spool::PendingReport, reason: xcsc::runtime::QuarantineReason) {
         warn!(event = "xsoc.queue.isolated", instance_id = %pending.report.host.id, request_id = %pending.report.report_id, ?reason, "spool record isolated with original bytes preserved; inspect status/doctor");
     }
 }
@@ -93,7 +93,7 @@ async fn flush_spool(
     reporter: &Reporter,
     otlp_queue: Option<&OtlpQueue>,
 ) -> anyhow::Result<FlushOutcome> {
-    xcsc_runtime::deliver_batch(
+    xcsc::runtime::deliver_batch(
         spool,
         &HostDeliveryAdapter {
             reporter,

@@ -9,9 +9,9 @@ Client 支持 Windows x64、Linux x64 与 macOS Apple Silicon。部署时核对�
 | Client 配置与身份 | 只接受当前格式 1.0.0；软件发行号不改变该独立格式 |
 | 本地队列 | 保留 Host UUID、报告 ID 和待发送报告的原有归属 |
 | CLI JSON | schema_version 1；--format json 为机器输出入口 |
-| Client Foundation | 0.10.5，固定提交 ab53bb6157117169b6d03d0a61497faa9ca718bd |
-| Host 协议 crate | 1.0.0，固定提交 44e2090f113a78d38b26d59c638756de37c60383；schema 1 报告字段 |
-| IPC | Foundation GetStatus/1，校验进程世代与绑定 |
+| xcsc | 1.0.0，固定提交 00770c007912b276f5bb1075abfefe3c31026276 |
+| Host 协议 crate | 1.0.0，固定提交 6458cb63bc1b868156ebb26eecdc09d563026df2；schema 1 报告字段 |
+| IPC | xcsc GetStatus/1，校验进程世代与绑定 |
 
 安装器负责程序和服务的覆盖或修复，并按平台保留配置、身份与待发送队列；具体步骤见平台安装指南。配置或账户资料不兼容时，Client 返回明确错误；管理员须先验证队列，再通过受支持的配对恢复命令归档不兼容账户文件。未知或损坏的队列不能通过删除状态或重新配对绕过校验。
 

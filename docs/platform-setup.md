@@ -47,13 +47,15 @@ $install.ExitCode
 
 ```powershell
 # 获取安装器记录的程序目录，并组合可执行文件路径；& 用来执行变量中的程序路径。
-$installRoot = (Get-ItemProperty 'HKLM:\Software\xsos\xsoc').InstallLocation
+$installRoot = (Get-ItemProperty 'HKLM:\Software\sarmg\xsoc').InstallLocation
 $client = Join-Path $installRoot 'xsoc.exe'
 # 确认安装的版本、平台和状态格式。
 & $client version --format json
 # 检查后台服务登记和启动策略。
 & $client service status --format json
 ```
+
+当前 MSI 的发布者为 `sarmg`，安装目录注册表使用 `HKLM:\Software\sarmg\xsoc`。如果现有安装的发布者或注册表命名空间不同，即使软件显示相同版本号，也应先导出配置、核对并保留状态，再用原安装包或 Windows“已安装的应用”卸载旧程序，随后使用本次校验过的 MSI 重新安装。安装脚本只识别当前产品与发布者的注册，不会把其他发布者的记录视为可修复安装；不要手工改写注册表或放宽发布者检查。
 
 ### 2. 首次配对和启动
 
@@ -133,7 +135,7 @@ sc.exe qc xsoc
 & $client service start
 ```
 
-`probe` 不联网；`doctor --delivery` 会发送报告，成功应核对真实 HTTP 202 和 Server 新报告。若安装失败，检查 `$env:TEMP\xsoc-install.log`，以及管理员可读的 `C:\ProgramData\xsoc.maintenance-diagnostic-0.11.0.txt`。
+`probe` 不联网；`doctor --delivery` 会发送报告，成功应核对真实 HTTP 202 和 Server 新报告。若安装失败，检查 `$env:TEMP\xsoc-install.log`，以及管理员可读的 `C:\ProgramData\xsoc.maintenance-diagnostic-1.0.0.txt`。
 
 ### 6. 升级、修复与卸载
 
@@ -433,7 +435,7 @@ Windows 硬件清单将 PnP/WMI 设备标识统一为 ASCII 大写，先保留�
 cd "$env:USERPROFILE\Downloads"
 Get-FileHash .\xsoc-1.0.0-x64.msi -Algorithm SHA256
 msiexec.exe /i .\xsoc-1.0.0-x64.msi /norestart
-$installRoot = (Get-ItemProperty 'HKLM:\Software\xsos\xsoc').InstallLocation
+$installRoot = (Get-ItemProperty 'HKLM:\Software\sarmg\xsoc').InstallLocation
 $client = Join-Path $installRoot 'xsoc.exe'
 & $client doctor --network
 ```
@@ -450,7 +452,7 @@ MSI 安装页允许选择任意本机安装目录，所有组件都会安装，�
 msiexec.exe /i "$PWD\xsoc-1.0.0-x64.msi" REINSTALL=ALL REINSTALLMODE=amus /l*v "$env:TEMP\xsoc-repair.log"
 ```
 
-原生维护失败另写入 `C:\ProgramData\xsoc.maintenance-diagnostic-0.11.0.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点。无人值守部署无需传入功能选择参数，所有组件与账户兼容性准备均会执行，现有状态会保留。
+原生维护失败另写入 `C:\ProgramData\xsoc.maintenance-diagnostic-1.0.0.txt`（管理员读取）。退出码 3010 表示需要重启完成文件替换。修复不会接管指向其他程序的同名服务，也不会追踪重解析点。无人值守部署无需传入功能选择参数，所有组件与账户兼容性准备均会执行，现有状态会保留。
 
 ### Linux x86_64
 

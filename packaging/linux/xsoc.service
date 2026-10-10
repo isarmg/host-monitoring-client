@@ -1,5 +1,5 @@
 [Unit]
-Description=xsos read-only host telemetry client
+Description=xsoc read-only host telemetry client for xsos
 After=network-online.target
 Wants=network-online.target
 

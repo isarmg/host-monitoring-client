@@ -18,8 +18,8 @@ impl Fixture {
             .join(format!("xsos-status-binding-{}", Uuid::new_v4()));
         let state_dir = root.join("state");
         let config_path = root.join("config.json");
-        xcsc_fs_safety::PrivateDirectory::create(&root).unwrap();
-        xcsc_fs_safety::PrivateDirectory::create(&state_dir).unwrap();
+        xcsc::fs_safety::PrivateDirectory::create(&root).unwrap();
+        xcsc::fs_safety::PrivateDirectory::create(&state_dir).unwrap();
         let mut config = ClientConfig::default();
         config.endpoint = "https://old.example/api/v1/xsoc/report".into();
         config.state_dir = state_dir.clone();
@@ -268,7 +268,7 @@ fn write_private_fixture(
     bytes: impl AsRef<[u8]>,
 ) -> std::io::Result<()> {
     let path = path.as_ref();
-    use xcsc_fs_safety::{AtomicFile, EntryName, PrivateDirectory};
+    use xcsc::fs_safety::{AtomicFile, EntryName, PrivateDirectory};
     let directory = PrivateDirectory::open_existing(path.parent().expect("fixture parent"))
         .map_err(std::io::Error::other)?;
     let name =

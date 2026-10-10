@@ -73,7 +73,7 @@ fn load_state(store: &StateReader) -> anyhow::Result<Option<StoredPairingState>>
                 .with_context(|| format!("failed to read pairing state {}", path.display()));
         }
     };
-    let bytes = xcsc_secret::SecretBytes::new(bytes);
+    let bytes = xcsc::secret::SecretBytes::new(bytes);
     let state: StoredPairingState = decode_pairing_document(bytes.expose(), "pairing-state")?;
     let (version, generation) = match &state {
         StoredPairingState::Creating {
@@ -114,7 +114,7 @@ fn load_state(store: &StateReader) -> anyhow::Result<Option<StoredPairingState>>
     Ok(Some(state))
 }
 
-/// Archive only account/pairing artifacts. Host identity and telemetry spool are
+/// Archive only account/pairing artifacts. xsoc identity and telemetry spool are
 /// deliberately outside this list and therefore survive re-pairing recovery.
 pub fn archive_incompatible_account_state(config: &ClientConfig) -> anyhow::Result<Vec<PathBuf>> {
     let transaction = lock_state(config)?;

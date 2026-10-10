@@ -1,7 +1,7 @@
-//! Host's adapter between its UUID wire contract and Foundation runtime identity.
+//! Host's adapter between its UUID wire contract and xcsc runtime identity.
 use crate::state_store::{StateFile, StateReader};
 use std::{io, path::Path};
-use xcsc_runtime::{ClientIdentity, ContractId};
+use xcsc::runtime::{ClientIdentity, ContractId};
 
 pub(crate) const HOST_REPORT_CONTRACT: &str = "xsos.client-report.current";
 

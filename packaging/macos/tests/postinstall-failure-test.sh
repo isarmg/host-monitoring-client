@@ -4,7 +4,7 @@ set -eu
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 postinstall="$script_dir/../scripts/postinstall"
 preinstall="$script_dir/../scripts/preinstall"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/xsos-macos-postinstall.XXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/xsoc-macos-postinstall.XXXXXX")"
 
 cleanup() {
   rm -rf "$test_root"

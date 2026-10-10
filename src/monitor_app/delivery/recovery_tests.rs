@@ -1,6 +1,6 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
-use xcsc_runtime::{ClientDeliveryDriver, RecoveryUpdate};
+use xcsc::runtime::{ClientDeliveryDriver, RecoveryUpdate};
 
 struct Fixture(ClientConfig);
 impl Fixture {
@@ -428,7 +428,7 @@ async fn startup_recovers_activating_before_checking_the_previous_authorization(
             ));
             assert_eq!(
                 pairing::local_auth_state(&config).unwrap().unwrap().status,
-                xcsc_runtime::CredentialAuthorization::Authorized
+                xcsc::runtime::CredentialAuthorization::Authorized
             );
             assert_eq!(
                 fs::read_to_string(config.state_dir.join("client-token")).unwrap(),

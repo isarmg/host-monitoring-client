@@ -119,12 +119,12 @@ mod tests {
             write!(stream, "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", acknowledgement.len()).unwrap();
             stream.write_all(&acknowledgement).unwrap();
         });
-        let (wake, receiver) = xcsc_runtime::DeliveryWake::channel();
+        let (wake, receiver) = xcsc::runtime::DeliveryWake::channel();
         let (stop, shutdown) = watch::channel(false);
         let (host_updates, _host_receiver) = watch::channel(host.clone());
         let driver = HostDeliveryDriver::new(config, host, spool.clone(), reporter, host_updates);
         let task = tokio::spawn(
-            xcsc_runtime::DeliveryWorker::new(driver, 0)
+            xcsc::runtime::DeliveryWorker::new(driver, 0)
                 .unwrap()
                 .run(receiver, shutdown),
         );
@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_full_delivery_notification_channel_does_not_shift_sampling_cadence() {
-        let (trigger, _receiver) = xcsc_runtime::DeliveryWake::channel();
+        let (trigger, _receiver) = xcsc::runtime::DeliveryWake::channel();
         let mut cadence = SamplingCadence::starting_now();
         let start = cadence.deadline();
 
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn transient_spool_failures_do_not_stop_the_client() {
         let mut health = SpoolHealth::default();
-        for _ in 0..(xcsc_runtime::MAX_QUEUE_FAILURES - 1) {
+        for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health
                 .record_failure("测试", &"disk full")
                 .expect("未达阈值前必须继续运行");
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn sustained_spool_failures_eventually_stop_the_client() {
         let mut health = SpoolHealth::default();
-        for _ in 0..(xcsc_runtime::MAX_QUEUE_FAILURES - 1) {
+        for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health.record_failure("测试", &"disk full").unwrap();
         }
         let error = health
@@ -280,12 +280,12 @@ mod tests {
     #[test]
     fn a_single_success_resets_the_failure_streak() {
         let mut health = SpoolHealth::default();
-        for _ in 0..(xcsc_runtime::MAX_QUEUE_FAILURES - 1) {
+        for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health.record_failure("测试", &"transient").unwrap();
         }
         health.record_success();
         // 归零后应能再撑满一整轮，说明计数确实被重置了。
-        for _ in 0..(xcsc_runtime::MAX_QUEUE_FAILURES - 1) {
+        for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health
                 .record_failure("测试", &"transient")
                 .expect("成功一次后计数应归零");

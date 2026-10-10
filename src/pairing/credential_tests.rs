@@ -1,5 +1,5 @@
 use super::*;
-use xcsc_runtime::CredentialMutation;
+use xcsc::runtime::CredentialMutation;
 
 fn config() -> ClientConfig {
     ClientConfig {

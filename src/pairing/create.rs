@@ -320,7 +320,7 @@ fn validate_requested_mode(
     let inferred = inferred_mode(config, host);
     anyhow::ensure!(
         requested == inferred,
-        "pairing mode does not match the selected durable Host identity"
+        "pairing mode does not match the selected durable xsoc identity"
     );
     Ok(())
 }

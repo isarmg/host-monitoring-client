@@ -34,8 +34,8 @@ fn secure_state_acl(path: &Path, service_sid: Option<&str>) -> anyhow::Result<()
 
 fn existing_runtime_logs(
     path: &Path,
-) -> anyhow::Result<Option<xcsc_fs_safety::PrivateDirectory>> {
-    use xcsc_fs_safety::{PrivateDirectory, WindowsPrivateAccess};
+) -> anyhow::Result<Option<xcsc::fs_safety::PrivateDirectory>> {
+    use xcsc::fs_safety::{PrivateDirectory, WindowsPrivateAccess};
     let logs = path.join("logs");
     match fs::symlink_metadata(&logs) {
         Ok(_) => {
@@ -52,9 +52,9 @@ fn existing_runtime_logs(
 }
 
 fn validate_runtime_log_files(
-    directory: &xcsc_fs_safety::PrivateDirectory,
+    directory: &xcsc::fs_safety::PrivateDirectory,
 ) -> anyhow::Result<()> {
-    use xcsc_fs_safety::InventoryLimits;
+    use xcsc::fs_safety::InventoryLimits;
     validate_runtime_log_account_owner(directory.path(), true)?;
     for file in directory.files(InventoryLimits {
         max_entries: 6,

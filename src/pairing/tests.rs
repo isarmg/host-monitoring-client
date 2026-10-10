@@ -82,7 +82,7 @@ mod tests {
             poll_interval: 2,
             pairing_endpoint: config.pairing_endpoint(),
             report_endpoint: config.endpoint.clone(),
-            bearer_secret: std::sync::Arc::new(xcsc_secret::SecretString::new(
+            bearer_secret: std::sync::Arc::new(xcsc::secret::SecretString::new(
                 "a".repeat(64),
             )),
         };
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn polling_authorization_is_explicit_sensitive_and_redacts_errors() {
-        use xcsc_secret::SecretString;
+        use xcsc::secret::SecretString;
         let secret = SecretString::new("private-polling-credential".into());
         let header = pairing_authorization(&secret).unwrap();
         assert_eq!(
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn non_json_success_points_to_the_server_origin_without_leaking_the_body() {
         let endpoint = "http://127.0.0.1/api/v1/xsoc/pairing-requests";
-        let body = b"<!doctype html><title>POETIZE private marker</title>";
+        let body = b"<!doctype html><title>xocs private marker</title>";
         let error = parse_pairing_json::<CreatePairingResponse>(
             body,
             "text/html; charset=utf-8",
@@ -810,7 +810,7 @@ mod tests {
         assert!(rendered.contains("Content-Type: text/html"));
         assert!(rendered.contains("address or port may be wrong"));
         assert!(rendered.contains("including its port"));
-        assert!(!rendered.contains("POETIZE"));
+        assert!(!rendered.contains("xocs"));
         assert!(!rendered.contains("private marker"));
 
         let valid_json = serde_json::to_vec(&serde_json::json!({

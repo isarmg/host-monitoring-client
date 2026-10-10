@@ -15,7 +15,7 @@ impl Fixture {
             .canonicalize()
             .expect("physical test temporary directory")
             .join(format!("xsoc-pairing-transport-policy-{}", Uuid::new_v4()));
-        let directory = xcsc_fs_safety::PrivateDirectory::create(&root).unwrap();
+        let directory = xcsc::fs_safety::PrivateDirectory::create(&root).unwrap();
         let state_dir = root.join("state");
         let config_path = root.join("config.json");
         let mut config = ClientConfig::default();
@@ -23,8 +23,8 @@ impl Fixture {
         config.pairing_endpoint = Some("https://192.0.2.10:1/api/v1/xsoc/pairing-requests".into());
         config.request_timeout_seconds = 1;
         config.state_dir = state_dir.clone();
-        let name = xcsc_fs_safety::EntryName::new("config.json").unwrap();
-        xcsc_fs_safety::AtomicFile::replace(
+        let name = xcsc::fs_safety::EntryName::new("config.json").unwrap();
+        xcsc::fs_safety::AtomicFile::replace(
             &directory,
             &name.as_relative(),
             &serde_json::to_vec_pretty(&config).unwrap(),

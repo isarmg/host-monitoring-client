@@ -1,8 +1,8 @@
 use std::{io, path::Path, sync::Arc};
 
 use anyhow::Context;
-use xcsc_fs_safety::EntryName;
-use xcsc_runtime::{
+use xcsc::fs_safety::EntryName;
+use xcsc::runtime::{
     BoundedBytes, ClientSession, ContractId, MAX_SPOOL_ENTRIES, RecordId, SpoolLimits,
 };
 
@@ -15,7 +15,7 @@ use crate::client_identity::HOST_REPORT_CONTRACT;
 
 #[derive(Clone)]
 pub struct Spool {
-    inner: Arc<xcsc_runtime::Spool>,
+    inner: Arc<xcsc::runtime::Spool>,
     _session: Arc<ClientSession>,
 }
 
@@ -46,7 +46,7 @@ impl Spool {
             .create_child(&EntryName::new("spool").map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
         let inner =
-            xcsc_runtime::Spool::from_directory(directory, limits).map_err(io::Error::other)?;
+            xcsc::runtime::Spool::from_directory(directory, limits).map_err(io::Error::other)?;
         Ok(Self {
             inner: Arc::new(inner),
             _session: session,
@@ -83,7 +83,7 @@ impl Spool {
             };
             if record.contract_id.as_str() != HOST_REPORT_CONTRACT {
                 self.inner
-                    .quarantine(&record.record_id, xcsc_runtime::QuarantineReason::Corrupt)?;
+                    .quarantine(&record.record_id, xcsc::runtime::QuarantineReason::Corrupt)?;
                 tracing::warn!(
                     "isolated queued report with a different contract identifier; original bytes preserved, current collection continues"
                 );
@@ -97,19 +97,19 @@ impl Spool {
                 })
             {
                 self.inner
-                    .quarantine(&record.record_id, xcsc_runtime::QuarantineReason::Corrupt)?;
+                    .quarantine(&record.record_id, xcsc::runtime::QuarantineReason::Corrupt)?;
                 tracing::warn!(
                     "isolated queued report with incompatible schema; original bytes preserved, current collection continues"
                 );
                 continue;
             }
             let parsed = serde_json::from_slice::<ClientReport>(record.payload.as_slice())
-                .context("Foundation spool payload is not a Host Client report")
+                .context("xcsc spool payload is not a xsoc report")
                 .and_then(|report| {
                     let (canonical, _) = report_contract::canonical_spool_report(&report)?;
                     anyhow::ensure!(
                         canonical == report,
-                        "spool payload is not the current canonical Host report"
+                        "spool payload is not the current canonical xsoc report"
                     );
                     Ok(report)
                 });
@@ -123,7 +123,7 @@ impl Spool {
                 }
                 Err(_) => {
                     self.inner
-                        .quarantine(&record.record_id, xcsc_runtime::QuarantineReason::Corrupt)?;
+                        .quarantine(&record.record_id, xcsc::runtime::QuarantineReason::Corrupt)?;
                     tracing::warn!(
                         "isolated queued report that is malformed or not canonical; original bytes preserved, current collection continues"
                     );
@@ -132,12 +132,12 @@ impl Spool {
         }
     }
 
-    pub fn health(&self) -> io::Result<xcsc_runtime::ClientHealth> {
+    pub fn health(&self) -> io::Result<xcsc::runtime::ClientHealth> {
         self.inner.doctor().map_err(io::Error::other)
     }
 }
 
-impl xcsc_runtime::DeliveryQueue for Spool {
+impl xcsc::runtime::DeliveryQueue for Spool {
     type Item = PendingReport;
     type Error = anyhow::Error;
 
@@ -152,7 +152,7 @@ impl xcsc_runtime::DeliveryQueue for Spool {
     fn quarantine(
         &self,
         pending: &PendingReport,
-        reason: xcsc_runtime::QuarantineReason,
+        reason: xcsc::runtime::QuarantineReason,
     ) -> Result<(), Self::Error> {
         self.inner.quarantine(&pending.record_id, reason)?;
         Ok(())
@@ -167,129 +167,39 @@ fn limits(max_bytes: u64) -> SpoolLimits {
 }
 
 /// Read-only inventory using the same Windows service role as the writer.
-/// The generic Foundation inspector otherwise assumes the interactive user's
-/// ACL and rejects a correctly protected installed service spool.
+/// Keep product service ACL selection here and delegate inventory semantics to xcsc.
 pub fn inspect_existing(
     state_dir: &Path,
     max_bytes: u64,
-) -> Result<xcsc_runtime::ClientHealth, xcsc_runtime::Error> {
+) -> Result<xcsc::runtime::ClientHealth, xcsc::runtime::Error> {
     let limits = limits(max_bytes);
     #[cfg(not(windows))]
     {
-        xcsc_runtime::Spool::inspect_existing(state_dir.join("spool"), limits)
+        xcsc::runtime::Spool::inspect_existing(state_dir.join("spool"), limits)
     }
     #[cfg(windows)]
     {
-        use xcsc_runtime::Error;
+        use xcsc::runtime::Error;
         limits.validate()?;
         let directory = crate::maintenance::open_runtime_directory(&state_dir.join("spool"))
-            .map_err(|error| match error.downcast::<xcsc_fs_safety::Error>() {
+            .map_err(|error| match error.downcast::<xcsc::fs_safety::Error>() {
                 Ok(error) => Error::Filesystem(error),
                 Err(_) => Error::SpoolUnavailable,
             })?;
-        let entries = directory.files(xcsc_fs_safety::InventoryLimits {
-            max_entries: limits.max_entries + 1,
-            max_total_bytes: limits.max_bytes,
-        })?;
-        let mut health = xcsc_runtime::ClientHealth {
-            healthy: true,
-            spool_entries: 0,
-            spool_bytes: 0,
-            quarantined_entries: 0,
-            identity_mismatch_entries: 0,
-            capacity_remaining: true,
-        };
-        for entry in entries {
-            if entry.name.as_os_str() == "spool.instance.lock" {
-                if entry.bytes != 0 {
-                    return Err(Error::InvalidRecord);
-                }
-                continue;
-            }
-            let text = entry
-                .name
-                .as_os_str()
-                .to_str()
-                .ok_or(Error::InvalidRecord)?;
-            let suffix = validate_inventory_name(text)?;
-            health.spool_bytes = health
-                .spool_bytes
-                .checked_add(entry.bytes)
-                .ok_or(Error::SpoolFull)?;
-            if suffix == "record" {
-                health.spool_entries += 1;
-            } else {
-                health.quarantined_entries += 1;
-                health.identity_mismatch_entries += usize::from(suffix == "identity");
-            }
-        }
-        let count = health.spool_entries + health.quarantined_entries;
-        if count > limits.max_entries {
-            return Err(Error::SpoolFull);
-        }
-        health.healthy = health.quarantined_entries == 0;
-        health.capacity_remaining =
-            count < limits.max_entries && health.spool_bytes < limits.max_bytes;
-        Ok(health)
+        xcsc::runtime::Spool::inspect_directory(&directory, limits)
     }
 }
 
-#[cfg(any(windows, test))]
-fn validate_inventory_name(text: &str) -> Result<&str, xcsc_runtime::Error> {
-    // Mirror the canonical namespace of the pinned Foundation Client 0.10.5.
-    // Revisit this adapter when Foundation exposes policy-aware inspection.
-    use xcsc_runtime::Error;
-    let (stem, suffix) = text.rsplit_once('.').ok_or(Error::InvalidRecord)?;
-    if !matches!(suffix, "record" | "bad" | "identity") {
-        return Err(Error::InvalidRecord);
-    }
-    let mut parts = stem.split('-');
-    let priority = parts
-        .next()
-        .and_then(|p| p.parse::<u8>().ok())
-        .ok_or(Error::InvalidRecord)?;
-    let created = parts
-        .next()
-        .and_then(|p| p.parse::<i64>().ok())
-        .filter(|v| *v >= 0)
-        .ok_or(Error::InvalidRecord)?;
-    let id = RecordId::parse(parts.next().ok_or(Error::InvalidRecord)?.to_owned())?;
-    if parts.next().is_some()
-        || format!("{priority:03}-{created:020}-{}.{suffix}", id.as_str()) != text
-    {
-        return Err(Error::InvalidRecord);
-    }
-    Ok(suffix)
-}
-
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod inventory_tests {
     use super::*;
-
-    #[test]
-    fn inventory_namespace_is_canonical_and_fail_closed() {
-        let id = RecordId::new().unwrap();
-        for suffix in ["record", "bad", "identity"] {
-            let name = format!("100-{:020}-{}.{suffix}", 1, id.as_str());
-            assert_eq!(validate_inventory_name(&name).unwrap(), suffix);
-        }
-        for name in [
-            format!("100-1-{}.record", id.as_str()),
-            format!("256-{:020}-{}.record", 1, id.as_str()),
-            format!("100-{:020}-{}.unknown", 1, id.as_str()),
-            format!("100-{:020}-{}-extra.record", 1, id.as_str()),
-            "unrecognized-file".into(),
-        ] {
-            assert!(validate_inventory_name(&name).is_err());
-        }
-    }
 
     #[cfg(windows)]
     #[test]
     fn windows_inspection_matches_writer_health_without_mutating_files() {
         use std::{collections::BTreeMap, fs};
-        use xcsc_fs_safety::{AtomicFile, PrivateDirectory};
-        use xcsc_runtime::QuarantineReason;
+        use xcsc::fs_safety::{AtomicFile, PrivateDirectory};
+        use xcsc::runtime::QuarantineReason;
 
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().canonicalize().unwrap().join("state");
@@ -297,7 +207,7 @@ mod inventory_tests {
         let directory = state
             .create_child(&EntryName::new("spool").unwrap())
             .unwrap();
-        let writer = xcsc_runtime::Spool::from_directory(directory, limits(1024 * 1024)).unwrap();
+        let writer = xcsc::runtime::Spool::from_directory(directory, limits(1024 * 1024)).unwrap();
         for reason in [
             None,
             Some(QuarantineReason::Corrupt),
@@ -320,9 +230,9 @@ mod inventory_tests {
                 .map(|entry| {
                     let entry = entry.unwrap();
                     let name = entry.file_name();
-                    let bytes = if name == "spool.instance.lock" {
-                        // Windows byte-range locks intentionally prohibit reads.
-                        assert_eq!(entry.metadata().unwrap().len(), 0);
+                    let bytes = if entry.metadata().unwrap().len() == 0 {
+                        // An active Windows byte-range lock may prohibit reads.
+                        // Empty files have no content to read for this snapshot.
                         Vec::new()
                     } else {
                         fs::read(entry.path()).unwrap()
@@ -375,11 +285,11 @@ mod inventory_tests {
         let path = temporary.path().canonicalize().unwrap().join("missing");
         assert!(matches!(
             inspect_existing(&path, 0),
-            Err(xcsc_runtime::Error::InvalidLimits)
+            Err(xcsc::runtime::Error::InvalidLimits)
         ));
         assert!(matches!(
             inspect_existing(&path, 1024 * 1024),
-            Err(xcsc_runtime::Error::Filesystem(xcsc_fs_safety::Error::Io(error)))
+            Err(xcsc::runtime::Error::Filesystem(xcsc::fs_safety::Error::Io(error)))
                 if error.kind() == io::ErrorKind::NotFound
         ));
         assert!(!path.exists());
@@ -413,7 +323,7 @@ mod tests {
         drop(spool);
         assert!(matches!(
             ClientSession::open(&path),
-            Err(xcsc_runtime::Error::AlreadyRunning)
+            Err(xcsc::runtime::Error::AlreadyRunning)
         ));
         let transaction = crate::state_store::StateTransaction::begin(&path).unwrap();
         transaction
@@ -562,7 +472,7 @@ mod version_tests {
         assert_eq!(pending.report.report_id, report.report_id);
         assert_eq!(spool.pending_count().unwrap(), 1);
         assert_eq!(spool.health().unwrap().quarantined_entries, 33);
-        xcsc_runtime::DeliveryQueue::acknowledge(&spool, &pending).unwrap();
+        xcsc::runtime::DeliveryQueue::acknowledge(&spool, &pending).unwrap();
         assert_eq!(spool.pending_count().unwrap(), 0);
     }
 
@@ -602,7 +512,7 @@ mod version_tests {
         assert_eq!(pending.report.report_id, valid.report_id);
         assert_eq!(spool.pending_count().unwrap(), 1);
         assert_eq!(spool.health().unwrap().quarantined_entries, 3);
-        xcsc_runtime::DeliveryQueue::acknowledge(&spool, &pending).unwrap();
+        xcsc::runtime::DeliveryQueue::acknowledge(&spool, &pending).unwrap();
         assert!(spool.oldest().unwrap().is_none());
     }
 

@@ -6,7 +6,7 @@
   <Package
     UpgradeCode="B4A341EC-D4B2-419F-A00B-E8E504DE9798"
     Name="xsoc"
-    Manufacturer="xsos"
+    Manufacturer="sarmg"
     Version="$(var.ProductVersion)"
     Language="1033"
     Codepage="1252"
@@ -15,9 +15,9 @@
     Compressed="yes">
 
     <SummaryInformation
-      Description="xsos read-only host telemetry client"
-      Keywords="xsos,client,telemetry,service"
-      Manufacturer="xsos" />
+      Description="xsoc read-only host telemetry client for xsos"
+      Keywords="xsoc,xsos,client,telemetry,service"
+      Manufacturer="sarmg" />
     <MajorUpgrade DowngradeErrorMessage="A newer xsoc version is installed." Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
@@ -35,7 +35,7 @@
       Condition="NOT XSOC_MAINTENANCE_DIAGNOSTICS OR XSOC_MAINTENANCE_DIAGNOSTICS = &quot;1&quot;"
       Message="XSOC_MAINTENANCE_DIAGNOSTICS accepts only the value 1. Omit it to disable maintenance diagnostics." />
 
-    <Property Id="ARPCONTACT" Value="xsos maintainers" />
+    <Property Id="ARPCONTACT" Value="xsoc maintainers" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/isarmg/xsoc" />
     <Property Id="PURGE" Secure="yes" />
     <Property Id="XSOC_MAINTENANCE_DIAGNOSTICS" Value="1" Secure="yes" />
@@ -135,14 +135,14 @@
         Bitness="always64">
         <RegistryValue
           Root="HKLM"
-          Key="Software\xsos\xsoc"
+          Key="Software\sarmg\xsoc"
           Name="ManagedStateDirectory"
           Type="string"
           Value="[STATEDIRECTORY]"
           KeyPath="yes" />
         <RegistryValue
           Root="HKLM"
-          Key="Software\xsos\xsoc"
+          Key="Software\sarmg\xsoc"
           Name="InstallLocation"
           Type="string"
           Value="[INSTALLFOLDER]" />

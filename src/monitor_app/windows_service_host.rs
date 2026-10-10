@@ -113,23 +113,23 @@ fn service_main_inner() -> anyhow::Result<()> {
     let _directory = xsoc::maintenance::open_service_runtime_directory(&config.state_dir)
         .context("service private state preflight")?;
     let service_sid =
-        xcsc_fs_safety::service_sid(WINDOWS_SERVICE_NAME).context("service log identity")?;
+        xcsc::fs_safety::service_sid(WINDOWS_SERVICE_NAME).context("service log identity")?;
     let log_access =
-        xcss_log::WindowsLogAccess::for_service(&service_sid).context("service log policy")?;
-    let sink = xcss_log::RotatingLogFile::create_private_with_access(
+        xcsc::log::WindowsLogAccess::for_service(&service_sid).context("service log policy")?;
+    let sink = xcsc::log::RotatingLogFile::create_private_with_access(
         config.state_dir.join("logs"),
         "xsoc",
-        xcss_log::LogRetention::default(),
+        xcsc::log::LogRetention::default(),
         log_access,
     )
     .context("service log storage")?;
-    xcss_log::install_rotating_file(sink).context("service log install")?;
-    xcss_log::LogRecord::server(
+    xcsc::log::install_rotating_file(sink).context("service log install")?;
+    xcsc::log::LogRecord::client(
         "xsoc",
         "windows-service",
         "xsoc.windows.started",
         "Windows service runtime started.",
-        xcss_log::Level::Info,
+        xcsc::log::Level::Info,
     )?
     .emit()?;
     super::init_tracing()?;
@@ -137,12 +137,12 @@ fn service_main_inner() -> anyhow::Result<()> {
 
     match runtime.block_on(super::execute_config(config, command, Some(report_running))) {
         Ok(()) => {
-            xcss_log::LogRecord::server(
+            xcsc::log::LogRecord::client(
                 "xsoc",
                 "windows-service",
                 "xsoc.windows.stopped",
                 "Windows service runtime stopped.",
-                xcss_log::Level::Info,
+                xcsc::log::Level::Info,
             )?
             .emit()?;
             report_stopped(0)
@@ -342,13 +342,13 @@ fn set_service_status(
     Ok(())
 }
 
-fn service_diagnostic(event: &str, code: &str) -> Result<(), xcss_log::LogError> {
-    xcss_log::LogRecord::server(
+fn service_diagnostic(event: &str, code: &str) -> Result<(), xcsc::log::LogError> {
+    xcsc::log::LogRecord::client(
         "xsoc",
         "windows-service",
         event,
         "Windows service operation failed.",
-        xcss_log::Level::Error,
+        xcsc::log::Level::Error,
     )?
     .with_error_code(code)?
     .emit()

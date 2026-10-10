@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use xcsc_secret::SecretString;
+use xcsc::secret::SecretString;
 
 use chrono::{DateTime, Utc};
 use serde::{
@@ -229,7 +229,7 @@ pub struct LocalPairingStatus {
 #[serde(deny_unknown_fields)]
 pub struct LocalAuthState {
     pub(super) version: PairingStateVersion,
-    pub status: xcsc_runtime::CredentialAuthorization,
+    pub status: xcsc::runtime::CredentialAuthorization,
     pub reason: String,
     pub changed_at: DateTime<Utc>,
 }

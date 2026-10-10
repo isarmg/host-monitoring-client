@@ -49,4 +49,4 @@ pub const MAX_TLS_INPUT_BYTES: usize = 1024 * 1024;
 pub mod maintenance;
 
 #[cfg(feature = "desktop")]
-pub use xcsc_runtime::local_status as runtime_status;
+pub use xcsc::runtime::local_status as runtime_status;

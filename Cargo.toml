@@ -19,18 +19,13 @@ default = ["desktop", "nvidia"]
 desktop = [
     "dep:libc",
     "dep:rand",
-    "dep:xcsc-cli",
-    "dep:xcsc-error",
-    "dep:xcsc-runtime",
-    "dep:xcsc-secret",
-    "dep:xcsc-fs-safety",
+    "dep:xcsc",
     "dep:reqwest",
     "dep:url",
     "dep:sha2",
     "dep:sysinfo",
     "dep:tokio",
     "dep:tracing",
-    "dep:xcss-log",
     "dep:tracing-subscriber",
     "dep:windows",
     "dep:windows-sys",
@@ -50,18 +45,13 @@ prost = { version = "0.14", optional = true }
 rand = { version = "0.10", optional = true }
 serde.workspace = true
 serde_json.workspace = true
-xcsc-cli = { workspace = true, optional = true }
-xcsc-error = { workspace = true, optional = true }
-xcsc-runtime = { workspace = true, optional = true }
-xcsc-secret = { workspace = true, optional = true }
-xcsc-fs-safety = { workspace = true, optional = true }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "00770c007912b276f5bb1075abfefe3c31026276", version = "=1.0.0", features = ["tracing"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["http2"], optional = true }
 url = { version = "2", optional = true }
 sha2 = { version = "0.11", optional = true }
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "network", "component"], optional = true }
 thiserror.workspace = true
 tokio = { version = "~1.53.2", features = ["macros", "rt-multi-thread", "signal", "sync", "time"], optional = true }
-xcss-log = { git = "https://github.com/isarmg/xcss.git", rev = "d58b9ef0822984ee0d29fb8b8139cfd2787374fb", version = "=1.0.0", features = ["tracing"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 xsos-protocol.workspace = true
@@ -176,22 +166,10 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-xsos-protocol = { git = "https://github.com/isarmg/xsos.git", rev = "44e2090f113a78d38b26d59c638756de37c60383", version = "=1.0.0" }
-xcsc-cli = { git = "https://github.com/isarmg/xcsc.git", rev = "a3c827b7f0f69d84ff69f72be1533a7171ab63d6", version = "=1.0.0" }
-xcsc-runtime = { git = "https://github.com/isarmg/xcsc.git", rev = "a3c827b7f0f69d84ff69f72be1533a7171ab63d6", version = "=1.0.0" }
-xcsc-secret = { git = "https://github.com/isarmg/xcsc.git", rev = "a3c827b7f0f69d84ff69f72be1533a7171ab63d6", version = "=1.0.0" }
+xsos-protocol = { git = "https://github.com/isarmg/xsos.git", rev = "6458cb63bc1b868156ebb26eecdc09d563026df2", version = "=1.0.0" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "00770c007912b276f5bb1075abfefe3c31026276", version = "=1.0.0", features = ["tracing"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
-
-[workspace.dependencies.xcsc-error]
-git = "https://github.com/isarmg/xcsc.git"
-rev = "a3c827b7f0f69d84ff69f72be1533a7171ab63d6"
-version = "=1.0.0"
-
-[workspace.dependencies.xcsc-fs-safety]
-git = "https://github.com/isarmg/xcsc.git"
-rev = "a3c827b7f0f69d84ff69f72be1533a7171ab63d6"
-version = "=1.0.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

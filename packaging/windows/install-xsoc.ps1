@@ -13,7 +13,7 @@ function Read-MsiProperty([string]$Name) {
     $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$Name'")
     [void]$view.Execute(); $row = $view.Fetch(); $value = $row.StringData(1); [void]$view.Close(); return $value
 }
-if ((Read-MsiProperty 'ProductName') -ne 'xsoc' -or (Read-MsiProperty 'Manufacturer') -ne 'xsos') { throw 'Expected the official xsoc MSI.' }
+if ((Read-MsiProperty 'ProductName') -ne 'xsoc' -or (Read-MsiProperty 'Manufacturer') -ne 'sarmg') { throw 'Expected the official xsoc MSI.' }
 $version = Read-MsiProperty 'ProductVersion'
 $product = Read-MsiProperty 'ProductCode'
 $logRoot = Join-Path $env:TEMP ('xsoc-install-' + [guid]::NewGuid())
@@ -35,7 +35,7 @@ $entries = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\U
     $properties = $_.PSObject.Properties.Name
     $properties -contains 'DisplayName' -and $properties -contains 'Publisher' -and
     $properties -contains 'WindowsInstaller' -and $properties -contains 'DisplayVersion' -and
-    $_.DisplayName -eq 'xsoc' -and $_.Publisher -eq 'xsos' -and $_.WindowsInstaller -eq 1
+    $_.DisplayName -eq 'xsoc' -and $_.Publisher -eq 'sarmg' -and $_.WindowsInstaller -eq 1
 })
 foreach ($entry in $entries) {
     if ($entry.PSChildName -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Invalid legacy MSI product registration.' }
@@ -44,7 +44,7 @@ foreach ($entry in $entries) {
 }
 $repair = if (@($entries | ForEach-Object { $_.PSChildName }) -contains $product) { ' REINSTALL=ALL REINSTALLMODE=amus' } else { '' }
 Invoke-Installer ('/i "' + $Msi + '"' + $repair) 'install' (-not $Quiet)
-$installLocation = (Get-ItemProperty -LiteralPath 'HKLM:\Software\xsos\xsoc' -Name InstallLocation).InstallLocation
+$installLocation = (Get-ItemProperty -LiteralPath 'HKLM:\Software\sarmg\xsoc' -Name InstallLocation).InstallLocation
 if ([string]::IsNullOrWhiteSpace($installLocation)) { throw "Installer did not record its selected installation directory. Logs: $logRoot" }
 & (Join-Path $installLocation 'xsoc.exe') --version
 if ($LASTEXITCODE -ne 0) { throw "Installed executable verification failed. Logs: $logRoot" }

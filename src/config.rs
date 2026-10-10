@@ -10,7 +10,7 @@ use std::{
 use crate::private_fs;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use xcsc_secret::{SecretBytes, SecretString, SecretWriter};
+use xcsc::secret::{SecretBytes, SecretString, SecretWriter};
 
 // MSI persists this default before the first pairing. It must pass the same
 // HTTPS-only policy as release binaries, even while no Manager is configured.
@@ -496,13 +496,13 @@ impl ClientConfig {
         if self.spool_max_bytes < 1024 * 1024 {
             bail!("spool_max_bytes must be at least 1 MiB");
         }
-        xcsc_runtime::SpoolLimits {
+        xcsc::runtime::SpoolLimits {
             max_record_bytes: crate::model::CLIENT_REPORT_MAX_BODY_BYTES,
-            max_entries: xcsc_runtime::MAX_SPOOL_ENTRIES,
+            max_entries: xcsc::runtime::MAX_SPOOL_ENTRIES,
             max_bytes: self.spool_max_bytes,
         }
         .validate()
-        .context("spool limits exceed the Foundation desktop-client profile")?;
+        .context("spool limits exceed the xcsc desktop-client profile")?;
         let validates_delivery = match command {
             ClientCommand::Probe => false,
             ClientCommand::Doctor => self.doctor_delivery,
@@ -763,7 +763,7 @@ fn publish_private_config(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     // 会留下 root:root 0640，服务账户仍然读不到。
     #[cfg(unix)]
     {
-        use xcsc_fs_safety::{ConfigurationDirectory, EntryName};
+        use xcsc::fs_safety::{ConfigurationDirectory, EntryName};
         let path = std::path::absolute(path)?;
         let directory =
             ConfigurationDirectory::open(path.parent().context("config path has no parent")?)?;
@@ -782,7 +782,7 @@ fn publish_private_config(path: &Path, content: &[u8]) -> anyhow::Result<()> {
 fn read_private_config(path: &Path) -> anyhow::Result<SecretBytes> {
     #[cfg(unix)]
     {
-        use xcsc_fs_safety::{ConfigurationDirectory, EntryName};
+        use xcsc::fs_safety::{ConfigurationDirectory, EntryName};
         let path = std::path::absolute(path)?;
         let directory =
             ConfigurationDirectory::open(path.parent().context("config path has no parent")?)?;
@@ -1026,7 +1026,7 @@ mod tests {
     #[test]
     fn spool_configuration_obeys_platform_ceiling() {
         let mut config = ClientConfig {
-            spool_max_bytes: xcsc_runtime::MAX_SPOOL_BYTES,
+            spool_max_bytes: xcsc::runtime::MAX_SPOOL_BYTES,
             ..Default::default()
         };
         config.validate_for_diagnostics().unwrap();
@@ -1200,7 +1200,7 @@ mod tests {
         assert!(validate_endpoint("https://telemetry.example/report?tenant=one").is_ok());
         assert!(
             validate_endpoint("https://telemetry.example/report#client").is_err(),
-            "Foundation rejects URL fragments before any network request"
+            "xcsc rejects URL fragments before any network request"
         );
     }
 

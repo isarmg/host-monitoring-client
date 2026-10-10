@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
-use xcsc_secret::SecretString;
+use xcsc::secret::SecretString;
 
 pub(crate) fn serialize<S>(secret: &Arc<SecretString>, serializer: S) -> Result<S::Ok, S::Error>
 where

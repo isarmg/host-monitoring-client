@@ -9,7 +9,7 @@ fn persist_state_unlocked(
     store: &StateTransaction,
     state: &StoredPairingState,
 ) -> anyhow::Result<()> {
-    let mut output = xcsc_secret::SecretWriter::new(StateFile::Pairing.max_bytes())?;
+    let mut output = xcsc::secret::SecretWriter::new(StateFile::Pairing.max_bytes())?;
     serde_json::to_writer_pretty(&mut output, state)?;
     let serialized = output.into_bytes();
     store
@@ -41,7 +41,7 @@ fn load_current_active_binding_unlocked(
         Some(_) => Err(corrupt_pairing_state("active-binding"))
             .context("active binding does not match the current Active pairing state"),
         None => Err(corrupt_pairing_state("active-binding"))
-            .context("active binding is missing; pair the Host again"),
+            .context("active binding is missing; pair xsoc again"),
     }
 }
 
@@ -50,7 +50,7 @@ fn compare_and_persist_creating(
     generation: Uuid,
     pairing_endpoint: &str,
     report_endpoint: &str,
-    polling_secret: &xcsc_secret::SecretString,
+    polling_secret: &xcsc::secret::SecretString,
     next: &StoredPairingState,
 ) -> anyhow::Result<()> {
     let transaction = lock_state(config)?;
@@ -80,7 +80,7 @@ fn compare_and_persist_pending(
     request_id: Uuid,
     pairing_endpoint: &str,
     report_endpoint: &str,
-    polling_secret: &xcsc_secret::SecretString,
+    polling_secret: &xcsc::secret::SecretString,
     next: &StoredPairingState,
 ) -> anyhow::Result<()> {
     let transaction = lock_state(config)?;
@@ -102,7 +102,7 @@ fn ensure_pending_is_current(
     request_id: Uuid,
     pairing_endpoint: &str,
     report_endpoint: &str,
-    polling_secret: &xcsc_secret::SecretString,
+    polling_secret: &xcsc::secret::SecretString,
 ) -> anyhow::Result<()> {
     let current = load_state(store)?;
     if !matches!(

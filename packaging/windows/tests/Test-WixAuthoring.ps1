@@ -126,6 +126,10 @@ function Assert-Equal {
 }
 
 $product = Select-One "/w:Wix/w:Package"
+Assert-Equal $product.Name "xsoc" "The MSI must identify the current Client."
+Assert-Equal $product.Manufacturer "sarmg" "The MSI publisher must identify the maintainer."
+$summary = Select-One "/w:Wix/w:Package/w:SummaryInformation"
+Assert-Equal $summary.Manufacturer "sarmg" "The MSI summary must use the same publisher."
 Assert-Equal $product.Scope "perMachine" "The MSI must be per-machine."
 Assert-Equal $product.InstallerVersion "500" "The MSI must target MSI 5.0."
 Assert-Equal ($product.GetAttribute("UpgradeCode")) "B4A341EC-D4B2-419F-A00B-E8E504DE9798" `
@@ -142,8 +146,13 @@ if ($null -ne $package.SelectSingleNode("//w:Property[@Id='ARPNOMODIFY']", $name
     throw "WixUI_InstallDir already defines ARPNOMODIFY; declaring it here breaks MSI linking."
 }
 $installLocation = Select-One "//w:RegistryValue[@Name='InstallLocation']"
+Assert-Equal $installLocation.Key 'Software\sarmg\xsoc' `
+    "The installation path must use the current publisher and Client registry namespace."
 Assert-Equal $installLocation.Value "[INSTALLFOLDER]" `
     "Post-install commands must discover the selected installation directory."
+$managedState = Select-One "//w:RegistryValue[@Name='ManagedStateDirectory']"
+Assert-Equal $managedState.Key 'Software\sarmg\xsoc' `
+    "The state registration must use the same current Client registry namespace."
 foreach ($featureId in @("PreserveConfiguration", "PreserveData", "PrepareSetup")) {
     if ($null -ne $package.SelectSingleNode("//w:Feature[@Id='$featureId']", $namespace)) {
         throw "The installer must not offer the $featureId feature switch."

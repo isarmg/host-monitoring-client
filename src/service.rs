@@ -23,7 +23,7 @@ pub const WINDOWS_SERVICE_NAME: &str = "xsoc";
 /// This is local product identity and does not perform domain account lookup.
 #[cfg(windows)]
 pub fn windows_service_sid() -> String {
-    xcsc_fs_safety::service_sid(WINDOWS_SERVICE_NAME)
+    xcsc::fs_safety::service_sid(WINDOWS_SERVICE_NAME)
         .expect("the fixed product service name satisfies the shared SCM name contract")
 }
 

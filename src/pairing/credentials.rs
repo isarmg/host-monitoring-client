@@ -1,9 +1,9 @@
 use super::*;
 use std::sync::Arc;
-use xcsc_runtime::{CredentialMutation, CredentialSnapshot};
+use xcsc::runtime::{CredentialMutation, CredentialSnapshot};
 
 /// This adapter borrows the already-held transaction, never reopening state or
-/// acquiring a second lock. Host owns the journal/binding, Foundation the API.
+/// acquiring a second lock. xsoc owns the journal/binding, xcsc the API.
 pub(crate) struct HostCredentials<'a> {
     config: &'a ClientConfig,
     store: &'a StateTransaction,

@@ -1,11 +1,11 @@
-//! Host state names, budgets and transaction capabilities. Unix filesystem
-//! mechanics and native private-file capabilities belong to Client Foundation.
+//! xsoc state names, budgets and transaction capabilities. Unix filesystem
+//! mechanics and native private-file capabilities belong to xcsc.
 use std::{
     io,
     ops::Deref,
     path::{Path, PathBuf},
 };
-use xcsc_fs_safety::{AdvisoryLock, AtomicFile, EntryName, PrivateDirectory};
+use xcsc::fs_safety::{AdvisoryLock, AtomicFile, EntryName, PrivateDirectory};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum StateFile {
@@ -35,7 +35,7 @@ impl StateFile {
         }
     }
     fn entry(self) -> EntryName {
-        EntryName::new(self.name()).expect("fixed Host state entry")
+        EntryName::new(self.name()).expect("fixed xsoc state entry")
     }
 }
 
@@ -118,7 +118,7 @@ impl StateTransaction {
         archive_name: &str,
     ) -> io::Result<Option<PathBuf>> {
         let bytes = match self.read(file) {
-            Ok(bytes) => xcsc_secret::SecretBytes::new(bytes),
+            Ok(bytes) => xcsc::secret::SecretBytes::new(bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
@@ -136,7 +136,7 @@ impl StateTransaction {
 fn runtime_io_error(error: anyhow::Error) -> io::Error {
     // Keep typed NotFound/permission errors from the shared opener; diagnostics
     // treat absence as unpaired and must never create state to inspect it.
-    match error.downcast::<xcsc_fs_safety::Error>() {
+    match error.downcast::<xcsc::fs_safety::Error>() {
         Ok(error) => io_error(error),
         Err(error) => match error.downcast::<io::Error>() {
             Ok(error) => error,
@@ -148,13 +148,13 @@ fn runtime_io_error(error: anyhow::Error) -> io::Error {
 #[cfg(test)]
 #[test]
 fn runtime_directory_errors_preserve_absence_and_reject_unsafe_state() {
-    let missing = anyhow::Error::new(xcsc_fs_safety::Error::Io(io::Error::new(
+    let missing = anyhow::Error::new(xcsc::fs_safety::Error::Io(io::Error::new(
         io::ErrorKind::NotFound,
         "missing fixture",
     )))
     .context("directory diagnostic context");
     assert_eq!(runtime_io_error(missing).kind(), io::ErrorKind::NotFound);
-    let unsafe_state = xcsc_fs_safety::Error::UnsafePermissions(PathBuf::from("unsafe"));
+    let unsafe_state = xcsc::fs_safety::Error::UnsafePermissions(PathBuf::from("unsafe"));
     assert_eq!(
         runtime_io_error(unsafe_state.into()).kind(),
         io::ErrorKind::InvalidData
@@ -166,9 +166,9 @@ fn runtime_directory_errors_preserve_absence_and_reject_unsafe_state() {
     );
 }
 
-fn io_error(error: xcsc_fs_safety::Error) -> io::Error {
+fn io_error(error: xcsc::fs_safety::Error) -> io::Error {
     match error {
-        xcsc_fs_safety::Error::Io(error) => error,
+        xcsc::fs_safety::Error::Io(error) => error,
         error => io::Error::new(io::ErrorKind::InvalidData, error),
     }
 }

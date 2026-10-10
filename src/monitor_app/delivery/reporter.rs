@@ -50,7 +50,7 @@ fn apply_reporter_snapshot(
     xsoc::runtime_status::observe("binding_generation", serde_json::json!(host.id));
     xsoc::runtime_status::observe(
         "effective_revision",
-        serde_json::json!(xcsc_cli::revision(&serde_json::to_vec(config)?)),
+        serde_json::json!(xcsc::cli::revision(&serde_json::to_vec(config)?)),
     );
     Ok(reporter)
 }

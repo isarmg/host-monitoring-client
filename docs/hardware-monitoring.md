@@ -74,6 +74,6 @@ SMART 按设备路径和 smartctl 类型选择器共同区分物理盘。扫描�
 
 升级前积压的非当前 schema 报告保留原始字节隔离，不尝试转换，也不把版本问题累积为磁盘故障。CLI JSON、配对协议的版本号独立于报告 schema，不随此变更提升。
 
-客户端通过完整 Git revision `44e2090f113a78d38b26d59c638756de37c60383` 固定依赖 Server 的 `xsos-protocol` 1.0.0，统一使用 schema 1。协议源码仅由 Server 的 `crates/protocol/src` 维护；独立克隆客户端即可构建，不需要相邻服务端目录。
+客户端通过完整 Git revision `6458cb63bc1b868156ebb26eecdc09d563026df2` 固定依赖 Server 的 `xsos-protocol` 1.0.0，统一使用 schema 1。协议源码仅由 Server 的 `crates/protocol/src` 维护；独立克隆客户端即可构建，不需要相邻服务端目录。
 
 接口依据：[Linux hwmon](https://docs.kernel.org/hwmon/sysfs-interface.html)、[Intel Xe 频率接口](https://www.kernel.org/doc/html/latest/gpu/xe/xe_gt_freq.html)、[smartctl 手册源码](https://github.com/smartmontools/smartmontools/blob/master/smartmontools/smartctl.8.in)。

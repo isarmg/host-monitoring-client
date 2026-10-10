@@ -48,12 +48,12 @@ pub(super) async fn run_loop(
     reporter: Reporter,
     process_shutdown: &ShutdownSignal,
 ) -> anyhow::Result<()> {
-    let (delivery_trigger, delivery_receiver) = xcsc_runtime::DeliveryWake::channel();
+    let (delivery_trigger, delivery_receiver) = xcsc::runtime::DeliveryWake::channel();
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let (host_sender, host_receiver) = watch::channel(host.clone());
     let driver =
         HostDeliveryDriver::new(config.clone(), host, spool.clone(), reporter, host_sender);
-    let worker = xcsc_runtime::DeliveryWorker::new(driver, config.jitter_percent)?;
+    let worker = xcsc::runtime::DeliveryWorker::new(driver, config.jitter_percent)?;
     let mut delivery_worker = tokio::spawn(worker.run(delivery_receiver, shutdown_receiver));
 
     let mut spool_read_health = SpoolHealth::default();
@@ -100,7 +100,7 @@ pub(super) async fn run_loop(
                     warn!(report_id = %report.report_id, "delivery worker stopped before notification");
                 }
                 cadence.schedule_next(
-                    xcsc_runtime::sampling_jitter(config.interval(), config.jitter_percent)?,
+                    xcsc::runtime::sampling_jitter(config.interval(), config.jitter_percent)?,
                     tokio::time::Instant::now(),
                 );
             }
@@ -177,12 +177,12 @@ enum HostRecoveryProbe {
     Pairing(Option<PairingProgress>),
 }
 
-impl xcsc_runtime::ClientDeliveryDriver for HostDeliveryDriver {
+impl xcsc::runtime::ClientDeliveryDriver for HostDeliveryDriver {
     type Probe = HostRecoveryProbe;
     type Failure = xsoc::transport::SendError;
     type Error = anyhow::Error;
 
-    fn recover(&self) -> xcsc_runtime::DeliveryFuture<anyhow::Result<Self::Probe>> {
+    fn recover(&self) -> xcsc::runtime::DeliveryFuture<anyhow::Result<Self::Probe>> {
         let config = self.config.clone();
         let revision = self.reporter.credential_revision();
         Box::pin(async move {
@@ -200,8 +200,8 @@ impl xcsc_runtime::ClientDeliveryDriver for HostDeliveryDriver {
     fn apply_recovery(
         &mut self,
         probe: Self::Probe,
-    ) -> anyhow::Result<xcsc_runtime::RecoveryUpdate> {
-        use xcsc_runtime::RecoveryUpdate;
+    ) -> anyhow::Result<xcsc::runtime::RecoveryUpdate> {
+        use xcsc::runtime::RecoveryUpdate;
         let (probe, snapshot) = match probe {
             HostRecoveryProbe::Credential(snapshot) => {
                 (pairing::local_progress(&self.config)?, Some(*snapshot))
@@ -253,7 +253,7 @@ impl xcsc_runtime::ClientDeliveryDriver for HostDeliveryDriver {
         Ok(RecoveryUpdate::Unchanged { poll_after })
     }
 
-    fn batch(&self) -> xcsc_runtime::DeliveryFuture<anyhow::Result<FlushOutcome>> {
+    fn batch(&self) -> xcsc::runtime::DeliveryFuture<anyhow::Result<FlushOutcome>> {
         let spool = self.spool.clone();
         let reporter = self.reporter.clone();
         let otlp = self.otlp_queue.clone();
@@ -263,8 +263,8 @@ impl xcsc_runtime::ClientDeliveryDriver for HostDeliveryDriver {
     fn classify_failure(
         &mut self,
         error: &Self::Failure,
-    ) -> xcsc_runtime::DeliveryResponse {
-        use xcsc_runtime::DeliveryResponse;
+    ) -> xcsc::runtime::DeliveryResponse {
+        use xcsc::runtime::DeliveryResponse;
         if !error.is_unauthorized() {
             return DeliveryResponse::Retry;
         }

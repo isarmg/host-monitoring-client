@@ -6,7 +6,7 @@ use std::{io, path::Path};
 /// Bounded native private reads use the shared descriptor and service policy.
 #[cfg(not(unix))]
 pub(crate) fn read_private(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
-    use xcsc_fs_safety::EntryName;
+    use xcsc::fs_safety::EntryName;
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent"))?;
@@ -26,7 +26,7 @@ pub(crate) fn read_private(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>>
 pub(crate) fn ensure_private_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        xcsc_fs_safety::PrivateDirectory::create_for_administration(std::path::absolute(path)?)
+        xcsc::fs_safety::PrivateDirectory::create_for_administration(std::path::absolute(path)?)
             .map_err(io::Error::other)?;
     }
     #[cfg(not(unix))]
@@ -37,7 +37,7 @@ pub(crate) fn ensure_private_directory(path: &Path) -> io::Result<()> {
 /// Descriptor-based atomic publication preserves the shared private service policy.
 #[cfg(not(unix))]
 pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
-    use xcsc_fs_safety::{AtomicFile, EntryName};
+    use xcsc::fs_safety::{AtomicFile, EntryName};
     let parent = target
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent"))?;
@@ -51,9 +51,9 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     AtomicFile::replace(&directory, &name.as_relative(), bytes).map_err(io_error)
 }
 #[cfg(not(unix))]
-fn io_error(error: xcsc_fs_safety::Error) -> io::Error {
+fn io_error(error: xcsc::fs_safety::Error) -> io::Error {
     match error {
-        xcsc_fs_safety::Error::Io(error) => error,
+        xcsc::fs_safety::Error::Io(error) => error,
         error => io::Error::new(io::ErrorKind::InvalidData, error),
     }
 }

@@ -37,8 +37,8 @@ mod commit;
 mod credential_tests;
 mod credentials;
 pub(crate) use credentials::HostCredentials;
-use xcsc_runtime::{CredentialAuthorization, CredentialStore};
-use xcsc_secret::SecretString;
+use xcsc::runtime::{CredentialAuthorization, CredentialStore};
+use xcsc::secret::SecretString;
 mod state;
 
 use activation::*;

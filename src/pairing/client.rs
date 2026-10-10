@@ -3,7 +3,7 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use uuid::Uuid;
-use xcsc_secret::{SecretKey, SecretString};
+use xcsc::secret::{SecretKey, SecretString};
 
 pub(super) fn random_secret() -> anyhow::Result<Arc<SecretString>> {
     use rand::TryRng;
@@ -134,7 +134,7 @@ pub(super) fn ensure_pairing_response(
         return Ok(());
     }
     let envelope = (pairing_content_type_for_diagnostics(content_type) == "application/json")
-        .then(|| serde_json::from_slice::<xcsc_error::ErrorEnvelope>(body).ok())
+        .then(|| serde_json::from_slice::<xcsc::error::ErrorEnvelope>(body).ok())
         .flatten();
     let protocol = envelope.as_ref().filter(|error| {
         status == StatusCode::BAD_REQUEST

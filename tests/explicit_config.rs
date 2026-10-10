@@ -128,7 +128,7 @@ fn noncurrent_configuration_is_rejected_without_rewriting_or_starting_runtime() 
 #[test]
 fn identity_quarantine_is_reported_by_read_only_cli_without_disclosing_or_modifying_evidence() {
     use std::os::unix::fs::PermissionsExt;
-    use xcsc_runtime::{BoundedBytes, ContractId, QuarantineReason, Spool, SpoolLimits};
+    use xcsc::runtime::{BoundedBytes, ContractId, QuarantineReason, Spool, SpoolLimits};
     let fixture = Fixture::new();
     fs::create_dir(&fixture.state_dir).unwrap();
     fs::set_permissions(&fixture.state_dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -246,7 +246,7 @@ fn tls_diagnostics_use_real_client_inputs_without_network_writes_or_secret_outpu
             "https://{}/v1/metrics",
             listener.local_addr().unwrap()
         ));
-        config.otlp_token = Some(Arc::new(xcsc_secret::SecretString::new(
+        config.otlp_token = Some(Arc::new(xcsc::secret::SecretString::new(
             "otlp-secret-marker".into(),
         )));
     }
@@ -350,7 +350,7 @@ fn tls_diagnostics_use_real_client_inputs_without_network_writes_or_secret_outpu
     config.tls_ca_pem = Some(fifo);
     check(&config, false);
     config.tls_ca_pem = None;
-    config.tls_identity_password = Some(Arc::new(xcsc_secret::SecretString::new(
+    config.tls_identity_password = Some(Arc::new(xcsc::secret::SecretString::new(
         "password-secret-marker".into(),
     )));
     check(&config, false);
@@ -363,7 +363,7 @@ fn tls_diagnostics_use_real_client_inputs_without_network_writes_or_secret_outpu
 fn credential_diagnostics_are_bounded_read_only_and_reject_unsafe_files() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let fixture = Fixture::new();
-    xcsc_fs_safety::PrivateDirectory::create(&fixture.state_dir).unwrap();
+    xcsc::fs_safety::PrivateDirectory::create(&fixture.state_dir).unwrap();
     let credential = fixture.state_dir.join("client-token");
     let config_path = fixture.root.join("config.json");
     let mut config = xsoc::ClientConfig::default();
@@ -512,7 +512,7 @@ fn status_reports_a_missing_explicit_config_without_creating_state() {
 fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
     use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
-    let session = xcsc_runtime::ClientSession::open(&fixture.state_dir).unwrap();
+    let session = xcsc::runtime::ClientSession::open(&fixture.state_dir).unwrap();
     let path = fixture.root.join("config.json");
     let mut config = xsoc::ClientConfig::default();
     config.state_dir = fixture.state_dir.clone();
@@ -552,5 +552,5 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
     }
     assert_eq!(fs::read_dir(&fixture.state_dir).unwrap().count(), 2); // instance plus maintenance gate
     drop(session);
-    assert!(xcsc_runtime::ClientSession::open(&fixture.state_dir).is_ok());
+    assert!(xcsc::runtime::ClientSession::open(&fixture.state_dir).is_ok());
 }
