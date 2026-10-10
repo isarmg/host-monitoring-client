@@ -72,8 +72,6 @@ SMART 按设备路径和 smartctl 类型选择器共同区分物理盘。扫描�
 
 报告结构仅支持 **1**，继续使用严格字段解析。硬件位于 `system.hardware`，没有进程扩展。服务端、客户端和 Web 必须同步更新；新增硬件清单字段为必填，不接受其他结构或缺少清单字段的报告，不转换旧数据，也不会回退发送旧协议。明确的协议拒绝或当前错误格式的永久 400 响应会提示检查版本并停止重试该报告，不清除配对凭据。无法识别的代理错误仍按网络故障退避，避免误删凭据。
 
-升级前积压的非当前结构报告保留原始字节隔离，不尝试转换，也不把版本问题累积为磁盘故障。CLI 的 JSON 输出、配对协议的版本号独立于报告结构，不随此变更提升。
-
 客户端通过完整 Git 提交修订 `3b5c437a80424c717a20ffbad07c3e8d01cd83ae` 固定依赖服务端的 `xsos-protocol` 1.0.0，统一使用结构 1。协议源码仅由服务端的 `crates/protocol/src` 维护；独立克隆客户端即可构建，不需要相邻服务端目录。
 
 接口依据：[Linux hwmon](https://docs.kernel.org/hwmon/sysfs-interface.html)、[Intel Xe 频率接口](https://www.kernel.org/doc/html/latest/gpu/xe/xe_gt_freq.html)、[smartctl 手册源码](https://github.com/smartmontools/smartmontools/blob/master/smartmontools/smartctl.8.in)。

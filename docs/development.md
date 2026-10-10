@@ -22,7 +22,7 @@ XSOC_BUILD_SHA="$(git rev-parse HEAD)" cargo build --locked --release --bin xsoc
 NFPM_BIN="$(go env GOPATH)/bin/nfpm" sh packaging/linux/build-packages.sh
 ```
 
-生成 `dist/xsoc_1.0.0_amd64.deb` 和 `dist/xsoc-1.0.0.x86_64.rpm`。构建器核对 Cargo 版本、ELF 架构和版本标记；使用默认 `target/release/xsoc` 路径，不使用自定义 `CARGO_TARGET_DIR`。安装、配对和服务操作见[平台指南](platform-setup.md)。
+生成 `dist/xsoc_1.0.0_amd64.deb` 和 `dist/xsoc-1.0.0.x86_64.rpm`。构建器核对 Cargo 版本、ELF 架构和版本标记；使用默认 `target/release/xsoc` 路径，不使用自定义 `CARGO_TARGET_DIR`。安装与配对见[平台指南](platform-setup.md)，服务维护见[维护指南](administration.md)。
 
 ## Windows x64 原生包
 
@@ -61,3 +61,17 @@ smartmontools 输出目录必须尚不存在；脚本核对上游源码摘要。
 客户端不提供托盘或本地网页；移动宿主库边界与原生桌面安装包不同，见[硬件监控](hardware-monitoring.md)。配置候选文件、轮换、队列和诊断见[配置指南](configuration.md)。不要把授权码、客户端令牌或 OTLP 令牌写入命令参数、Shell 历史或日志；交互授权码会明文回显，应使用受保护终端。
 
 代码采用 [Apache License 2.0](../LICENSE-APACHE)。
+
+## 编辑文档
+
+面向使用者按安装、配置、正常使用、维护和排障组织内容；完整字段与输出集中在参考页。示例写明平台和权限，预期结果紧跟操作，秘密与数据清理提示放在对应步骤。参照 [GNU 手册建议](https://www.gnu.org/prep/standards/html_node/GNU-Manuals.html)。检查链接和命令后，运行受影响的安装包文档检查。
+
+## 可选 OTLP 与移动宿主
+
+默认特性为 desktop、nvidia。需要 OTLP 的自建客户端可执行：
+
+```sh
+XSOC_BUILD_SHA="$(git rev-parse HEAD)" cargo build --locked --release --features otlp --bin xsoc
+```
+
+OTLP 在主服务确认报告后尽力导出，使用独立目标和凭据。移动宿主使用 `--no-default-features` 的 Rust 库，由原生宿主提供快照、权限、调度、网络和凭据存储；本仓库的桌面包不生成 APK/IPA。
