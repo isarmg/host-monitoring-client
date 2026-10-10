@@ -7,6 +7,7 @@
 | Windows SCM 与服务回调 | 操作原生系统服务和报告状态；SDK 返回的结构必须有正确对齐、长度及所有权。 | 回调使用安全 `extern` 函数并包含 `panic` 边界；配置缓冲区最多 8 KiB，字符串指针必须位于返回缓冲区内，UTF-16 对齐、终止和编码均检查。服务命令最多 8192 个 UTF-16 单元、参数最多 128 个，LocalFree 通过 RAII 覆盖错误出口。 |
 | 行政安装器 ACL、目录身份、原子日志与维护动作 | 管理员维护既有系统安装树、SCM 私有目录及凭据角色，普通运行时私有文件 API 不具有修复权限。 | 常规文件打开改用安全 OpenOptions/File；原生权限描述符、链接计数、原子替换与权限授予保留最小 SDK 调用。句柄、祖先与安全描述符均活到同步调用结束，拒绝重解析点、多链接和错误角色。运行期状态、锁、SID 已全部收敛到共享实现。 |
 | Windows GPU ADLX / IGCL | 官方只读 SDK 提供 C ABI、虚函数表与厂商句柄，安全 Rust 无对应系统功能。 | 固定权威头文件 ABI，只解析只读函数，固定 System32 DLL 路径并保持 DLL 生命周期；枚举、输出结构和字符串有上限，IGCL `Default` 改用显式字段初始化。设备异常输出映射 `unknown`，不当作不支持。模拟 ABI 与结构断言不能替代真实显卡验证。 |
+| Windows NVIDIA UUID / LUID | 将 NVML 与 DXGI 的同一设备关联，避免重复汇总或漏掉有效字段。 | 只加载 System32 的 NVIDIA CUDA 驱动，使用官方只读设备身份接口；固定 UUID / LUID 缓冲区、枚举上限和同步调用生命周期，DLL 由 RAII 释放。不创建上下文、不修改配置、无需 Toolkit。无法证明身份时明确报告降级，ABI 来源见 GPU 文档。 |
 | Windows 元数据、进程、磁盘与 SMART | 读取系统原生硬件及进程属性。 | 缓冲区先定预算再分配，检查实际返回长度、对齐和句柄生命周期；普通网络和文件业务使用安全 Rust。 |
 | macOS 网络硬件及接口状态 | 公共 SystemConfiguration/CoreFoundation 与 BSD getifaddrs 无安全 Rust 标准库对应功能。 | 只读 Ethernet/IEEE80211 清单及接口标志；CF Copy 结果和 getifaddrs 分配各自 RAII 单次释放；字符串固定 UTF-8 缓冲区、枚举上限、借用不超出所属数组生命周期。原生 Mac 测试与低权限服务真实上报验证。 |
 | macOS 后台显示器清单 | launchd 账户的系统报告不暴露图形会话显示器；通过公共 IOKit 只读读取连接设备的 DisplayAttributes。 | 仅在系统报告无显示器时读取型号与厂商/产品 ID；不读取序列号。CF 属性先检查类型，借用不超出拥有的快照；IO/CF 句柄 RAII 单次释放，最多 64 个条目、固定字符串缓冲区。服务账户实机验证。 |

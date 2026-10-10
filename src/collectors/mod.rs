@@ -18,6 +18,8 @@ use crate::model::{
     GpuSnapshot, HostIdentity, MemorySnapshot, NetworkSnapshot, SystemSnapshot,
     TemperatureSnapshot,
 };
+#[cfg(any(target_os = "windows", test))]
+mod gpu_merge;
 #[cfg(target_os = "linux")]
 mod linux_gpu;
 #[cfg(target_os = "linux")]
@@ -34,6 +36,8 @@ mod macos_network;
 // Keep platform-independent NVML tests without loading it on unsupported systems.
 mod nvidia;
 #[cfg(any(target_os = "windows", test))]
+mod nvidia_identity;
+#[cfg(any(target_os = "windows", test))]
 mod pdh_buffer;
 #[cfg(any(target_os = "windows", test))]
 mod pdh_recovery;
@@ -44,6 +48,7 @@ mod windows_gpu;
 #[cfg_attr(not(windows), allow(dead_code))] // Exercise native ABI/conversion tests on Linux.
 mod windows_vendor;
 
+mod disk_rates;
 mod hardware;
 mod inventory;
 pub mod smart;
@@ -53,6 +58,7 @@ pub struct SystemSampler {
     system: System,
     networks: Networks,
     disks: Disks,
+    disk_rates: disk_rates::DiskRates,
     components: Components,
     last_sample: Instant,
     last_slow_sample: Option<Instant>,
@@ -75,6 +81,9 @@ impl SystemSampler {
         let mut gpu_runtime = GpuRuntime::new();
         #[cfg(target_os = "windows")]
         let _ = gpu_runtime.collect(); // Prime PDH and start asynchronous vendor sampling.
+        let disks = Disks::new_with_refreshed_list();
+        let mut disk_rates = disk_rates::DiskRates::default();
+        disk_rates.update(&mut collect_disks(&disks), 1.0);
         Self {
             // The Client never reads process data. `new_all()` eagerly walks
             // every process (and Linux task) and retains that unused snapshot
@@ -85,7 +94,8 @@ impl SystemSampler {
                     .with_memory(MemoryRefreshKind::everything()),
             ),
             networks: Networks::new_with_refreshed_list(),
-            disks: Disks::new_with_refreshed_list(),
+            disks,
+            disk_rates,
             components: {
                 #[cfg(target_os = "linux")]
                 {
@@ -170,7 +180,8 @@ impl SystemSampler {
         }
 
         let gpu = self.gpu_runtime.collect();
-        let disk_snapshots = collect_disks(&self.disks, elapsed_seconds);
+        let mut disk_snapshots = collect_disks(&self.disks);
+        self.disk_rates.update(&mut disk_snapshots, elapsed_seconds);
         let mut capabilities =
             core_capabilities(&self.cached_temperature_capability, &disk_snapshots);
         let (disk_health, smart_capability) = self.smart.poll();
@@ -319,7 +330,7 @@ fn collect_networks(networks: &Networks, interval_seconds: f64) -> Vec<NetworkSn
     )
 }
 
-fn collect_disks(disks: &Disks, interval_seconds: f64) -> Vec<DiskSnapshot> {
+fn collect_disks(disks: &Disks) -> Vec<DiskSnapshot> {
     // `Disks` retains sysinfo's own enumeration, but the report-facing copy is bounded.
     collect_bounded(
         disks.iter().map(|disk| {
@@ -332,8 +343,9 @@ fn collect_disks(disks: &Disks, interval_seconds: f64) -> Vec<DiskSnapshot> {
                 available_bytes: disk.available_space(),
                 read_bytes_total: usage.total_read_bytes,
                 written_bytes_total: usage.total_written_bytes,
-                read_bytes_per_second: per_second(usage.read_bytes, interval_seconds),
-                written_bytes_per_second: per_second(usage.written_bytes, interval_seconds),
+                // Filled only after the sampler has an earlier observation of this volume.
+                read_bytes_per_second: 0.0,
+                written_bytes_per_second: 0.0,
                 is_read_only: disk.is_read_only(),
             }
         }),
@@ -568,18 +580,22 @@ impl GpuRuntime {
         #[cfg(target_os = "windows")]
         {
             let result = self.windows.collect();
-            let nvidia_count = gpus
+            let identities =
+                if !gpus.is_empty() && result.0.iter().any(|gpu| gpu.vendor == "nvidia") {
+                    nvidia_identity::windows_luids()
+                } else {
+                    Default::default()
+                };
+            let nvml_luids: Vec<_> = gpus
                 .iter()
-                .filter(|g| g.vendor.eq_ignore_ascii_case("nvidia"))
-                .count();
-            let dxgi_nvidia_count = result.0.iter().filter(|g| g.vendor == "nvidia").count();
-            for gpu in result.0 {
-                // NVML is the richer whole-device source. When it covers every NVIDIA
-                // adapter, avoid counting the same VRAM twice through DXGI.
-                if gpu.vendor == "nvidia" && nvidia_count > 0 && nvidia_count == dxgi_nvidia_count {
-                    continue;
-                }
-                push_bounded(&mut gpus, gpu, CLIENT_REPORT_MAX_GPUS);
+                .map(|gpu| nvidia_identity::lookup(&identities, &gpu.id))
+                .collect();
+            if let Some(diagnostic) = gpu_merge::merge_windows(&mut gpus, result.0, &nvml_luids) {
+                push_bounded(
+                    &mut capabilities,
+                    diagnostic,
+                    CLIENT_REPORT_MAX_CAPABILITIES,
+                );
             }
             push_bounded(&mut capabilities, result.1, CLIENT_REPORT_MAX_CAPABILITIES);
             #[cfg(target_arch = "x86_64")]

@@ -405,7 +405,33 @@ impl Reporter {
             header::HeaderValue::from_static("gzip"),
         );
         let response = post_bounded(&self.client, endpoint, headers, body).await?;
-        Ok(ensure_generic_success(response.status, "OTLP")?)
+        let outcome = validate_otlp_response(
+            response.status,
+            response
+                .headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            &response.body,
+        )?;
+        match outcome {
+            crate::otlp::ExportOutcome::Accepted => {}
+            crate::otlp::ExportOutcome::Partial {
+                rejected_data_points,
+            } => {
+                tracing::warn!(
+                    event = "xsoc.otlp.partial_success",
+                    rejected_data_points,
+                    "OTLP collector rejected metric data points; consult collector diagnostics; partial successes are not retried"
+                );
+            }
+            crate::otlp::ExportOutcome::Warning => {
+                tracing::warn!(
+                    event = "xsoc.otlp.collector_warning",
+                    "OTLP collector accepted metrics with a warning; consult collector diagnostics"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[cfg(not(feature = "otlp"))]
@@ -911,12 +937,29 @@ pub fn classify_xsos_response(
 
 #[cfg(feature = "otlp")]
 fn ensure_generic_success(status: StatusCode, target: &str) -> Result<(), SendError> {
-    if status.is_success() {
+    if status == StatusCode::OK {
         return Ok(());
     }
     Err(SendError::Transient(format!(
         "{target} rejected telemetry with HTTP {status}"
     )))
+}
+
+#[cfg(feature = "otlp")]
+fn validate_otlp_response(
+    status: StatusCode,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> anyhow::Result<crate::otlp::ExportOutcome> {
+    ensure_generic_success(status, "OTLP")?;
+    anyhow::ensure!(
+        content_type.is_some_and(|value| value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/x-protobuf"))),
+        "unexpected OTLP response content type"
+    );
+    crate::otlp::decode_export_response(body)
 }
 
 /// Explicit unauthenticated network diagnostic using the configured protected TLS inputs.
@@ -1067,6 +1110,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(!format!("{error:?}/{error}").contains("private-credential"));
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn otlp_partial_success_remains_successful_with_an_explicit_outcome() {
+        use opentelemetry_proto::tonic::collector::metrics::v1::{
+            ExportMetricsPartialSuccess, ExportMetricsServiceResponse,
+        };
+        use prost::Message;
+        let body = ExportMetricsServiceResponse {
+            partial_success: Some(ExportMetricsPartialSuccess {
+                rejected_data_points: 5,
+                error_message: "collector diagnostic".into(),
+            }),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            validate_otlp_response(
+                StatusCode::OK,
+                Some("application/x-protobuf; charset=binary"),
+                &body,
+            )
+            .unwrap(),
+            crate::otlp::ExportOutcome::Partial {
+                rejected_data_points: 5
+            }
+        );
+        assert_eq!(
+            validate_otlp_response(StatusCode::OK, Some("application/x-protobuf"), &[]).unwrap(),
+            crate::otlp::ExportOutcome::Accepted
+        );
+        for status in [StatusCode::ACCEPTED, StatusCode::NO_CONTENT] {
+            assert!(validate_otlp_response(status, Some("application/x-protobuf"), &body).is_err());
+        }
+        for content_type in [None, Some("text/html"), Some("application/json")] {
+            assert!(validate_otlp_response(StatusCode::OK, content_type, &body).is_err());
+        }
     }
 
     #[test]

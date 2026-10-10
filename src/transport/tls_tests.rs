@@ -291,8 +291,12 @@ async fn real_tls_and_mtls_verify_peer_identity_before_report_delivery() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn otlp_uses_the_same_verified_mtls_transport() {
     let certificates = Certificates::new();
-    for identity in [Some("client"), None] {
-        let mut peer = Peer::start(&certificates.0, "server", true, "TLSv1_3", "otlp");
+    for (target, identity) in [
+        ("otlp", Some("client")),
+        ("otlp", None),
+        ("otlp-partial", Some("client")),
+    ] {
+        let mut peer = Peer::start(&certificates.0, "server", true, "TLSv1_3", target);
         let config = ClientConfig {
             otlp_endpoint: Some(format!("{}/v1/metrics", peer.origin)),
             otlp_token: Some(Arc::new(SecretString::new(
@@ -318,7 +322,7 @@ async fn otlp_uses_the_same_verified_mtls_transport() {
         assert_eq!(
             result.is_ok(),
             identity.is_some(),
-            "OTLP mTLS case {identity:?}: {result:?}"
+            "OTLP mTLS case {target}/{identity:?}: {result:?}"
         );
         if let Err(error) = result {
             assert!(!format!("{error:#}/{error:?}").contains("tls-fixture-secret-marker"));

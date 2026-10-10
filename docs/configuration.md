@@ -83,6 +83,8 @@ SMART 设备要求与 TLS/OTLP 数据含义见[硬件监控](hardware-monitoring
 
 OTLP 的网络和磁盘字节计数保留操作系统累计值，使用 monotonic cumulative Sum。报告没有提供每个设备计数器的准确起点，因此 `StartTimeUnixNano` 为 0（未知），遵循 [OTLP 对未知起点的定义](https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/metrics/v1/metrics.proto)。不会用整数 uptime 推算一个随采样抖动变化的启动时间；补传也保留原报告的采集时刻。下游应支持未知起点，并根据累计值下降识别重启或设备计数器重置；若重置后计数已超过前值，当前报告协议无法判断这次重置。
 
+OTLP HTTP 200 的 Protobuf 响应会检查 `partial_success`：拒收数据点时记录 `xsoc.otlp.partial_success` 和数量；只含警告时记录 `xsoc.otlp.collector_warning`。具体原因请查询 Collector 日志，客户端不回显服务端自由文本。依照 [OTLP 部分成功规则](https://opentelemetry.io/docs/specs/otlp/#partial-success-1)，部分成功不重试，以免重复已接收的数据点；可选 OTLP 导出不改变主服务端上报的确认状态。
+
 常驻 `run` 启动后立即采集第一份报告。首报的 `interval_seconds` 向服务端声明配置的下次采样周期，供在线状态估算；网络和磁盘速率仍按从采样器初始化到首报的实测时间计算。后续报告的 `interval_seconds` 使用实测采样周期，并限制在协议范围内。休眠或进程暂停使实测周期超过协议上限时，网络和磁盘速率仍使用完整实测时间，不因报告周期被截断而虚高。
 
 ## 3. 修改、校验和提交

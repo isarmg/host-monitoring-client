@@ -45,7 +45,7 @@ with socket.socket() as listener:
                 request.extend(chunk)
             headers, body = bytes(request).split(b"\r\n\r\n", 1)
             lines = headers.decode("ascii").split("\r\n")
-            expected_path = "/v1/metrics" if target == "otlp" else "/api/v1/xsoc/report"
+            expected_path = "/v1/metrics" if target.startswith("otlp") else "/api/v1/xsoc/report"
             assert lines[0] == f"POST {expected_path} HTTP/1.1", "unexpected method or target"
             fields = {}
             for line in lines[1:]:
@@ -61,13 +61,15 @@ with socket.socket() as listener:
                 assert chunk, "incomplete body"
                 body += chunk
             assert len(body) == length, "unexpected pipelined data"
-            if target == "otlp":
+            if target.startswith("otlp"):
                 assert fields["content-type"] == "application/x-protobuf", "invalid OTLP type"
                 assert fields["content-encoding"] == "gzip", "invalid OTLP encoding"
                 with gzip.GzipFile(fileobj=io.BytesIO(body)) as decoder:
                     decoded = decoder.read(1024 * 1024 + 1)
                 assert 0 < len(decoded) <= 1024 * 1024, "invalid OTLP message size"
-                response = b"{}"
+                # Empty full success, or partial_success.rejected_data_points = 5.
+                response = b"\x0a\x02\x08\x05" if target == "otlp-partial" else b""
+                response_type = b"application/x-protobuf"
                 status = b"200 OK"
             else:
                 assert fields["content-type"] == "application/json", "invalid report type"
@@ -81,8 +83,9 @@ with socket.socket() as listener:
                     "received_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }).encode()
                 status = b"202 Accepted"
+                response_type = b"application/json"
             result["http"] = True
-            connection.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
+            connection.sendall(b"HTTP/1.1 " + status + b"\r\nContent-Type: " + response_type + b"\r\nConnection: close\r\nContent-Length: "
                                + str(len(response)).encode() + b"\r\n\r\n" + response)
     except ssl.SSLError:
         result["tls_rejected"] = True

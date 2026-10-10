@@ -1,4 +1,12 @@
-# Windows AMD / Intel 只读遥测
+# Windows GPU 厂商只读遥测
+
+## NVIDIA 与 DXGI 的设备关联
+
+NVIDIA 仍以 NVML 的有效字段为准。客户端只从 System32 加载已有驱动的 `nvcuda.dll`，使用 `cuInit`、`cuDeviceGetCount`、`cuDeviceGet`、`cuDeviceGetUuid` 和 `cuDeviceGetLuid` 将 NVML UUID 关联到 DXGI LUID；不要求安装 CUDA Toolkit，不创建计算上下文，也不修改设备配置。ABI 依据 [NVIDIA CUDA Driver API 12.8.1 设备接口](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-driver-api/group__CUDA__DEVICE.html)：`CUdevice` / `CUresult` 为 C int，UUID 为 16 字节，Windows 调用约定为 CUDAAPI（`__stdcall`），LUID 对应 Windows 的 8 字节标识。
+
+身份唯一匹配时仅逐字段补齐 NVML 缺失的数据，保留上报中的 NVML UUID。可比较的显存容量不一致、或补充后使用量超过总量时，不混合显存字段并报告不可用诊断，其他兼容字段仍可补充。可证明不同的 DXGI 设备独立保留，不依据型号或设备数量推断。身份查询失败且可能与 NVML 重叠时保留 NVML 和已证明的匹配，暂不纳入无法确认的 DXGI NVIDIA 读数，并报告 `gpu.nvidia.identity` 不可用及省略数量。没有 NVML 记录时正常保留 DXGI。身份映射的纯逻辑测试和 Windows 目标编译不能代替目标驱动实机验证。
+
+## AMD / Intel 遥测
 
 Windows x64 客户端自动启用 ADLX / IGCL，通过本机驱动读取数据。没有远程命令、进程枚举、调频、电压设置、风扇控制、超频授权或固件操作，也没有相应配置、协议字段或服务端接口。
 

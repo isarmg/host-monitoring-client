@@ -8,6 +8,101 @@ use prost::{Message, Oneof};
 use crate::model::{ClientReport, GpuSnapshot};
 
 #[derive(Clone, PartialEq, Message)]
+struct ExportMetricsServiceResponse {
+    #[prost(message, optional, tag = "1")]
+    partial_success: Option<ExportMetricsPartialSuccess>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ExportMetricsPartialSuccess {
+    #[prost(int64, tag = "1")]
+    rejected_data_points: i64,
+    #[prost(string, tag = "2")]
+    error_message: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExportOutcome {
+    Accepted,
+    Partial { rejected_data_points: u64 },
+    Warning,
+}
+
+pub(crate) fn decode_export_response(body: &[u8]) -> anyhow::Result<ExportOutcome> {
+    let response = ExportMetricsServiceResponse::decode(body)
+        .map_err(|_| anyhow::anyhow!("invalid OTLP metrics response"))?;
+    let Some(partial) = response.partial_success else {
+        return Ok(ExportOutcome::Accepted);
+    };
+    let rejected_data_points = u64::try_from(partial.rejected_data_points)
+        .map_err(|_| anyhow::anyhow!("invalid OTLP rejected data point count"))?;
+    // Do not propagate collector-controlled diagnostic text: a proxy/collector may
+    // reflect request credentials. The count and warning state are sufficient to
+    // tell operators to consult the collector's own diagnostics.
+    Ok(if rejected_data_points > 0 {
+        ExportOutcome::Partial {
+            rejected_data_points,
+        }
+    } else if !partial.error_message.is_empty() {
+        ExportOutcome::Warning
+    } else {
+        ExportOutcome::Accepted
+    })
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_full_partial_and_warning_responses_from_official_types() {
+        use opentelemetry_proto::tonic::collector::metrics::v1::{
+            ExportMetricsPartialSuccess as OfficialPartial,
+            ExportMetricsServiceResponse as OfficialResponse,
+        };
+        assert_eq!(
+            decode_export_response(&[]).unwrap(),
+            ExportOutcome::Accepted
+        );
+        for (rejected, message, expected) in [
+            (0, "", ExportOutcome::Accepted),
+            (
+                5,
+                "five points rejected",
+                ExportOutcome::Partial {
+                    rejected_data_points: 5,
+                },
+            ),
+            (0, "collector warning", ExportOutcome::Warning),
+        ] {
+            let body = OfficialResponse {
+                partial_success: Some(OfficialPartial {
+                    rejected_data_points: rejected,
+                    error_message: message.into(),
+                }),
+            }
+            .encode_to_vec();
+            assert_eq!(decode_export_response(&body).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_responses_without_reflecting_response_text() {
+        let marker = b"private-reflected-value";
+        let error = decode_export_response(marker).unwrap_err();
+        assert!(!error.to_string().contains("private-reflected"));
+        let body = ExportMetricsServiceResponse {
+            partial_success: Some(ExportMetricsPartialSuccess {
+                rejected_data_points: -1,
+                error_message: String::new(),
+            }),
+        }
+        .encode_to_vec();
+        assert!(decode_export_response(&body).is_err());
+    }
+}
+
+#[derive(Clone, PartialEq, Message)]
 pub struct ExportMetricsServiceRequest {
     #[prost(message, repeated, tag = "1")]
     pub resource_metrics: Vec<ResourceMetrics>,
