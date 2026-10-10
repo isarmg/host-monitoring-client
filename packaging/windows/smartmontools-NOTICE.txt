@@ -1,15 +1,13 @@
-smartmontools bundled component
+随包提供的 smartmontools 组件
 ================================
 
-This package includes the standalone smartctl executable and drive database from
-smartmontools 7.5. smartmontools is licensed under the GNU General Public License,
-version 2 or (at your option) any later version.
+本安装包包含 smartmontools 7.5 的独立 smartctl 可执行文件与磁盘数据库。
+smartmontools 采用 GNU General Public License 第 2 版，或由您选择任何后续版本。
 
-Upstream project: https://github.com/smartmontools/smartmontools
-Release: https://github.com/smartmontools/smartmontools/releases/tag/RELEASE_7_5
+上游项目：https://github.com/smartmontools/smartmontools
+上游发行：https://github.com/smartmontools/smartmontools/releases/tag/RELEASE_7_5
 
-The installed smartmontools/COPYING.txt contains the license. The complete
-corresponding upstream source archive is installed as
-smartmontools/smartmontools-7.5-source.tar.gz.
+安装后的 smartmontools/COPYING.txt 保存许可证原文。完整对应的上游源码包安装于
+smartmontools/smartmontools-7.5-source.tar.gz。
 
-smartctl is executed as a separate process. It is not linked into xsoc.
+smartctl 作为独立进程执行，未链接到 xsoc。
