@@ -1,11 +1,11 @@
 # 排查 xsoc 问题
 
-先运行 `version --format json`、`service status --format json` 和 `logs --tail 100`。按下表继续；维护命令使用管理员权限。
+安装器、命令路径和系统日志问题按平台查看：[Linux](platforms/linux.md#排查本机问题)、[Windows](platforms/windows.md#排查本机问题)、[macOS](platforms/macos.md#排查本机问题)。
+
+以下排查各桌面平台共用。先运行 `version --format json`、`service status --format json` 和 `logs --tail 100`。按下表继续；维护命令使用管理员权限。
 
 | 现象 | 检查 | 下一步与完成结果 |
 |---|---|---|
-| 安装后找不到命令 | Windows 重新打开终端或读取安装注册表；macOS 用绝对路径 | version 显示当前安装版本 |
-| 安装器失败 | Windows 安装日志；Linux 包管理器日志；macOS `/var/log/install.log` | 核对平台、已有服务路径和权限，再用同版原生包修复 |
 | 服务运行但连接未确认 | `status --format json` 和日志中的错误 code | 分别定位网络、认证和业务检查 |
 | DNS、TLS 或超时 | `doctor --network --format json` | 核对根地址、DNS、主机时间、系统信任链和证书名称 |
 | 配对响应丢失 | `pair status --format json` | `pair resume` 继续同一事务 |

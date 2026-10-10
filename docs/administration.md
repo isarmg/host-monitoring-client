@@ -34,18 +34,12 @@ sudo xsoc status --check --format json
 
 更换实例而放弃旧绑定时，先排空原队列，然后使用 `pair replace --confirm-replace --expected-binding CURRENT_HOST_UUID --interactive`，UUID 从 `pair status` 取得。旧服务端永久丢失时，可用 `queue archive --reason server-state-lost` 保留无法投递的原队列；归档不表示送达，也不把旧报告归给新身份。
 
-## 平台日志与路径
+## 本机日志、修复和卸载
 
-- Linux：`sudo journalctl -u xsoc.service -n 100 --no-pager`
-- macOS：`sudo tail -n 100 /var/log/xsoc.log`；安装日志在 `/var/log/install.log`
-- Windows：`xsoc logs --tail 100 --format json`，早期启动失败查看 SCM 服务退出码和系统事件
+按所用平台查看日志路径、同版包修复及卸载步骤：
 
-Windows 持久 JSON 日志默认每份 8 MiB，活动文件加四份归档共 40 MiB。可用 `logs --follow --format ndjson --timeout 60s` 有界跟踪。日志读到损坏或已过保留窗口会明确报错。
+- [Linux](platforms/linux.md#日志与本机状态)
+- [Windows](platforms/windows.md#日志与本机状态)
+- [macOS](platforms/macos.md#日志与本机状态)
 
-默认配置：Windows `C:\ProgramData\xsoc\config.json`，Linux `/etc/xsoc/config.json`，macOS `/Library/Application Support/xsoc/config.json`。实际状态目录以 `config show` 中 state_dir 为准，Linux 默认 `/var/lib/xsoc`。
-
-## 修复或卸载当前安装
-
-同版原生包可修复程序与服务文件，保留业务状态。Windows MSI 完成后检查退出码，3010 表示需重启；Linux DEB 可用 `sudo apt install --reinstall ./xsoc_1.0.0_amd64.deb`；macOS 重新执行已校验 PKG 的 installer 命令。随后检查版本、服务和业务连接。
-
-普通卸载步骤见[安装指南](platform-setup.md)。若已确认永久退役、服务端实例已撤销且待发数据可丢弃，Windows MSI 的 `PURGE=1`、Debian 的 `sudo apt purge xsoc` 或 RPM 卸载前的 `sudo xsoc-purge --yes`、macOS 助手 `uninstall.sh --purge` 会清除安装器管理的本地状态。普通排障保留状态即可，无需清除。
+永久清除状态会丢失本机身份和未投递报告；只有确认退役且数据可丢弃后才使用平台指南中的清理选项。
