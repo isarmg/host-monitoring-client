@@ -2,10 +2,16 @@ name: xsoc CI
 
 on:
   workflow_call:
+    inputs:
+      force_full:
+        description: Run all validation when this workflow is reused
+        type: boolean
+        default: true
   push:
     branches: [main, 'codex/client-cli-*']
     tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 permissions: {}
 
@@ -16,7 +22,56 @@ env:
   RUSTUP_TOOLCHAIN: 1.99.0
 
 jobs:
+  # Keep PR workflows and existing check names present; filter jobs, not triggers.
+  scope:
+    name: Change scope
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_full: ${{ steps.changes.outputs.run_full }}
+    steps:
+      - name: Check out the comparison history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select documentation or full validation
+        id: changes
+        shell: bash
+        env:
+          FORCE_FULL: ${{ inputs.force_full }}
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          run_full=true
+          base=""
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" != tag ]]; then
+            base="$PUSH_BASE"
+          fi
+          # Dispatches, release tags, new branches and unavailable history stay full.
+          if [[ "$FORCE_FULL" != true && "$base" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git diff --name-only --no-renames -z "$base" HEAD > "$RUNNER_TEMP/changed-paths"
+            run_full=false
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                # Release/package inputs and safety audits retain full validation.
+                docs/releases/* | docs/unsafe*.md) run_full=true; break ;;
+                README.md | docs/*.md) ;;
+                *) run_full=true; break ;;
+              esac
+            done < "$RUNNER_TEMP/changed-paths"
+          fi
+          echo "run_full=$run_full" >> "$GITHUB_OUTPUT"
+          echo "Full validation: $run_full"
+
   xsoc:
+    needs: scope
+    if: ${{ !cancelled() }}
     name: Desktop xsoc (${{ matrix.os }})
     permissions:
       contents: read
@@ -27,20 +82,28 @@ jobs:
         os: [ubuntu-24.04, windows-2025, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Documentation-only change
+        if: ${{ needs.scope.outputs.run_full == 'false' }}
+        shell: bash
+        run: echo "Documentation-only change; heavy build steps are not needed."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         with:
           persist-credentials: false
       - name: Install exact Rust toolchain
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: rustup toolchain install 1.99.0 --profile minimal --component clippy
       - name: Verify locked client support boundary
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/check-xcsc-source.py
       - name: Install explicit Apple Silicon desktop target
-        if: runner.os == 'macOS'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'macOS') }}
         run: rustup target add --toolchain 1.99.0 aarch64-apple-darwin
       - name: Verify release inputs
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/collect-release.py --check
       - name: Resolve Windows MSI version from Cargo metadata
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         id: xsoc_version
         shell: pwsh
         run: |
@@ -57,29 +120,30 @@ jobs:
           }
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Clippy
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: cargo clippy --locked -p xsoc --all-targets -- -D warnings
       - name: Check Linux TLS fixture tools
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         run: |
           openssl version
           python3 -c 'import ssl; assert ssl.HAS_TLSv1_3; print(ssl.OPENSSL_VERSION)'
       - name: Test
-        if: runner.os != 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os != 'Windows') }}
         # Linux tests generate ephemeral keys and run a loopback Python TLS peer.
         run: cargo test --locked -p xsoc
       - name: Test native Windows permissions with a bounded deadline
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         timeout-minutes: 10
         # Show failures before a later network fixture can block suite completion.
         run: cargo test --locked -p xsoc -- --test-threads=1 --nocapture
       - name: Install pinned Node.js for the Server contract fixture
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26.7.0
           check-latest: false
       - name: Validate current pairing JSON against latest Server
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/isarmg/xsos.git "$RUNNER_TEMP/xsos"
@@ -87,39 +151,42 @@ jobs:
           npm --prefix "$RUNNER_TEMP/xsos/web" run build
           cargo run --locked --quiet --target x86_64-unknown-linux-gnu --manifest-path "$RUNNER_TEMP/xsos/Cargo.toml" -p xsos --example validate-client-pairing < contracts/host-pairing-v1.json
       - name: Check without optional features
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: cargo check --locked -p xsoc --no-default-features --all-targets
       - name: Check OTLP only
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: cargo check --locked -p xsoc --no-default-features --features otlp --all-targets
       - name: Check NVIDIA only
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: cargo check --locked -p xsoc --no-default-features --features nvidia --all-targets
       - name: Validate Linux packaging lifecycle
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         run: sh packaging/linux/tests/test-lifecycle.sh
       - name: Validate Linux package builder
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         run: sh packaging/linux/tests/test-build-packages.sh
       - name: Build native Windows service and maintenance helper
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         run: >-
           cargo build --locked --release -p xsoc --target x86_64-pc-windows-msvc
           --bin xsoc --bin xsoc-maintenance
       - name: Validate installer defaults with release HTTPS policy
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         run: cargo test --locked --release -p xsoc --target x86_64-pc-windows-msvc --lib installer_default_is_valid_under_release_https_policy
       - name: Verify native Windows PE subsystems
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: powershell
         run: .\packaging\windows\tests\Test-PeSubsystems.ps1
       - name: Validate WiX MSI authoring
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: powershell
         run: .\packaging\windows\tests\Test-WixAuthoring.ps1
       - name: Fetch verified smartmontools payload
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: powershell
         run: .\packaging\windows\fetch-smartmontools.ps1 -OutputDirectory "$env:RUNNER_TEMP\xsoc-smartmontools"
       - name: Build WiX 4 MSI
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: cmd
         env:
           XSOC_VERSION: ${{ steps.xsoc_version.outputs.version }}
@@ -129,7 +196,7 @@ jobs:
           target\x86_64-pc-windows-msvc\release\xsoc-maintenance.exe
           "%RUNNER_TEMP%\xsoc-smartmontools\payload"
       - name: Exercise real MSI service install and rollback lifecycle
-        if: runner.os == 'Windows'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Windows') }}
         shell: powershell
         env:
           XSOC_VERSION: ${{ steps.xsoc_version.outputs.version }}
@@ -138,21 +205,22 @@ jobs:
           if ($packages.Count -ne 1) { throw 'Expected exactly one native MSI' }
           .\packaging\windows\tests\Test-MsiLifecycle.ps1 -ProductVersion $env:XSOC_VERSION -ArtifactDirectory $packages[0].DirectoryName -LogDirectory "$env:RUNNER_TEMP\xsoc-msi-logs"
       - name: Validate macOS packaging lifecycle
-        if: runner.os == 'macOS'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'macOS') }}
         shell: bash
         run: sh packaging/macos/tests/validate-packaging.sh
       - name: Build native Linux executable
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         run: cargo build --locked --release -p xsoc --bin xsoc
       - name: Build native Apple Silicon executable
-        if: runner.os == 'macOS'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'macOS') }}
         run: >-
           cargo build --locked --release -p xsoc
           --target aarch64-apple-darwin --bin xsoc
       - name: Verify executable source identity
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/verify-binary-identity.py
       - name: Build Linux DEB and RPM
-        if: runner.os == 'Linux'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -161,7 +229,7 @@ jobs:
           dpkg-deb --info dist/*.deb
           dpkg-deb --contents dist/*.deb
       - name: Build unsigned native macOS installer
-        if: runner.os == 'macOS'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'macOS') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -170,13 +238,14 @@ jobs:
           OUTPUT_DIRECTORY="$PWD/dist/smartmontools-macos-arm64" sh packaging/macos/build-smartmontools.sh
           SMART_PAYLOAD="$PWD/dist/smartmontools-macos-arm64" BINARY="$PWD/target/aarch64-apple-darwin/release/xsoc" VERSION="$VERSION" OUTPUT="$PWD/dist/xsoc-$VERSION-macos-arm64-unsigned.pkg" sh packaging/macos/build-pkg.sh
       - name: Exercise native macOS install, preserved state, reinstall and purge
-        if: runner.os == 'macOS'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (runner.os == 'macOS') }}
         shell: bash
         run: bash packaging/macos/tests/smoke-pkg.sh --allow-system-changes
       - name: Collect source-bound native release assets
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/collect-release.py
       - name: Upload native installers and checksums
-        if: github.event_name != 'pull_request'
+        if: ${{ needs.scope.outputs.run_full != 'false' && (github.event_name != 'pull_request') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: xsoc-${{ matrix.os }}
@@ -184,6 +253,8 @@ jobs:
           if-no-files-found: error
 
   android-xsoc-library:
+    needs: scope
+    if: ${{ !cancelled() }}
     name: Mobile xsoc library (Android / ${{ matrix.target }})
     permissions:
       contents: read
@@ -195,21 +266,31 @@ jobs:
         target:
           - aarch64-linux-android
     steps:
+      - name: Documentation-only change
+        if: ${{ needs.scope.outputs.run_full == 'false' }}
+        shell: bash
+        run: echo "Documentation-only change; heavy build steps are not needed."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         with:
           persist-credentials: false
       - name: Install exact Rust toolchain and Android target
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: |
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add --toolchain 1.99.0 ${{ matrix.target }}
       - name: Verify locked client support boundary
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/check-xcsc-source.py
       - name: Check host-driven library boundary
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: >-
           cargo check --locked -p xsoc --target ${{ matrix.target }}
           --lib --no-default-features
 
   apple-mobile-xsoc-library:
+    needs: scope
+    if: ${{ !cancelled() }}
     name: Mobile xsoc library (${{ matrix.scope }} / ${{ matrix.target }})
     permissions:
       contents: read
@@ -224,21 +305,31 @@ jobs:
           - scope: iOS/iPadOS simulator
             target: aarch64-apple-ios-sim
     steps:
+      - name: Documentation-only change
+        if: ${{ needs.scope.outputs.run_full == 'false' }}
+        shell: bash
+        run: echo "Documentation-only change; heavy build steps are not needed."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         with:
           persist-credentials: false
       - name: Install exact Rust toolchain and Apple target
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: |
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add --toolchain 1.99.0 ${{ matrix.target }}
       - name: Verify locked client support boundary
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: python scripts/check-xcsc-source.py
       - name: Check host-driven library boundary
+        if: ${{ needs.scope.outputs.run_full != 'false' }}
         run: >-
           cargo check --locked -p xsoc --target ${{ matrix.target }}
           --lib --no-default-features
 
   otlp:
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.run_full != 'false' }}
     name: xsoc OTLP end-to-end
     permissions:
       contents: read
