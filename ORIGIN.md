@@ -1,7 +1,7 @@
-# Source provenance
+# 源码来源
 
-This independent client repository was extracted from xsos commit
-`6072034ded829b1fd4b6d80eebdefe86bf489c8a`.
-The original history remains in `https://github.com/isarmg/xsos`.
-Only tracked client source and native packaging files were copied; no runtime state or secret was copied.
-The product protocol is consumed from its single canonical Server source at an exact Git revision.
+本独立客户端仓库从 xsos 的以下提交提取：
+`6072034ded829b1fd4b6d80eebdefe86bf489c8a`。
+原始历史保存在 `https://github.com/isarmg/xsos`。
+提取内容仅包括已受 Git 跟踪的客户端源码和原生打包文件，不包含运行状态或秘密。
+产品协议由服务端仓库唯一维护，客户端通过精确的 Git 提交修订消费该源码。

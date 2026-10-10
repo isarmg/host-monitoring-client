@@ -11,7 +11,7 @@
 | [releases/1.0.0.md](releases/1.0.0.md) | 当前 CLI、状态格式、平台和升级/回退边界 |
 | [releases/](releases/) | 历史发行记录 |
 
-Client 只读采集主机遥测并主动连接 Server，不含托盘、本地 Web 或浏览器入口。`probe` 不联网；`once` 与
+客户端只读采集主机遥测并主动连接服务端，不含托盘、本地网页或浏览器入口。`probe` 不联网；`once` 与
 `doctor --delivery` 会产生真实投递；`doctor --network` 只访问公开健康端点，不能证明服务账户或报告凭据可用。
 
 CLI 参数、输出与兼容性约定见 [CLI 兼容性](cli-compatibility.md)。

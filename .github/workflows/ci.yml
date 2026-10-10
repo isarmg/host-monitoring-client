@@ -84,11 +84,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 https://github.com/isarmg/xsos.git "$RUNNER_TEMP/xsos"
           npm ci --prefix "$RUNNER_TEMP/xsos/web"
-          (
-            cd "$RUNNER_TEMP/xsos"
-            web/node_modules/.bin/xcss-build-server \
-              --config xcss-web-build.json --mode development --web-only --no-install
-          )
+          npm --prefix "$RUNNER_TEMP/xsos/web" run build
           cargo run --locked --quiet --target x86_64-unknown-linux-gnu --manifest-path "$RUNNER_TEMP/xsos/Cargo.toml" -p xsos --example validate-client-pairing < contracts/host-pairing-v1.json
       - name: Check without optional features
         run: cargo check --locked -p xsoc --no-default-features --all-targets

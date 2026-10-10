@@ -26,7 +26,7 @@ xsoc 专注硬件与系统运行状态，不枚举进程，不采集命令行、
 | AMD GPU 时钟 | DPM 当前级别、hwmon Hz 转 MHz | DXGI/PDH + ADLX：型号、显存、利用率、温度、功耗、时钟、风扇与电压 | 无默认支持 |
 | Intel GPU 时钟 | i915、Xe tile0/gt0 的 sysfs | DXGI/PDH + IGCL：型号、显存、利用率、温度、功耗、时钟、风扇与电压 | 无默认支持 |
 
-NVML 采集仅在 Linux 和 Windows 启用。macOS 即使编译时开启 `nvidia` feature，也会报告 `gpu.nvidia` 为 `unsupported`，不会尝试加载 Windows DLL 或将平台不支持误报为缺少驱动。
+NVML 采集仅在 Linux 和 Windows 启用。macOS 即使编译时开启 `nvidia` 特性，也会报告 `gpu.nvidia` 为 `unsupported`，不会尝试加载 Windows DLL 或将平台不支持误报为缺少驱动。
 
 macOS 显卡清单通过系统报告的 JSON 获取，独立后台线程每五分钟刷新，单次限时十秒、标准输出上限 1 MiB，不阻塞常规采样。只读取显示硬件类别，不上传完整系统报告。优先使用 `sppci_model`，避免将 Apple 的内部 `_name` 枚举键当作型号。现有协议接收型号与厂商；GPU 核心数、Metal 版本未在协议中定义。系统报告不提供整机 GPU 实时利用率、功耗等读数，共享内存也不作为专用显存填报，这些字段保持 null。
 
@@ -70,10 +70,10 @@ SMART 按设备路径和 smartctl 类型选择器共同区分物理盘。扫描�
 
 ## 协议与构建
 
-报告 schema 仅支持 **1**，继续使用严格字段解析。硬件位于 `system.hardware`，没有进程扩展。Server、Client 和 Web 必须同步更新；新增硬件清单字段为必填，不接受其他 schema 或缺少清单字段的报告，不转换旧数据，也不会回退发送旧协议。明确的协议拒绝或当前错误格式的永久 400 响应会提示检查版本并停止重试该报告，不清除配对凭据。无法识别的代理错误仍按网络故障退避，避免误删凭据。
+报告结构仅支持 **1**，继续使用严格字段解析。硬件位于 `system.hardware`，没有进程扩展。服务端、客户端和 Web 必须同步更新；新增硬件清单字段为必填，不接受其他结构或缺少清单字段的报告，不转换旧数据，也不会回退发送旧协议。明确的协议拒绝或当前错误格式的永久 400 响应会提示检查版本并停止重试该报告，不清除配对凭据。无法识别的代理错误仍按网络故障退避，避免误删凭据。
 
-升级前积压的非当前 schema 报告保留原始字节隔离，不尝试转换，也不把版本问题累积为磁盘故障。CLI JSON、配对协议的版本号独立于报告 schema，不随此变更提升。
+升级前积压的非当前结构报告保留原始字节隔离，不尝试转换，也不把版本问题累积为磁盘故障。CLI 的 JSON 输出、配对协议的版本号独立于报告结构，不随此变更提升。
 
-客户端通过完整 Git revision `6458cb63bc1b868156ebb26eecdc09d563026df2` 固定依赖 Server 的 `xsos-protocol` 1.0.0，统一使用 schema 1。协议源码仅由 Server 的 `crates/protocol/src` 维护；独立克隆客户端即可构建，不需要相邻服务端目录。
+客户端通过完整 Git 提交修订 `3b5c437a80424c717a20ffbad07c3e8d01cd83ae` 固定依赖服务端的 `xsos-protocol` 1.0.0，统一使用结构 1。协议源码仅由服务端的 `crates/protocol/src` 维护；独立克隆客户端即可构建，不需要相邻服务端目录。
 
 接口依据：[Linux hwmon](https://docs.kernel.org/hwmon/sysfs-interface.html)、[Intel Xe 频率接口](https://www.kernel.org/doc/html/latest/gpu/xe/xe_gt_freq.html)、[smartctl 手册源码](https://github.com/smartmontools/smartmontools/blob/master/smartmontools/smartctl.8.in)。

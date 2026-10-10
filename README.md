@@ -1,10 +1,10 @@
 # xsoc
 
-`xsoc` `1.0.0` 是 xsos 的只读主机遥测客户端。它采集 CPU、内存、磁盘健康、网络、硬件传感器、Mac 显卡清单及 NVIDIA / AMD / Intel 的可用显卡指标，通过 HTTPS 主动上报到 Server，并在网络不可用时使用有界本地队列重试。
+`xsoc` `1.0.0` 是 xsos 的只读主机遥测客户端。它采集 CPU、内存、磁盘健康、网络、硬件传感器、Mac 显卡清单及 NVIDIA / AMD / Intel 的可用显卡指标，通过 HTTPS 主动上报到服务端，并在网络不可用时使用有界本地队列重试。
 
 `1.0.0` 使用 xcsc 1.0.0 的私有状态、CLI 和有界进程机制，以及 xcsc 包内 xcsc::log 1.0.0 的后台服务持久日志；正常运行只接受当前配置与账户格式，其他格式保全后明确报错。Rust 固定 1.99.0，依赖由受控 Git 来源和根锁文件记录，发行按最终源码执行原生 CI。改动见[发行说明](docs/releases/1.0.0.md)。
 
-当前支持 Windows x64、Linux x64 和 macOS Apple Silicon。Client 不开放入站端口，也不提供托盘或本地 Web；安装包和系统服务能力以对应 Release 为准。
+当前支持 Windows x64、Linux x64 和 macOS Apple Silicon。客户端不开放入站端口，也不提供托盘或本地网页；安装包和系统服务能力以对应发行版本为准。
 
 ## 配置概览
 
@@ -25,7 +25,7 @@ sudo xsoc config show --format json
 sudo xsoc config edit
 ```
 
-随后使用 Server 管理页生成的实例授权码配对，并启动服务：
+随后使用服务端管理页生成的实例授权码配对，并启动服务：
 
 ```sh
 sudo xsoc pair --interactive
@@ -38,7 +38,7 @@ xsoc status --check --format json
 交互配对时，实例授权码按普通文本输入并在终端中明文显示；没有遮罩、隐藏切换或二次显示模式。使用后仍不会
 写入日志或命令参数，并继续由可清零内存缓冲区保存。
 
-自动化配置、候选文件的 `validate/diff/apply`、授权码轮换、队列处理和诊断命令见[完整配置指南](docs/configuration.md)。不要把授权码、Client token 或 OTLP token 放进命令参数、Shell 历史或日志。
+自动化配置、候选文件的 `validate/diff/apply`、授权码轮换、队列处理和诊断命令见[完整配置指南](docs/configuration.md)。不要把授权码、客户端令牌或 OTLP 令牌放进命令参数、Shell 历史或日志。
 
 默认配置位置和安装步骤按平台不同，见[平台安装指南](docs/platform-setup.md)。
 
@@ -67,7 +67,7 @@ cargo +1.99.0 test --locked --all-features
 
 依赖选择与保留的原生边界见[依赖和 unsafe 审查](docs/unsafe-audit.md)。
 
-当前发布版本：**1.0.0**。参见 [1.0.0 发布说明](docs/releases/1.0.0.md)和[项目命名](docs/naming.md)。
+当前发布版本：**1.0.0**。参见 [1.0.0 发布说明](docs/releases/1.0.0.md)。
 
 CLI 参数、输出与兼容性约定见 [CLI 兼容性](docs/cli-compatibility.md)。
 

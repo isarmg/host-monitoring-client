@@ -4,10 +4,10 @@
 
 ## 阅读前准备
 
-1. 在 [Client Releases](https://github.com/isarmg/xsoc/releases) 选择对应版本，下载本平台安装包和同版 `SHA256SUMS-*`。本文文件名以 1.0.0 为例，安装其他版本时应同时替换包名和配套文档。
-2. 请 Server 管理员创建主机实例，提供 Server 的 HTTPS 根地址和实例授权码。客户端主动向外连接，不需要为 Client 开放入站端口。
-3. 确认机器时间、DNS、网络和 Server 证书正常。授权码在交互终端中明文回显，请使用受保护终端；不要把码或 token 拼进命令参数。
-4. Windows 使用管理员 PowerShell；Linux/macOS 使用可执行 `sudo` 的终端。下文 `#` 开头是命令解释，可与命令一起粘贴。`CURRENT_HOST_UUID` 必须替换成 `pair status` 中的实际 Host UUID，不能照抄。
+1. 在 [客户端发布页](https://github.com/isarmg/xsoc/releases) 选择对应版本，下载本平台安装包和同版 `SHA256SUMS-*`。本文文件名以 1.0.0 为例，安装其他版本时应同时替换包名和配套文档。
+2. 请服务端管理员创建主机实例，提供服务端的 HTTPS 根地址和实例授权码。客户端主动向外连接，不需要为客户端开放入站端口。
+3. 确认机器时间、DNS、网络和服务端证书正常。授权码在交互终端中明文回显，请使用受保护终端；不要把码或 token 拼进命令参数。
+4. Windows 使用管理员 PowerShell；Linux/macOS 使用可执行 `sudo` 的终端。下文 `#` 开头是命令解释，可与命令一起粘贴。`CURRENT_HOST_UUID` 必须替换成 `pair status` 中的实际主机 UUID，不能照抄。
 
 | 平台 | 程序/服务 | 配置与默认持久状态 |
 |---|---|---|
@@ -20,8 +20,8 @@
 ### 服务与业务状态的区别
 
 - `service status`：查看操作系统是否登记服务、进程是否运行以及开机策略。
-- `pair status`：查看本机配对绑定及未完成事务，不代表 Server 已接受报告。
-- `status --check`：检查当前 Client 状态及连接相关检查结果。
+- `pair status`：查看本机配对绑定及未完成事务，不代表服务端已接受报告。
+- `status --check`：检查当前客户端状态及连接相关检查结果。
 - `doctor --network`：访问公开 `GET /healthz`，正常为 HTTP 204，不使用报告凭据。
 - `doctor --delivery`、`once`：会产生真实采集/投递，必须停掉后台服务后再执行，避免两份运行实例同时操作队列。
 
@@ -72,7 +72,7 @@ $client = Join-Path $installRoot 'xsoc.exe'
 & $client status --check --format json
 ```
 
-首次安装不需要先手工 `config init`；`setup` 会处理缺少的配置。开机自启提示默认 Yes，按 Enter 接受；无论是否选择自启，配对后都会立即启动并验证连接。成功判据是向导完成、服务运行、Server 收到新报告。超时或中断可能发生在身份已保存之后，先检查 `pair status`。
+首次安装不需要先手工 `config init`；`setup` 会处理缺少的配置。开机自启提示默认 Yes，按 Enter 接受；无论是否选择自启，配对后都会立即启动并验证连接。成功判据是向导完成、服务运行、服务端收到新报告。超时或中断可能发生在身份已保存之后，先检查 `pair status`。
 
 ### 3. 重新配对与恢复
 
@@ -90,7 +90,7 @@ $client = Join-Path $installRoot 'xsoc.exe'
 & $client status --check --format json
 ```
 
-只遇到请求中断、响应丢失时，优先 `& $client pair resume --interactive` 恢复原事务；再次运行 `setup` 也会按现有状态选择恢复。更换实例/Server 并放弃旧绑定，请执行本文“更换绑定与队列处理”，不要删除身份或队列文件。
+只遇到请求中断、响应丢失时，优先 `& $client pair resume --interactive` 恢复原事务；再次运行 `setup` 也会按现有状态选择恢复。更换实例/服务端并放弃旧绑定，请执行本文“更换绑定与队列处理”，不要删除身份或队列文件。
 
 ### 4. 服务查看、启停与自启
 
@@ -135,7 +135,7 @@ sc.exe qc xsoc
 & $client service start
 ```
 
-`probe` 不联网；`doctor --delivery` 会发送报告，成功应核对真实 HTTP 202 和 Server 新报告。若安装失败，检查 `$env:TEMP\xsoc-install.log`，以及管理员可读的 `C:\ProgramData\xsoc.maintenance-diagnostic-1.0.0.txt`。
+`probe` 不联网；`doctor --delivery` 会发送报告，成功应核对真实 HTTP 202 和服务端新报告。若安装失败，检查 `$env:TEMP\xsoc-install.log`，以及管理员可读的 `C:\ProgramData\xsoc.maintenance-diagnostic-1.0.0.txt`。
 
 ### 6. 升级、修复与卸载
 
@@ -159,7 +159,7 @@ $remove.ExitCode
 Get-Service -Name xsoc -ErrorAction SilentlyContinue
 ```
 
-也可在“设置 → 应用 → 已安装的应用”卸载。若明确永久退役，先在 Server 处理实例并确认无需保留待发报告，再使用以下**替代普通卸载**的命令；`PURGE=1` 会永久清除本地状态，不能用于普通排障：
+也可在“设置 → 应用 → 已安装的应用”卸载。若明确永久退役，先在服务端处理实例并确认无需保留待发报告，再使用以下**替代普通卸载**的命令；`PURGE=1` 会永久清除本地状态，不能用于普通排障：
 
 ```powershell
 # 永久卸载并清除安装器管理的本地状态；仅在确认数据可丢弃时执行。
@@ -208,7 +208,7 @@ sudo xsoc status --check --format json
 systemctl is-enabled xsoc.service
 ```
 
-自启提示按 Enter 默认为 Yes。最后在 Server 管理页确认相同 UUID 的主机收到新报告。
+自启提示按 Enter 默认为 Yes。最后在服务端管理页确认相同 UUID 的主机收到新报告。
 
 ### 3. 重新配对
 
@@ -281,7 +281,7 @@ sudo dnf remove xsoc
 systemctl show xsoc.service --property=LoadState,ActiveState
 ```
 
-永久清除前先处理 Server 实例和待发队列。Debian 的 `sudo apt purge xsoc` 会永久清除本地配置、身份、凭据、队列和可安全确认的安装器账户；RPM 普通卸载不清理状态，可在卸载前调用 `sudo xsoc-purge --yes` 明确清除，再 `sudo dnf remove xsoc`。自定义状态目录须另行核对，不要假定默认清理覆盖它。不要把 `purge` 当作重新配对的前置步骤。
+永久清除前先处理服务端实例和待发队列。Debian 的 `sudo apt purge xsoc` 会永久清除本地配置、身份、凭据、队列和可安全确认的安装器账户；RPM 普通卸载不清理状态，可在卸载前调用 `sudo xsoc-purge --yes` 明确清除，再 `sudo dnf remove xsoc`。自定义状态目录须另行核对，不要假定默认清理覆盖它。不要把 `purge` 当作重新配对的前置步骤。
 
 ## macOS Apple Silicon
 
@@ -313,7 +313,7 @@ sudo /usr/local/bin/xsoc service status --format json
 sudo /usr/local/bin/xsoc status --check --format json
 ```
 
-最后在 Server 管理页确认新报告。PKG 自带 smartctl 7.5，无需为 SMART 采集先安装 Homebrew；专用服务账户不自动获得更高权限。
+最后在服务端管理页确认新报告。PKG 自带 smartctl 7.5，无需为 SMART 采集先安装 Homebrew；专用服务账户不自动获得更高权限。
 
 ### 3. 重新配对
 
@@ -371,7 +371,7 @@ sudo /usr/local/bin/xsoc service start
 
 ### 6. 升级、卸载
 
-再次安装已校验的同版/新版 PKG 可修复或升级，保留业务状态；随后检查版本、服务策略和 Server 新报告。
+再次安装已校验的同版/新版 PKG 可修复或升级，保留业务状态；随后检查版本、服务策略和服务端新报告。
 
 ```sh
 # 普通卸载程序与 LaunchDaemon，保留配置、凭据、队列、日志、专用账户和维护助手。
@@ -380,11 +380,11 @@ sudo /usr/local/share/xsoc/uninstall.sh
 sudo launchctl print system/org.sarmg.xsoc
 ```
 
-永久退役且不再需要本地数据时，在 Server 先撤销/退役实例，然后使用 `sudo /usr/local/share/xsoc/uninstall.sh --purge`；脚本会要求确认永久清理。它清除保留的状态、日志、可确认所有权的账户和包收据。普通卸载后仍保留此助手，允许后续决定清理。
+永久退役且不再需要本地数据时，在服务端先撤销/退役实例，然后使用 `sudo /usr/local/share/xsoc/uninstall.sh --purge`；脚本会要求确认永久清理。它清除保留的状态、日志、可确认所有权的账户和包收据。普通卸载后仍保留此助手，允许后续决定清理。
 
 ## 更换绑定与队列处理（所有桌面平台）
 
-`recover` 用于保留旧 Host UUID；`replace` 用于明确放弃旧绑定。先停服务，再 `queue status` 查看待发数量，旧 Server 可用时通过 `queue drain --timeout 10m` 尽量投递。旧 Server 永久丢失且无法投递时，先归档旧队列，不能直接删除：
+`recover` 用于保留旧主机 UUID；`replace` 用于明确放弃旧绑定。先停服务，再 `queue status` 查看待发数量，旧服务端可用时通过 `queue drain --timeout 10m` 尽量投递。旧服务端永久丢失且无法投递时，先归档旧队列，不能直接删除：
 
 ```sh
 # 以下为 Linux 示例；Windows 用 & $client，macOS 用 sudo /usr/local/bin/xsoc。
@@ -411,25 +411,25 @@ sudo xsoc status --check --format json
 |---|---|---|
 | 找不到命令 | Windows 重新开终端或取注册表路径；macOS 用绝对路径；Linux 检查包是否安装 | `version` 显示预期版本 |
 | 服务运行但主机离线 | 先看日志和 `doctor --network`，再停服做 `doctor --delivery` | 真正投递被接受且管理页有新报告 |
-| TLS/DNS/超时 | 核对 Server origin、DNS、机器时间、证书链与域名；网络恢复后复查 | 公开健康检查通过 |
+| TLS/DNS/超时 | 核对服务端源站、DNS、机器时间、证书链与域名；网络恢复后复查 | 公开健康检查通过 |
 | 授权码轮换/旧凭据拒绝 | 停服，取得同一实例新码，执行 `pair recover` | 保留 UUID，真实投递成功 |
 | 配对请求响应丢失 | `pair status` 检查后 `pair resume`，或再次完整 `setup` | 原事务完成，避免创建重复身份 |
-| `pairing_state_incompatible` | 保全资料，用新码 `pair recover`；账户文件可归档，Host UUID/队列保留 | 当前格式绑定被验证 |
+| `pairing_state_incompatible` | 保全资料，用新码 `pair recover`；账户文件可归档，主机 UUID/队列保留 | 当前格式绑定被验证 |
 | `important_state_incompatible` | 停服并保全队列、身份及日志，核实兼容性 | 重要状态可读且身份一致后再恢复 |
 | 服务路径/权限不符 | 查系统服务登记和安装日志，用同版原生包修复 | 登记路径与当前程序、默认配置匹配 |
-| 修改配置后未生效 | 停服，按配置指南 validate/diff/apply，再启动 | 新 revision 保存且业务验收通过 |
+| 修改配置后未生效 | 停服，按配置指南 validate/diff/apply，再启动 | 新提交修订保存且业务验收通过 |
 
 ## 安装器、兼容性与后台日志补充
 
-适用于 1.0.0，配置与持久身份格式为 1.0.0。每个平台下载对应的单个原生 Release 安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、已安装版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
+适用于 1.0.0，配置与持久身份格式为 1.0.0。每个平台下载对应的单个原生发行版本安装包，并对照同页 SHA256SUMS 校验。安装器检查平台、架构、权限、已安装版本状态并注册服务。安装完成后的初始化、配对和诊断命令见[完整配置指南](configuration.md)。
 
 ### Windows 11 x64
 
 Windows 的只读队列检查使用与客户端服务相同的私有目录权限策略；不会因服务 SID 的合法授权而误判队列不安全，也不会修改目录 ACL。检查仍拒绝链接、未知文件名和超限的队列。
 
-Windows 硬件清单将 PnP/WMI 设备标识统一为 ASCII 大写，先保留完整标识，再按协议的文本上限生成稳定 ID。显示名称仍按文本上限裁剪；显示器与声音设备的合并使用同一稳定 ID，避免长标识共享前缀导致误合并或重复上报。此调整不修改报告 schema 1 或本地配对身份。
+Windows 硬件清单将 PnP/WMI 设备标识统一为 ASCII 大写，先保留完整标识，再按协议的文本上限生成稳定 ID。显示名称仍按文本上限裁剪；显示器与声音设备的合并使用同一稳定 ID，避免长标识共享前缀导致误合并或重复上报。此调整不修改报告结构 1 或本地配对身份。
 
-从开始菜单以管理员身份打开 PowerShell，下载并校验 Release MSI。MSI 不在安装事务中启动配对；安装完成后由同一个管理员终端显式运行 `setup --interactive`：
+从开始菜单以管理员身份打开 PowerShell，下载并校验发行版本 MSI。MSI 不在安装事务中启动配对；安装完成后由同一个管理员终端显式运行 `setup --interactive`：
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"
@@ -440,11 +440,11 @@ $client = Join-Path $installRoot 'xsoc.exe'
 & $client doctor --network
 ```
 
-MSI 安装页允许选择任意本机安装目录，所有组件都会安装，不提供功能开关。安装与修复不会清空 `config.json`、身份、凭据或待发送采集队列，并会执行账户兼容性准备。该准备不读取授权码，也不发起网络配对：它只检查本机账户格式；发现未知或损坏的配对、授权、绑定或凭据文件时，先验证 Host UUID 和 telemetry spool，再把不兼容账户文件归档为唯一名称。Host UUID 和待发送队列不在归档范围内。向导始终显示完成页或失败页；安装后运行 `& $client setup --interactive` 完成配对。
+MSI 安装页允许选择任意本机安装目录，所有组件都会安装，不提供功能开关。安装与修复不会清空 `config.json`、身份、凭据或待发送采集队列，并会执行账户兼容性准备。该准备不读取授权码，也不发起网络配对：它只检查本机账户格式；发现未知或损坏的配对、授权、绑定或凭据文件时，先验证主机 UUID 和 telemetry spool，再把不兼容账户文件归档为唯一名称。主机 UUID 和待发送队列不在归档范围内。向导始终显示完成页或失败页；安装后运行 `& $client setup --interactive` 完成配对。
 
-将示例 Server 地址替换为你的 xsos，在交互提示中输入管理台创建的授权码。授权码使用普通文本提示并在终端中明文回显，不提供遮罩或隐藏切换。`setup` 的开机自启提示默认 yes，直接按 Enter 后由 Windows 服务管理器设置自动启动。MSI 会把用户选择的目录事务性追加到机器 PATH；新终端可直接运行 `xsoc`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\xsoc\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
+将示例服务端地址替换为你的 xsos，在交互提示中输入管理台创建的授权码。授权码使用普通文本提示并在终端中明文回显，不提供遮罩或隐藏切换。`setup` 的开机自启提示默认 yes，直接按 Enter 后由 Windows 服务管理器设置自动启动。MSI 会把用户选择的目录事务性追加到机器 PATH；新终端可直接运行 `xsoc`，修复与升级不重复添加，卸载会移除该安装器拥有的 PATH 项。配置位于 `C:\ProgramData\xsoc\config.json`；凭据与队列由安装器保护，服务使用 LocalService。
 
-已有安装直接再次运行同一 MSI；原生安装器处理升级、修复、降级检查和服务登记，并保留配置、身份、队列及启动意图。安装器完成兼容性准备后，`xsoc setup` 会把仅有本地身份、缺少完整绑定以及“账户文件已归档但 Host UUID 仍在”的状态自动选择为 recovery，并在真实终端询问新的 Server 授权码。远程核验成功的绑定可复用，未完成事务可以继续。
+已有安装直接再次运行同一 MSI；原生安装器处理升级、修复、降级检查和服务登记，并保留配置、身份、队列及启动意图。安装器完成兼容性准备后，`xsoc setup` 会把仅有本地身份、缺少完整绑定以及“账户文件已归档但主机 UUID 仍在”的状态自动选择为 recovery，并在真实终端询问新的服务端授权码。远程核验成功的绑定可复用，未完成事务可以继续。
 
 手动强制修复同一 MSI：
 
@@ -471,7 +471,7 @@ RPM 系统使用 `sudo dnf install ./xsoc-1.0.0.x86_64.rpm`；同版损坏重装
 
 ### macOS Apple Silicon
 
-只提供 arm64；不支持 Intel Mac。在 Release 下载 unsigned PKG；安装包尚未签名、公证，可在系统允许的安装确认界面批准该已校验文件。
+只提供 arm64；不支持 Intel Mac。在发行版本下载未签名 PKG；安装包尚未签名、公证，可在系统允许的安装确认界面批准该已校验文件。
 
 ```sh
 sudo installer -pkg ./xsoc-1.0.0-macos-arm64-unsigned.pkg -target /
@@ -493,23 +493,23 @@ SMART_PAYLOAD="$PWD/dist/smartmontools-macos-arm64" BINARY="$PWD/target/aarch64-
 
 ### 修改设置与常见配对问题
 
-`setup` 按配置、配对、服务注册、启动策略、运行状态和连接顺序执行后置验证。交互安装仅询问是否开机自启，默认 yes；无需分别选择立即启动和连接验证，二者始终执行。交互终端明确区分 `local_binding_found`、`remotely_verified` 和 `stale_binding`，连接等待每五秒显示一次进度。只有 Server 接受凭据以及真实上报收到 HTTP 202 后才会显示相应 `verified`。JSON 失败响应中的 `error.step` 指明失败关卡，`error.code` 和脱敏 `error.detail` 给出稳定原因。连接检查使用严格外层超时；超时或 Ctrl+C 会返回非成功结果，但不会回滚已经提交的配对。
+`setup` 按配置、配对、服务注册、启动策略、运行状态和连接顺序执行后置验证。交互安装仅询问是否开机自启，默认 yes；无需分别选择立即启动和连接验证，二者始终执行。交互终端明确区分 `local_binding_found`、`remotely_verified` 和 `stale_binding`，连接等待每五秒显示一次进度。只有服务端接受凭据以及真实上报收到 HTTP 202 后才会显示相应 `verified`。JSON 失败响应中的 `error.step` 指明失败关卡，`error.code` 和脱敏 `error.detail` 给出稳定原因。连接检查使用严格外层超时；超时或 Ctrl+C 会返回非成功结果，但不会回滚已经提交的配对。
 
 已有有效配置无须重复初始化或配对。先 `config show --format json` 查看脱敏设置和修订；修改候选文件后使用 `config validate --file <绝对路径>`、`config diff --file <绝对路径>`、`config apply --file <绝对路径> --expected-revision <当前修订>`，写操作前停止服务。
 
-Server 必须使用系统信任的 HTTPS 证书；证书过期、名称不匹配或企业 CA 未装入系统信任库时，先修复证书。
-每个实例的授权码长期有效，只有管理员显式轮换授权码或取消实例时才失效；轮换后旧 Client credential 会被
+服务端必须使用系统信任的 HTTPS 证书；证书过期、名称不匹配或企业 CA 未装入系统信任库时，先修复证书。
+每个实例的授权码长期有效，只有管理员显式轮换授权码或取消实例时才失效；轮换后旧客户端 credential 会被
 撤销，必须使用新授权码重新运行配对。一次配对请求自身有短期事务超时，这不等于实例授权码过期；网络中断后
-再次运行 `setup` 会核对并恢复仍有效的同一事务，也可用 `pair status`、`pair resume` 精确检查。授权码轮换或 Server 数据库重建导致旧凭据失效时，`setup` 会自动选择 `pair recover` 并提示输入新授权码；该流程保留原 Host UUID 和待发送队列。Server 允许恢复不存在的 UUID，或恢复属于同一实例、已撤销且没有有效凭据的 UUID。也可显式运行 `pair recover --interactive`。若管理员明确放弃旧身份，先运行 `queue archive --reason server-state-lost` 原子归档旧队列，再使用 `pair replace`，不得删除队列或把旧报告改属新 UUID。`status`
+再次运行 `setup` 会核对并恢复仍有效的同一事务，也可用 `pair status`、`pair resume` 精确检查。授权码轮换或服务端数据库重建导致旧凭据失效时，`setup` 会自动选择 `pair recover` 并提示输入新授权码；该流程保留原主机 UUID 和待发送队列。服务端允许恢复不存在的 UUID，或恢复属于同一实例、已撤销且没有有效凭据的 UUID。也可显式运行 `pair recover --interactive`。若管理员明确放弃旧身份，先运行 `queue archive --reason server-state-lost` 原子归档旧队列，再使用 `pair replace`，不得删除队列或把旧报告改属新 UUID。`status`
 显示未配对时不应反复安装或删除身份文件。
 
-当前运行只接受配置与账户格式 1.0.0。旧格式配置保持原样并拒绝启动；管理员须保全旧配置并通过当前配置流程重建和核验，不应直接改格式字段。其它格式或损坏的账户资料会返回 `pairing_state_incompatible`；创建新授权码后运行 `pair recover --interactive`，Client 会先验证采集队列，再归档旧账户文件并保留 Host UUID。若队列不可读、含隔离记录或身份不匹配，则返回 `important_state_incompatible` 并保持所有数据原样，不能通过重装或重新配对绕过。
+当前运行只接受配置与账户格式 1.0.0。旧格式配置保持原样并拒绝启动；管理员须保全旧配置并通过当前配置流程重建和核验，不应直接改格式字段。其它格式或损坏的账户资料会返回 `pairing_state_incompatible`；创建新授权码后运行 `pair recover --interactive`，客户端会先验证采集队列，再归档旧账户文件并保留主机 UUID。若队列不可读、含隔离记录或身份不匹配，则返回 `important_state_incompatible` 并保持所有数据原样，不能通过重装或重新配对绕过。
 
 强制覆盖仅替换安装器管理的程序和服务文件，不绕过状态格式、路径所有权或配置校验；不需要用 `PURGE=1` 解决普通安装问题。
 
 ### Windows 后台诊断
 
-SCM 在私有状态校验后创建 `配置 state_dir 下的 logs`，使用共享 typed sink 写入 `xsoc.jsonl`。最多保留活动文件和四份归档，每份 8 MiB，总上限 40 MiB。服务账户首次创建此目录；管理员查询不会先替服务建立日志目录。ACL 拒绝普通用户，已有不安全对象不修复。服务启动失败且日志 sink 尚不可用时，可同时查看 Windows SCM 的服务退出代码。
+SCM 在私有状态校验后创建 `配置 state_dir 下的 logs`，使用共享类型化日志输出器写入 `xsoc.jsonl`。最多保留活动文件和四份归档，每份 8 MiB，总上限 40 MiB。服务账户首次创建此目录；管理员查询不会先替服务建立日志目录。ACL 拒绝普通用户，已有不安全对象不修复。服务启动失败且日志输出器尚不可用时，可同时查看 Windows SCM 的服务退出代码。
 
 ```powershell
 xsoc logs --tail 100 --format json

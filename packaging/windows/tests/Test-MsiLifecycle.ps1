@@ -382,7 +382,8 @@ function Assert-ArpVersion([string]$ExpectedVersion) {
 function Assert-InstallLocation([string]$ExpectedRoot) {
     $location = (Get-ItemProperty -LiteralPath 'HKLM:\Software\sarmg\xsoc' `
         -Name InstallLocation -ErrorAction Stop).InstallLocation
-    if ([string]::IsNullOrWhiteSpace($location) -or $location -ine $ExpectedRoot) {
+    if ([string]::IsNullOrWhiteSpace($location) -or
+        $location.TrimEnd('\') -ine $ExpectedRoot.TrimEnd('\')) {
         throw "The current Client registry namespace did not retain the selected installation path: $location"
     }
 }

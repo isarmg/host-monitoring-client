@@ -45,7 +45,7 @@ prost = { version = "0.14", optional = true }
 rand = { version = "0.10", optional = true }
 serde.workspace = true
 serde_json.workspace = true
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "00770c007912b276f5bb1075abfefe3c31026276", version = "=1.0.0", features = ["tracing"], optional = true }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "c45e48e93e360542c2e1db6c6441a9e29b344b03", version = "=1.0.0", features = ["tracing"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["http2"], optional = true }
 url = { version = "2", optional = true }
 sha2 = { version = "0.11", optional = true }
@@ -166,8 +166,8 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-xsos-protocol = { git = "https://github.com/isarmg/xsos.git", rev = "6458cb63bc1b868156ebb26eecdc09d563026df2", version = "=1.0.0" }
-xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "00770c007912b276f5bb1075abfefe3c31026276", version = "=1.0.0", features = ["tracing"] }
+xsos-protocol = { git = "https://github.com/isarmg/xsos.git", rev = "3b5c437a80424c717a20ffbad07c3e8d01cd83ae", version = "=1.0.0" }
+xcsc = { git = "https://github.com/isarmg/xcsc.git", rev = "c45e48e93e360542c2e1db6c6441a9e29b344b03", version = "=1.0.0", features = ["tracing"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 
