@@ -7,7 +7,11 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -34,6 +38,7 @@ pub(super) struct SmartCollector {
     config: SmartConfig,
     last_started: Option<Instant>,
     pending: Option<mpsc::Receiver<ResultSet>>,
+    cancelled: Arc<AtomicBool>,
     cached: ResultSet,
 }
 impl SmartCollector {
@@ -47,6 +52,7 @@ impl SmartCollector {
             config,
             last_started: None,
             pending: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
             cached: (
                 vec![],
                 unavailable(CapabilityErrorKind::NotPresent, message),
@@ -83,10 +89,11 @@ impl SmartCollector {
         {
             let (tx, rx) = mpsc::channel();
             let config = self.config.clone();
+            let cancelled = self.cancelled.clone();
             match std::thread::Builder::new()
                 .name("hardware-smart".into())
                 .spawn(move || {
-                    let _ = tx.send(collect(&config));
+                    let _ = tx.send(collect(&config, &cancelled));
                 }) {
                 Ok(_) => {
                     self.pending = Some(rx);
@@ -106,6 +113,21 @@ impl SmartCollector {
         self.cached.clone()
     }
 }
+impl Drop for SmartCollector {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(pending) = self.pending.take()
+            && matches!(
+                pending.recv_timeout(Duration::from_millis(250)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            )
+        {
+            // Never let an uninterruptible OS operation hold Client shutdown.
+            tracing::warn!("SMART worker did not stop within 250ms after cancellation");
+        }
+    }
+}
+
 fn unavailable(kind: CapabilityErrorKind, message: &str) -> Capability {
     Capability::unavailable("hardware.disk_health", "smartctl-json", kind, message)
 }
@@ -161,7 +183,7 @@ fn bundled_executable(current_exe: &Path) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
-fn collect(config: &SmartConfig) -> ResultSet {
+fn collect(config: &SmartConfig, cancelled: &AtomicBool) -> ResultSet {
     let Some(exe) = executable(config) else {
         return (
             vec![],
@@ -171,7 +193,7 @@ fn collect(config: &SmartConfig) -> ResultSet {
             ),
         );
     };
-    collect_with_runner(|args, deadline| run_json(&exe, args, deadline))
+    collect_with_runner(|args, deadline| run_json(&exe, args, deadline, cancelled))
 }
 
 fn collect_with_runner(
@@ -330,10 +352,11 @@ fn run_json(
     exe: &Path,
     args: &[&str],
     deadline: Instant,
+    cancelled: &AtomicBool,
 ) -> Result<(Value, i32), CapabilityErrorKind> {
     const LIMIT: u64 = 1024 * 1024;
     let deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-    if Instant::now() >= deadline {
+    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Err(CapabilityErrorKind::Transient);
     }
     let mut command = Command::new(exe);
@@ -373,7 +396,9 @@ fn run_json(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if !cancelled.load(Ordering::Acquire) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -381,10 +406,22 @@ fn run_json(
             }
         }
     };
-    let bytes = rx
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|_| CapabilityErrorKind::Transient)?
-        .map_err(|_| CapabilityErrorKind::Transient)?;
+    let bytes = loop {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err(CapabilityErrorKind::Transient);
+        }
+        match rx.recv_timeout(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(20)),
+        ) {
+            Ok(result) => break result.map_err(|_| CapabilityErrorKind::Transient)?,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(CapabilityErrorKind::Transient);
+            }
+        }
+    };
     if bytes.len() as u64 > LIMIT {
         return Err(CapabilityErrorKind::InvalidData);
     }
@@ -437,6 +474,41 @@ fn parse_disk(device: &str, v: &Value) -> Option<DiskHealth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_collector_cancels_and_waits_for_its_worker() {
+        let mut collector = SmartCollector::new(SmartConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        let cancelled = collector.cancelled.clone();
+        let result = collector.cached.clone();
+        let (sender, receiver) = mpsc::channel();
+        collector.pending = Some(receiver);
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(cancelled.load(Ordering::Acquire));
+            sender.send(result).unwrap();
+        });
+        drop(collector);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_scan_does_not_start_a_process() {
+        assert_eq!(
+            run_json(
+                Path::new("this-executable-must-not-be-started"),
+                &[],
+                Instant::now() + Duration::from_secs(1),
+                &AtomicBool::new(true),
+            ),
+            Err(CapabilityErrorKind::Transient)
+        );
+    }
 
     #[test]
     fn raid_members_share_a_path_but_retain_distinct_health_and_identity() {
@@ -626,7 +698,8 @@ mod tests {
             run_json(
                 Path::new("/bin/sleep"),
                 &["1"],
-                now + Duration::from_millis(80)
+                now + Duration::from_millis(80),
+                &AtomicBool::new(false),
             )
             .is_err()
         );
