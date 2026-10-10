@@ -14,6 +14,8 @@
 | Linux | `/etc/xsoc/config.json` |
 | macOS | `/Library/Application Support/xsoc/config.json` |
 
+所有命令按 `--config`、`XSOC_CONFIG` 环境变量、平台默认路径的顺序选择配置文件。显式参数和环境变量都必须使用绝对路径；指定文件缺失时不会静默改用默认配置。
+
 先确认安装结果并停止服务，配置写入期间不要让后台进程同时运行：
 
 ```sh

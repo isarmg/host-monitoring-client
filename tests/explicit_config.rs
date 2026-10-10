@@ -554,3 +554,75 @@ fn delivery_lock_precedes_bootstrap_and_read_only_commands_remain_concurrent() {
     drop(session);
     assert!(xcsc::runtime::ClientSession::open(&fixture.state_dir).is_ok());
 }
+
+#[cfg(unix)]
+#[test]
+fn environment_config_is_used_by_administration_and_explicit_flag_wins() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    for (name, interval) in [("environment.json", 12), ("explicit.json", 18)] {
+        let mut config = xsoc::ClientConfig::default();
+        config.state_dir = fixture.state_dir.clone();
+        config.interval_seconds = interval;
+        let path = fixture.root.join(name);
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for explicit in [false, true] {
+        let mut command = fixture.command();
+        command
+            .env("XSOC_CONFIG", fixture.root.join("environment.json"))
+            .args(["config", "show", "--format", "json"]);
+        if explicit {
+            command
+                .arg("--config")
+                .arg(fixture.root.join("explicit.json"));
+        }
+        let output = bounded_output(command);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            value["config"]["interval_seconds"],
+            if explicit { 18 } else { 12 }
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn environment_config_is_explicit_and_does_not_hide_help() {
+    let fixture = Fixture::new();
+    for (words, expected_exit, expected_code) in [
+        (vec!["config", "show"], 4, "config_missing"),
+        (vec!["setup", "--non-interactive"], 4, "config_missing"),
+        (vec!["run"], 2, "invalid_input"),
+    ] {
+        let mut command = fixture.command();
+        command
+            .env("XSOC_CONFIG", fixture.root.join("missing.json"))
+            .args(words)
+            .args(["--format", "json"]);
+        let output = bounded_output(command);
+        assert_eq!(output.status.code(), Some(expected_exit));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], expected_code);
+        assert!(!fixture.state_dir.exists());
+    }
+    let mut command = fixture.command();
+    command
+        .env("XSOC_CONFIG", "relative.json")
+        .args(["config", "show", "--format", "json"]);
+    let output = bounded_output(command);
+    assert_eq!(output.status.code(), Some(2));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "absolute_path_required");
+    for flag in ["--help", "--version"] {
+        let mut command = fixture.command();
+        command.env("XSOC_CONFIG", "relative.json").arg(flag);
+        assert!(bounded_output(command).status.success());
+    }
+}

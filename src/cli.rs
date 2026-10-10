@@ -1343,11 +1343,36 @@ async fn setup(args: &Args, path: PathBuf, c: ClientConfig) -> Result<Value> {
     }))
 }
 
-fn validate_product_paths(args: Args) -> Result<Args> {
+fn validate_product_paths(mut args: Args) -> Result<Args> {
+    // Resolve the environment fallback before dispatch so administration and
+    // collection commands operate on the same file. An explicit flag wins.
+    if !args.has("--config")
+        && !args.has("--help")
+        && !args.has("--version")
+        && args.words != ["version"]
+        && let Some(path) = std::env::var_os("XSOC_CONFIG")
+    {
+        let path = path
+            .into_string()
+            .map_err(|_| fail(2, "invalid_config_path"))?;
+        absolute(Path::new(&path))?;
+        args.options.insert("--config".into(), path);
+    }
     if let Some(path) = args.get("--file") {
         absolute(Path::new(path))?;
     }
     Ok(args)
+}
+
+#[cfg(any(windows, test))]
+fn setup_elevation_arguments(mut raw: Vec<String>, args: &Args) -> Vec<String> {
+    // UAC relaunch must not rely on inheriting XSOC_CONFIG from this process.
+    if !raw.iter().any(|argument| argument == "--config")
+        && let Some(path) = args.get("--config")
+    {
+        raw.extend(["--config".into(), path.into()]);
+    }
+    raw
 }
 
 pub fn entry(raw: Vec<String>) -> u8 {
@@ -1384,6 +1409,7 @@ pub fn entry(raw: Vec<String>) -> u8 {
     }
     #[cfg(windows)]
     if args.words == ["setup"] {
+        let elevation_raw = setup_elevation_arguments(elevation_raw, &args);
         let interactive = !args.has("--non-interactive") && !args.has("--input-stdin");
         let installer_session = args.has("--installer-session");
         match prepare_windows_setup_elevation(
@@ -2189,6 +2215,28 @@ mod setup_tests {
             archived[0]
                 .as_str()
                 .is_some_and(|path| Path::new(path).exists())
+        );
+    }
+
+    #[test]
+    fn setup_elevation_preserves_the_resolved_config_without_duplicate_options() {
+        let mut args = Args::parse(vec!["setup".into()], &[], &[]).unwrap();
+        args.options
+            .insert("--config".into(), "/selected/config.json".into());
+        assert_eq!(
+            setup_elevation_arguments(vec!["setup".into()], &args),
+            ["setup", "--config", "/selected/config.json"]
+        );
+        let explicit = vec![
+            "setup".into(),
+            "--config".into(),
+            "/selected/config.json".into(),
+        ];
+        assert_eq!(setup_elevation_arguments(explicit.clone(), &args), explicit);
+        args.options.remove("--config");
+        assert_eq!(
+            setup_elevation_arguments(vec!["setup".into()], &args),
+            ["setup"]
         );
     }
 
