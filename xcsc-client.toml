@@ -5,7 +5,7 @@ source_roots = ["."]
 # xcsc generation and exact crate version; Cargo manifests pin the immutable source revision.
 [foundation]
 platform_generation = 1
-version = "1.0.0"
+version = "1.0.1"
 
 [[components]]
 id = "client"
