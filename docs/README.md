@@ -5,7 +5,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [../README.md](../README.md) | GitHub 首页简介、最短配置路径和开发验证 |
+| [../README.md](../README.md) | 项目简介、功能、平台、快速部署和编译部署 |
 | [configuration.md](configuration.md) | 初始化、候选配置、配对/恢复、服务启动和诊断的完整命令 |
 | [platform-setup.md](platform-setup.md) | Windows、Linux、macOS 安装、配对/恢复、服务查看/启停、自启、诊断、升级与卸载，含命令解释 |
 | [releases/1.0.0.md](releases/1.0.0.md) | 当前 CLI、状态格式、平台和升级/回退边界 |
@@ -17,3 +17,10 @@
 CLI 参数、输出与兼容性约定见 [CLI 兼容性](cli-compatibility.md)。
 
 公共支撑的职责、单体依赖、平台边界与验证方法见[公共支撑说明](common-support.md)。
+
+## 开发与平台能力
+
+- [开发与验证](development.md)：质量检查、各平台编译打包、仓库结构与凭据边界
+- [硬件监控](hardware-monitoring.md)：采集范围、平台支持与协议要求
+- [Windows AMD / Intel GPU](windows-gpu-vendors.md)：ADLX / IGCL 只读采集
+- [依赖与 unsafe 审查](unsafe-audit.md)：依赖选择与保留的原生边界
