@@ -7,7 +7,7 @@ die() {
 }
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-# 客户端源码统一位于 clients/；打包器必须回到工作区根解析 Cargo 与 config/。
+# Resolve Cargo and config/ from the repository root before packaging client source.
 repository_root=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 cd "$repository_root"
 

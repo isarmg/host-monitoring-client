@@ -249,46 +249,46 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// 偶发 I/O 失败必须降级续跑，不能终止常驻进程。
+    /// Isolated I/O failures must degrade gracefully without terminating the resident process.
     #[test]
     fn transient_spool_failures_do_not_stop_the_client() {
         let mut health = SpoolHealth::default();
         for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health
-                .record_failure("测试", &"disk full")
-                .expect("未达阈值前必须继续运行");
+                .record_failure("test", &"disk full")
+                .expect("continue running before the threshold is reached");
         }
     }
 
-    /// 但持续性故障要退出，交给服务管理器处理——否则会静默地一直丢数据。
+    /// Persistent faults must exit for service-manager recovery rather than silently discarding data forever.
     #[test]
     fn sustained_spool_failures_eventually_stop_the_client() {
         let mut health = SpoolHealth::default();
         for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
-            health.record_failure("测试", &"disk full").unwrap();
+            health.record_failure("test", &"disk full").unwrap();
         }
         let error = health
-            .record_failure("测试", &"disk full")
-            .expect_err("达到阈值必须返回错误以终止主循环");
+            .record_failure("test", &"disk full")
+            .expect_err("return an error at the threshold to terminate the main loop");
         assert!(
-            error.to_string().contains("持续性故障"),
-            "错误信息应说明这是持续性故障而非偶发，实际为：{error}"
+            error.to_string().contains("persistent spool failure"),
+            "the error must identify a persistent fault rather than an isolated failure; received: {error}"
         );
     }
 
-    /// 中间只要成功一次，计数就归零——阈值针对的是**连续**失败。
+    /// A successful operation resets the count; the threshold applies to consecutive failures.
     #[test]
     fn a_single_success_resets_the_failure_streak() {
         let mut health = SpoolHealth::default();
         for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
-            health.record_failure("测试", &"transient").unwrap();
+            health.record_failure("test", &"transient").unwrap();
         }
         health.record_success();
-        // 归零后应能再撑满一整轮，说明计数确实被重置了。
+        // After reset, another complete failure sequence must fit below the threshold.
         for _ in 0..(xcsc::runtime::MAX_QUEUE_FAILURES - 1) {
             health
-                .record_failure("测试", &"transient")
-                .expect("成功一次后计数应归零");
+                .record_failure("test", &"transient")
+                .expect("one successful operation must reset the count");
         }
     }
 }

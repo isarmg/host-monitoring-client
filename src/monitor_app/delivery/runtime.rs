@@ -84,7 +84,7 @@ pub(super) async fn run_loop(
                         count
                     }
                     Err(error) => {
-                        spool_read_health.record_failure("读取 spool 队列长度", &error)?;
+                        spool_read_health.record_failure("reading spool queue length", &error)?;
                         0
                     }
                 };

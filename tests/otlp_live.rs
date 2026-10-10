@@ -80,22 +80,22 @@ fn otlp_fixture_satisfies_the_current_active_binding_contract() {
 /// CI sets XSOC_TEST_OTLP_ENDPOINT while a real Collector is running.
 /// Local test runs skip cleanly so the unit suite has no external dependency.
 ///
-/// 设置 XSOC_TEST_REQUIRE_OTLP 可把"跳过"升级为"失败"，供已备好
-/// Collector 的环境使用，避免测试在无人察觉的情况下静默失效。
-/// 读取 Collector 端点；未配置时返回 None（调用方跳过）。
+/// Set XSOC_TEST_REQUIRE_OTLP to fail instead of skipping when the environment is prepared for
+/// a Collector, preventing silently inactive coverage.
+/// Read the Collector endpoint; return None when unconfigured so the caller may skip.
 fn otlp_endpoint(test_name: &str) -> Option<String> {
     match std::env::var("XSOC_TEST_OTLP_ENDPOINT") {
         Ok(endpoint) if !endpoint.trim().is_empty() => Some(endpoint),
         _ if std::env::var("XSOC_TEST_REQUIRE_OTLP").is_ok_and(|v| !v.trim().is_empty()) => {
             panic!(
-                "XSOC_TEST_REQUIRE_OTLP 已设置，但 XSOC_TEST_OTLP_ENDPOINT \
-                 缺失或为空；拒绝跳过 `{test_name}`"
+                "XSOC_TEST_REQUIRE_OTLP is set, but XSOC_TEST_OTLP_ENDPOINT \
+                 is missing or empty; refusing to skip `{test_name}`"
             );
         }
         _ => {
             eprintln!(
-                "⚠  已跳过 {test_name}：未设置 XSOC_TEST_OTLP_ENDPOINT，\
-                 OTLP 编码路径未经验证"
+                "Skipped {test_name}: XSOC_TEST_OTLP_ENDPOINT is not set;\
+                 the live OTLP encoding path was not verified"
             );
             None
         }
@@ -156,18 +156,18 @@ async fn collector_accepts_the_client_otlp_protobuf() {
     std::fs::remove_dir_all(state_dir).expect("remove OTLP test state directory");
 }
 
-/// 满配报文：网卡、磁盘、传感器、GPU 全部非空。
+/// Fully populated report with nonempty interface, disk, sensor and GPU lists.
 ///
-/// # 为什么必须单列一个用例
+/// # Why this requires a separate case
 ///
-/// 上面那个用例把 `networks` / `disks` / `temperatures` / `gpus` 全部留空，因此它
-/// 只验证了 CPU、内存、uptime 四个指标——而 `otlp.rs` 里手写的 500 行字段编号，
-/// **绝大部分**恰恰是这四个之外的设备类指标。也就是说，专门为"让真实 Collector
-/// 校验手写 protobuf"而设的 CI job，实际只覆盖了最平凡的那一小块。
+/// The preceding case leaves `networks` / `disks` / `temperatures` / `gpus` empty and therefore
+/// verifies only four CPU, memory and uptime metrics. Most handwritten field numbers in `otlp.rs`
+/// belong to device metrics outside that set. The CI job intended to use a real Collector
+/// to verify handwritten protobuf would otherwise cover only that small basic subset.
 ///
-/// 这里补上多设备报文，同时顺带验证 `MetricSet` 的按名收敛：2 张网卡必须收敛成
-/// 一个 metric 下的 2 个数据点，而不是两个同名 metric（后者违反 OTLP 数据模型，
-/// Collector 会拒绝或产生歧义）。
+/// Add a multi-device report and verify name-based `MetricSet` consolidation: two interfaces must produce
+/// two points under one metric rather than two identically named metrics, which violate the OTLP data model
+/// and may be rejected or interpreted ambiguously by the Collector.
 #[tokio::test]
 async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
     let Some(endpoint) =
@@ -239,7 +239,7 @@ async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
                 swap_total_bytes: 4 * 1024 * 1024 * 1024,
                 swap_used_bytes: 1024 * 1024 * 1024,
             },
-            // 两张网卡 → 同一个 metric 下必须是 2 个数据点。
+            // Two interfaces must produce two data points under one metric.
             networks: vec![network("eth0", 1000, 2000), network("wlan0", 300, 400)],
             disks: vec![disk("sda1", "/"), disk("sdb1", "/data")],
             temperatures: vec![
@@ -272,7 +272,7 @@ async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
     reporter
         .send_otlp(&report)
         .await
-        .expect("Collector must accept a fully populated report: 网卡/磁盘/传感器/GPU 的字段编号都在这条路径上");
+        .expect("Collector must accept a fully populated report: this path exercises interface/disk/sensor/GPU field numbers");
     std::fs::remove_dir_all(state_dir).expect("remove OTLP test state directory");
 }
 

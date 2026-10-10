@@ -43,7 +43,8 @@ Usage: sudo xsoc-purge --yes
 
 Permanently removes this machine's local xsoc config, credential,
 pairing state, spool, systemd drop-ins, and package-managed service account.
-It does NOT contact the xsos or revoke the server-side instance.
+The mandatory --yes option explicitly confirms permanent local removal.
+It does NOT contact xsos or revoke the server-side instance.
 EOF
 }
 

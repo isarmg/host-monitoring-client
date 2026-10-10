@@ -1,4 +1,4 @@
-//! Windows WDDM GPU Engine 的只读 PDH consumer。
+//! Read-only PDH consumer for Windows WDDM GPU Engine.
 
 use std::{
     collections::BTreeMap,

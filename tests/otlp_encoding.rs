@@ -1,20 +1,20 @@
-//! 用**官方** OTLP proto 定义交叉校验手写编码器。
+//! Cross-check the handwritten encoder using official OTLP proto definitions.
 //!
-//! # 这个测试补的是哪个缺口
+//! # The coverage gap addressed by this test
 //!
-//! `otlp.rs` 里 500 行 protobuf 字段编号是照着 OpenTelemetry spec 手抄的。抄错一个
-//! tag 号，编出来的字节流就是错的——但模块内的单测发现不了，因为它们编解码用的是
-//! **同一份**定义，抄错的编号在自洽的两侧同样自洽。
+//! The protobuf field numbers in `otlp.rs` are handwritten from the OpenTelemetry specification. One incorrect
+//! tag produces an invalid byte stream, which module tests may miss because encoding and decoding share
+//! the same definitions and therefore the same incorrect field number.
 //!
-//! 唯一能戳破这层自洽的是「独立实现的对端」。只靠 CI 里的真实 Collector 作对端是
-//! 不够的：那要求起容器、只能在一个 CI job 里跑，而且它只回一个状态码——
-//! 结构对不对得靠人去翻 Collector 的输出。
+//! An independently implemented peer exposes this error. Relying solely on a real Collector in CI is
+//! insufficient: it requires a container, runs in only one CI job and returns only a status code.
+//! Checking the structure would require manual inspection of Collector output.
 //!
-//! 这里把 `opentelemetry-proto`（官方 proto 生成的类型）作为 **dev-dependency**
-//! 引入：运行时依赖一个字节都没变，Client 二进制里不会多出任何东西，但
-//! `cargo test` 就能拿到一份权威的解码器，且断言直接落在字段上。
+//! Use `opentelemetry-proto` (types generated from official proto) as a dev-dependency:
+//! runtime dependencies and the client binary are unchanged, while
+//! `cargo test` obtains an authoritative decoder and makes direct field assertions.
 //!
-//! 分工：本测试保证**编码正确**，CI 的 otlp job 保证**对端确实接受**。
+//! This test verifies correct encoding; the CI otlp job verifies actual peer acceptance.
 
 #![cfg(feature = "otlp")]
 
@@ -26,13 +26,14 @@ use uuid::Uuid;
 use xsoc::model::*;
 use xsoc::otlp::encode_report;
 
-/// 用手写编码器编出字节，再用官方类型解回来。
+/// Encode bytes with the handwritten encoder, then decode with official types.
 fn round_trip(report: &ClientReport) -> OfficialRequest {
     let mine = encode_report(report);
     let mut bytes = Vec::with_capacity(mine.encoded_len());
-    mine.encode(&mut bytes).expect("手写编码器必须能编码");
+    mine.encode(&mut bytes)
+        .expect("the handwritten encoder must encode successfully");
     OfficialRequest::decode(bytes.as_slice())
-        .expect("官方 OTLP 定义必须能解出手写编码器产生的字节流")
+        .expect("official OTLP definitions must decode the handwritten encoder output")
 }
 
 fn report() -> ClientReport {
@@ -150,18 +151,18 @@ fn string_attr(
     })
 }
 
-/// 资源属性：字段编号抄错的话，这些键值根本解不出来。
+/// Resource attributes: incorrect field numbers would prevent these keys and values from decoding.
 #[test]
 fn official_definitions_decode_our_resource_attributes() {
     let decoded = round_trip(&report());
     let resource_metrics = decoded
         .resource_metrics
         .first()
-        .expect("必须有一个 ResourceMetrics");
+        .expect("one ResourceMetrics is required");
     let attributes = &resource_metrics
         .resource
         .as_ref()
-        .expect("必须带 Resource")
+        .expect("Resource is required")
         .attributes;
 
     assert_eq!(
@@ -173,7 +174,7 @@ fn official_definitions_decode_our_resource_attributes() {
         string_attr(attributes, "service.name").as_deref(),
         Some("xsoc")
     );
-    // OTLP 语义约定要求用 darwin / arm64，而不是我们内部的 macos / aarch64。
+    // OTLP semantic conventions use darwin / arm64 rather than the internal macos / aarch64 names.
     assert_eq!(
         string_attr(attributes, "os.type").as_deref(),
         Some("darwin")
@@ -184,7 +185,7 @@ fn official_definitions_decode_our_resource_attributes() {
     );
 }
 
-/// 指标的名称、单位、类型与数据点数量。
+/// Metric names, units, types and data-point counts.
 #[test]
 fn official_definitions_decode_our_metrics() {
     let decoded = round_trip(&report());
@@ -199,43 +200,46 @@ fn official_definitions_decode_our_metrics() {
             .metrics
             .iter()
             .find(|m| m.name == name)
-            .unwrap_or_else(|| panic!("解码结果里找不到 {name}"))
+            .unwrap_or_else(|| panic!("decoded output lacks {name}"))
     };
     let points = |name: &str| match find(name).data.as_ref() {
         Some(OfficialData::Gauge(g)) => g.data_points.len(),
         Some(OfficialData::Sum(s)) => s.data_points.len(),
-        other => panic!("{name} 的 data 类型出乎意料：{other:?}"),
+        other => panic!("unexpected data type for {name}: {other:?}"),
     };
 
-    // 单位必须是 OTLP 语义约定里的写法，写错下游图表的量纲就是错的。
+    // Units must follow OTLP semantic conventions to preserve downstream dimensions.
     assert_eq!(find("system.cpu.utilization").unit, "1");
     assert_eq!(find("system.memory.usage").unit, "By");
     assert_eq!(find("system.uptime").unit, "s");
     assert_eq!(find("hw.temperature").unit, "Cel");
     assert_eq!(find("hw.gpu.power").unit, "W");
 
-    // 2 网卡 × 收/发 = 4 个点，且必须收敛在**一个** metric 下。
+    // 2 interfaces x receive/transmit = 4 points consolidated under one metric.
     assert_eq!(points("system.network.io"), 4);
     assert_eq!(points("system.disk.io"), 2);
     assert_eq!(points("hw.temperature"), 1);
 
-    // 累计量必须是 Sum 且单调递增，否则后端算不出速率。
+    // Cumulative values must be monotonic Sums so the backend can derive rates.
     match find("system.network.io").data.as_ref() {
         Some(OfficialData::Sum(sum)) => {
-            assert!(sum.is_monotonic, "累计字节数必须标记为单调");
+            assert!(
+                sum.is_monotonic,
+                "cumulative byte counts must be marked monotonic"
+            );
             // 2 = AGGREGATION_TEMPORALITY_CUMULATIVE
             assert_eq!(sum.aggregation_temporality, 2);
         }
-        other => panic!("system.network.io 应当是 Sum，实际为 {other:?}"),
+        other => panic!("system.network.io must be Sum; received {other:?}"),
     }
 
-    // 瞬时值必须是 Gauge——错标成 Sum 会让后端把它当累计量做差分。
+    // Instantaneous values must be Gauges; marking them as Sums makes the backend difference them as cumulative values.
     assert!(matches!(
         find("system.cpu.utilization").data.as_ref(),
         Some(OfficialData::Gauge(_))
     ));
 
-    // 同一 scope 内 metric 名必须唯一（OTLP 数据模型硬性要求）。
+    // Metric names must be unique within a scope, as required by the OTLP data model.
     let mut names: Vec<&str> = scope_metrics
         .metrics
         .iter()
@@ -244,10 +248,13 @@ fn official_definitions_decode_our_metrics() {
     names.sort_unstable();
     let mut unique = names.clone();
     unique.dedup();
-    assert_eq!(names, unique, "同一 scope 内出现重复 metric 名：{names:?}");
+    assert_eq!(
+        names, unique,
+        "duplicate metric names within one scope: {names:?}"
+    );
 }
 
-/// 数据点上的属性：多设备全靠它们区分，键名错了下游就无法按设备聚合。
+/// Data-point attributes distinguish devices; incorrect keys prevent downstream per-device aggregation.
 #[test]
 fn official_definitions_decode_our_data_point_attributes() {
     let decoded = round_trip(&report());
@@ -256,9 +263,9 @@ fn official_definitions_decode_our_data_point_attributes() {
         .metrics
         .iter()
         .find(|m| m.name == "system.network.io")
-        .expect("必须有 system.network.io");
+        .expect("system.network.io is required");
     let Some(OfficialData::Sum(sum)) = network.data.as_ref() else {
-        panic!("system.network.io 应当是 Sum");
+        panic!("system.network.io must be Sum");
     };
 
     let interfaces: Vec<String> = sum

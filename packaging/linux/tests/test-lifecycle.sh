@@ -1045,7 +1045,7 @@ assert_log_contains 'daemon-reload'
 if grep -E '(^| )(start|restart|enable|is-active)( |$)' "$TEST_LOG" >/dev/null; then
   fail 'postinstall changed runtime or startup policy'
 fi
-if grep -F 'xsoc 服务已启动' "$test_root/postinstall-manual.log" >/dev/null; then
+if grep -F 'xsoc service started' "$test_root/postinstall-manual.log" >/dev/null; then
   fail 'postinstall printed a false startup message'
 fi
 assert_exists "$test_root/var/lib/xsoc-package/managed-user"

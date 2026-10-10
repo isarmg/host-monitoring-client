@@ -1,8 +1,8 @@
-//! xsos 的跨平台只读遥测 Client。
+//! Cross-platform read-only telemetry client for xsos.
 //!
-//! 遥测进程不监听业务端口、不执行 Server 下发的命令，也不包含自更新器。
-//! 配置与配对通过命令行完成，后台由操作系统服务管理器运行。
-//! 平台差异通过 capability 表达；缺失数据使用 `None`，不会用 0 冒充。
+//! The telemetry process listens on no business port, executes no server commands and contains no self-updater.
+//! Configuration and pairing use the CLI; the operating system service manager runs the background process.
+//! Capabilities express platform differences; unavailable data uses `None` rather than a fabricated zero.
 
 #[cfg(feature = "desktop")]
 pub mod client_identity;

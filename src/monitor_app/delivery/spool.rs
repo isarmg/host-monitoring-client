@@ -1,8 +1,8 @@
-/// 单类 spool 磁盘操作的健康度跟踪。
+/// Health tracking for one category of spool disk operation.
 ///
-/// 单次 I/O 失败时降级继续采样与投递；只有在**同类操作连续**失败到阈值时才退出，
-/// 把持续性故障交给服务管理器处理。主循环为
-/// 读、写和补传各持有一个实例，避免“读取成功”掩盖“持续不可写”。
+/// Continue sampling and delivery after isolated I/O failures. Exit only when consecutive failures in the same category reach the threshold,
+/// delegating persistent faults to the service manager. The main loop maintains separate instances for
+/// reads, writes and backlog delivery so a successful read cannot mask persistent write failures.
 #[derive(Default)]
 struct SpoolHealth {
     failures: xcsc::runtime::QueueFailureStreak,
@@ -13,7 +13,7 @@ impl SpoolHealth {
         self.failures.record_success();
     }
 
-    /// 记录一次失败。仅当连续失败达到阈值时才返回 `Err`（从而终止主循环）。
+    /// Record a failure. Return `Err` and terminate the main loop only when consecutive failures reach the threshold.
     fn record_failure(
         &mut self,
         operation: &str,
@@ -23,12 +23,12 @@ impl SpoolHealth {
         warn!(
             event = "xsoc.queue.persistence_failed", error_code = "queue_io_failed", operation = operation, error = %error,
             consecutive_failures = self.failures.consecutive_failures(),
-            "{operation}失败，已降级继续运行：{error}"
+            "{operation} failed; continuing in degraded mode: {error}"
         );
-        outcome.context("spool 持续性故障；退出并交由服务管理器处理")
+        outcome.context("persistent spool failure; exiting for service-manager recovery")
     }
 
-    /// 尝试把报文写入 spool。写不进去时丢弃该报文并继续，而不是终止进程。
+    /// Attempt to write a report to spool. On failure, drop the report and continue instead of terminating the process.
     fn try_enqueue(&mut self, spool: &Spool, report: &ClientReport) -> anyhow::Result<()> {
         match spool.enqueue(report) {
             Ok(()) => {
@@ -36,7 +36,7 @@ impl SpoolHealth {
                 Ok(())
             }
             Err(error) => {
-                self.record_failure("写入 spool", &error)?;
+                self.record_failure("writing spool", &error)?;
                 warn!(event = "xsoc.collection.discarded", instance_id = %report.host.id, request_id = %report.report_id, error_code = "queue_io_failed", "sample could not be persisted");
                 Ok(())
             }
@@ -80,7 +80,7 @@ impl xcsc::runtime::DeliveryAdapter<xsoc::spool::PendingReport>
     fn discarded(&self, pending: &xsoc::spool::PendingReport, error: &Self::Error) {
         error!(
             event = "xsoc.delivery.rejected", instance_id = %pending.report.host.id, request_id = %pending.report.report_id, error_code = %error.stable_code().to_ascii_lowercase(),
-            "spool 中的报文被永久拒绝，已丢弃：{error}"
+            "spooled report permanently rejected and discarded: {error}"
         );
     }
     fn quarantined(&self, pending: &xsoc::spool::PendingReport, reason: xcsc::runtime::QuarantineReason) {

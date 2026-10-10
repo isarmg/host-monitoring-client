@@ -13,9 +13,9 @@ ExecStart=/usr/bin/xsoc run --config /etc/xsoc/config.json
 Restart=on-failure
 RestartSec=10s
 
-# StateDirectory 存放当前配对状态、per-host token 与 spool，必须 0700。
-# 不显式声明时 systemd 用 0755，且每次启动都会重设。Client 只接受安全的现有
-# 私有目录，不会在运行时 chmod 修复权限。与 xsos.service 保持一致。
+# StateDirectory stores current pairing state, per-host tokens and spool; it must be 0700.
+# Without an explicit mode, systemd uses 0755 and resets it on each start. The client accepts only
+# secure existing private directories and does not repair permissions at runtime. Match xsos.service.
 StateDirectory=xsoc
 StateDirectoryMode=0700
 ConfigurationDirectory=xsoc
@@ -39,7 +39,7 @@ RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-# 与 xsos.service 对齐。AF_NETLINK 是 sysinfo 枚举网络接口所需，去掉会让网卡指标消失。
+# Match xsos.service. sysinfo needs AF_NETLINK to enumerate interfaces; removing it loses network metrics.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/xsoc

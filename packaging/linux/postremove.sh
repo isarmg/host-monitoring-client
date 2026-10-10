@@ -397,14 +397,14 @@ case "${1:-}" in
       exit 1
     fi
     cat <<'EOF'
-xsoc 的本地配置、凭据、spool、GPU drop-in 和包管理的专用账户已清理。
-此操作没有连接 xsos；请确认已在管理台永久删除对应实例。
+Local xsoc configuration, credentials, spool, GPU drop-ins and the package-managed account were removed.
+This operation did not contact xsos; ensure that the corresponding instance is permanently deleted in the administration page.
 EOF
     ;;
   *)
     cat <<EOF
-xsoc 程序和系统服务已移除；实例凭据、spool 与专用账户仍在本地。
-配置文件遵循包管理器的 config/noreplace 语义。需要保留本地状态时，请妥善保存配置、实例凭据和 spool。
+The xsoc program and system service were removed; instance credentials, spool and the dedicated account remain locally.
+Configuration files follow the package manager config/noreplace semantics. Preserve configuration, instance credentials and spool when retaining local state.
 EOF
     ;;
 esac

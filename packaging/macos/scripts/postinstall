@@ -1174,8 +1174,8 @@ else
   uid="$existing_uid"
 fi
 
-# 安装与授权刻意分离。未配对时 Client 只低频记录 awaiting_authorization；用户随后执行
-# `xsoc pair --server https://...`，常驻进程会接续同一个浏览器配对请求。
+# Installation and authorization are separate. An unpaired client logs awaiting_authorization infrequently;
+# after `xsoc pair --server https://...`, the resident process continues the same browser pairing request.
 # Keep the previous jobs alive through immutable-payload and identity checks.
 # Mutable service-owned paths can only be trusted after both jobs are stopped,
 # no service-UID process remains, and the state directory is locked to root.

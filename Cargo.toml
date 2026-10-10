@@ -32,8 +32,8 @@ desktop = [
     "dep:zeroize",
 ]
 nvidia = ["desktop", "dep:nvml-wrapper"]
-# OTLP 导出。手写的 protobuf 子集在 `otlp.rs`，由专用测试对真实 Collector 验证。
-# flate2 也一并门控：关掉 otlp 时不应把 gzip 编码器编进二进制。
+# OTLP export. The handwritten protobuf subset in `otlp.rs` is checked against a real Collector.
+# Gate flate2 as well: disabling otlp must exclude the gzip encoder from the binary.
 otlp = ["desktop", "dep:prost", "dep:flate2"]
 
 [dependencies]

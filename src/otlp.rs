@@ -1,7 +1,7 @@
-//! 仅包含 Client 所需的 OTLP Metrics Protobuf 子集。
+//! Only the OTLP Metrics Protobuf subset needed by the client.
 //!
-//! 字段编号严格对应 OpenTelemetry proto；保留自有 JSON report 作为资产/capability
-//! 数据源，OTLP 只承载时序数值。
+//! Field numbers strictly follow OpenTelemetry proto. Retain the product JSON report as the asset/capability
+//! data source; OTLP carries only numeric time-series values.
 
 use prost::{Message, Oneof};
 
@@ -350,25 +350,25 @@ fn append_gpu_metrics(metrics: &mut MetricSet, gpu: &GpuSnapshot, time: u64) {
     }
 }
 
-/// 按名收敛的 metric 集合。
+/// Metric collection consolidated by name.
 ///
-/// # 为什么不能直接 `Vec<Metric>::push`
+/// # Why direct `Vec<Metric>::push` is insufficient
 ///
-/// OTLP 数据模型要求：同一个 scope 内，一个 metric 名**只能出现一次**，多设备靠
-/// 数据点上的属性区分（`network.interface.name`、`system.device` 等）。直接 push
-/// 会让 2 张网卡产生 2 个**同名** `system.network.io` metric，各带 1 个数据点。
+/// The OTLP data model requires one occurrence of each metric name within a scope. Multiple devices use
+/// data-point attributes such as `network.interface.name` and `system.device`. Direct pushes would
+/// produce two `system.network.io` metrics with the same name for two interfaces, each with one data point.
 ///
-/// 这类报文 Collector 通常照收不误并返回 200——所以"端到端测试通过"完全不能说明
-/// 编码正确。实测（otelcol-contrib v0.140 file exporter 解码）：满配报文被解出
-/// `system.network.io` ×4、`system.disk.io` ×4、`hw.temperature` ×2 等同名条目。
-/// 下游按名聚合时，这些会互相覆盖或被当成冲突的时间序列。
+/// Collectors commonly accept these reports with 200, so successful end-to-end delivery does not prove
+/// correct encoding. An actual otelcol-contrib v0.140 file-exporter decode produced
+/// duplicate names: `system.network.io` x4, `system.disk.io` x4 and `hw.temperature` x2.
+/// Downstream name-based aggregation can overwrite these entries or treat them as conflicting time series.
 ///
-/// 这里按 `(name, unit, 类型)` 归并：首次出现建 metric，后续同名只追加数据点。
-/// 类型也参与键是必要的——同名但一个是 Gauge、一个是 Sum 属于真正的冲突，
-/// 合并它们只会把错误藏起来，因此分开保留、留给测试暴露。
+/// Consolidate by `(name, unit, type)`: create the metric on first occurrence, then append matching data points.
+/// Type must be part of the key: a Gauge and a Sum with the same name represent a genuine conflict.
+/// Keep them separate so tests expose the conflict rather than concealing it through merging.
 #[derive(Default)]
 struct MetricSet {
-    /// 保持插入顺序，便于比对与测试断言。
+    /// Preserve insertion order for comparison and test assertions.
     metrics: Vec<Metric>,
 }
 
@@ -415,7 +415,7 @@ impl MetricSet {
         });
     }
 
-    /// 找到可追加数据点的既有 metric。
+    /// Find an existing metric to which data points may be appended.
     fn slot(&mut self, name: &str, unit: &str, kind: MetricKind) -> Option<&mut metric::Data> {
         self.metrics
             .iter_mut()
@@ -548,15 +548,15 @@ mod tests {
         );
     }
 
-    /// 同一 scope 内不得出现重复的 metric 名——多设备靠数据点属性区分。
+    /// Metric names must be unique within a scope; distinguish devices through data-point attributes.
     ///
-    /// # 这个缺陷为什么能活到现在
+    /// # Why the defect escaped the existing check
     ///
-    /// 唯一的端到端测试只断言"Collector 返回 2xx"，而 Collector 对同名 metric
-    /// 照收不误。实测（otelcol-contrib v0.140 file exporter 解码）：2 网卡 2 磁盘
-    /// 2 传感器的报文被解出 `system.network.io` ×4、`system.disk.io` ×4、
-    /// `hw.temperature` ×2 等同名条目。"能发出去"和"编码正确"是两件事，
-    /// 只有把 Collector 解出来的东西**读回来**才能区分。
+    /// The sole end-to-end test asserted only a 2xx response, but the Collector accepted duplicate metric names.
+    /// An actual otelcol-contrib v0.140 file-exporter decode of two interfaces, two disks and
+    /// two sensors produced `system.network.io` x4, `system.disk.io` x4 and
+    /// `hw.temperature` x2. Successful delivery does not prove correct encoding;
+    /// the decoded Collector output must be inspected to distinguish them.
     #[test]
     fn repeated_devices_collapse_into_one_metric_with_many_points() {
         let network = |name: &str| NetworkSnapshot {
@@ -599,7 +599,7 @@ mod tests {
         let request = encode_report(&report);
         let metrics = &request.resource_metrics[0].scope_metrics[0].metrics;
 
-        // 1) 没有任何重复的 metric 名。
+        // 1) No duplicate metric names.
         let mut names: Vec<&str> = metrics.iter().map(|m| m.name.as_str()).collect();
         names.sort_unstable();
         let unique = {
@@ -609,10 +609,10 @@ mod tests {
         };
         assert_eq!(
             names, unique,
-            "同一 scope 内出现了重复的 metric 名，违反 OTLP 数据模型：{names:?}"
+            "duplicate metric names within one scope violate the OTLP data model: {names:?}"
         );
 
-        // 2) 设备数体现为**数据点数**，而不是 metric 数。
+        // 2) Device count is represented by data-point count rather than metric count.
         let points = |name: &str| -> usize {
             metrics
                 .iter()
@@ -624,15 +624,15 @@ mod tests {
                 })
                 .sum()
         };
-        // 2 网卡 × 收/发 = 4 个点，收敛在一个 metric 下。
+        // 2 interfaces x receive/transmit = 4 points under one metric.
         assert_eq!(points("system.network.io"), 4);
-        // 2 磁盘 × 读/写 = 4 个点。
+        // 2 disks x read/write = 4 points.
         assert_eq!(points("system.disk.io"), 4);
         assert_eq!(points("system.filesystem.usage"), 2);
         assert_eq!(points("hw.temperature"), 2);
     }
 
-    /// 空设备列表时不应产生任何设备类 metric（避免出现 0 数据点的空壳）。
+    /// Empty device lists must produce no device metrics, avoiding metrics with zero data points.
     #[test]
     fn a_report_without_devices_emits_no_device_metrics() {
         let request = encode_report(&base_report());
@@ -647,7 +647,7 @@ mod tests {
             "system.filesystem.usage",
             "hw.temperature",
         ] {
-            assert!(!names.contains(&absent), "不该出现 {absent}：{names:?}");
+            assert!(!names.contains(&absent), "unexpected {absent}: {names:?}");
         }
     }
 

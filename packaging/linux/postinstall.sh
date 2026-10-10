@@ -551,8 +551,8 @@ Complete setup from a terminal with:
   sudo xsoc setup
 EOF
 
-# 默认 unit 设置 PrivateDevices=yes，会屏蔽 /dev/nvidia* 与 /dev/dri。
-# 需要 GPU 采集时安装随包分发的 drop-in。
+# The default unit sets PrivateDevices=yes, hiding /dev/nvidia* and /dev/dri.
+# Install the bundled drop-in when GPU collection is required.
 if [ -e /dev/nvidiactl ] || [ -d /dev/dri ]; then
   gpu_groups=""
   for gpu_group in render video; do
@@ -566,13 +566,13 @@ if [ -e /dev/nvidiactl ] || [ -d /dev/dri ]; then
   done
   cat <<'EOF'
 
-检测到本机存在 GPU 设备节点。默认 unit 出于安全考虑设置了 PrivateDevices=yes，
-因此裸 shell 中的 probe 结果不能代表 systemd 服务实际可见的 GPU。
+GPU device nodes were detected. The default unit sets PrivateDevices=yes for isolation,
+so probe results from an ordinary shell do not show which GPUs the systemd service can access.
 EOF
   if [ -n "$gpu_groups" ]; then
     cat <<EOF
 
-本机存在设备访问组：$gpu_groups。如确需启用 GPU 指标，请显式执行：
+Device-access groups are available: $gpu_groups. To enable GPU metrics, explicitly run:
 
   usermod -aG $gpu_groups xsoc
   mkdir -p /etc/systemd/system/xsoc.service.d
@@ -584,8 +584,8 @@ EOF
   else
     cat <<'EOF'
 
-未找到 render/video 设备访问组，因此没有给出会导致服务启动失败的盲目配置命令。
-请先确认设备节点的实际属组，再授予 xsoc 最小必要组权限并安装 GPU drop-in。
+No render/video device-access group was found; no unverified configuration command is suggested.
+Check the actual device-node group, grant xsoc the minimum required group access, then install the GPU drop-in.
 
 EOF
   fi

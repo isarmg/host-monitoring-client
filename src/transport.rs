@@ -199,7 +199,7 @@ pub struct Reporter {
     endpoint: String,
     token: Arc<SecretString>,
     credential_revision: (Uuid, Uuid),
-    // 仅 otlp feature 下读取；无该 feature 时保留字段以维持构造逻辑一致。
+    // Read only with the otlp feature; retain the field without that feature for consistent construction.
     #[cfg_attr(not(feature = "otlp"), allow(dead_code))]
     otlp_endpoint: Option<String>,
     #[cfg_attr(not(feature = "otlp"), allow(dead_code))]
@@ -710,33 +710,33 @@ pub(crate) fn validate_current_token(token: &str) -> Result<(), LocalCredentialC
     }
 }
 
-/// 上报失败的性质。判据是**要让同一份报文最终被接受，需要改变什么**：
+/// Report-failure classification: what must change for the same report to be accepted?
 ///
-/// | 变体 | 需要改变的东西 | 处置 |
+/// | Variant | Required change | Handling |
 /// |---|---|---|
-/// | `Permanent`  | 报文内容本身（改不了） | 丢弃 |
-/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 使用授权恢复流程重新配对；仅明确放弃旧身份时才替换实例 |
-/// | `IdentityMismatch` | 报告不属于当前凭据身份 | 保留原字节隔离，继续队列 |
-/// | `Transient`  | 等待网络或服务恢复 | 保留并退避重试 |
+/// | `Permanent`  | The report itself (immutable) | Discard |
+/// | `Unauthorized` | Stable server `unauthorized` code confirms invalid credentials | Restore authorization through pairing; replace the instance only when explicitly abandoning its identity |
+/// | `IdentityMismatch` | Report does not belong to the credential identity | Quarantine original bytes and continue the queue |
+/// | `Transient`  | Network or service recovery | Retain and retry with backoff |
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
     /// Local mismatch: preserve original bytes in quarantine; do not contact the
     /// network, authorize deletion, or invalidate a newer credential.
     #[error("report does not match the active Client identity")]
     IdentityMismatch,
-    /// 服务端以严格当前 envelope 拒绝了报文内容本身（400/409/413）。重试必然
-    /// 再次失败，继续入队只会让 spool 被必失败的数据占满并挤掉后续有效报文。
+    /// The server rejected the report content with a strict current envelope (400/409/413). Retrying
+    /// cannot succeed; retaining it would fill spool with invalid data and displace later valid reports.
     #[error("{0}")]
     Permanent(String),
-    /// xsos 以 401 和稳定 `unauthorized` 机器码确认凭据不被接受。主机进入
-    /// `reauth_required`，需要显式执行授权恢复配对；Client 不会自动生成或替换凭据，
-    /// 也不会在恢复过程中改换 xsoc UUID。代理/WAF 生成的未知 401 不得使用此变体。
+    /// xsos confirms rejected credentials with 401 and the stable `unauthorized` code. The host enters
+    /// `reauth_required` and needs explicit authorization-restoring pairing. The client neither generates nor replaces credentials automatically
+    /// and preserves its xsoc UUID during recovery. Unknown proxy/WAF-generated 401 responses must not use this variant.
     #[error("{0}")]
     Unauthorized(String),
     /// The Server rejected the wire version. Re-pairing cannot repair this; do not retry the report.
     #[error("{0}")]
     UnsupportedProtocol(String),
-    /// 网络故障或服务端暂时不可用，保留记录并退避重试。
+    /// Network failure or temporary server unavailability; retain records and retry with backoff.
     #[error("{0}")]
     Transient(String),
     /// The original queued bytes must be retained until the Server's clock
@@ -750,7 +750,7 @@ impl SendError {
         matches!(self, Self::Permanent(_) | Self::UnsupportedProtocol(_))
     }
 
-    /// 凭据已失效，需要显式恢复授权后才可能成功。
+    /// Credentials are invalid; success requires explicit authorization recovery.
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Unauthorized(_))
     }
@@ -845,8 +845,8 @@ pub fn classify_xsos_response(
         _ => "unrecognized error response",
     };
     let message = format!("xsos rejected telemetry with HTTP {status}: {detail}");
-    // 404/408/421/429 与 5xx 留作可重试：服务端重启、反代修复、限流退避之后，
-    // 同一份报文仍可能被接受。
+    // Keep 404/408/421/429 and 5xx retryable: after server restart, proxy repair or rate-limit backoff,
+    // the same report may be accepted.
     match status {
         StatusCode::BAD_REQUEST => match envelope.as_ref() {
             Some(error)
@@ -879,11 +879,11 @@ pub fn classify_xsos_response(
             }
             _ => Err(SendError::Transient(message)),
         },
-        // 421 = 请求没走对链路（反向代理未透传 X-Forwarded-*），**不是**凭据问题。
-        // 必须早于下面这一支匹配，否则会误判为需要创建新实例并再次配对。
+        // 421 means the request used the wrong path (the reverse proxy did not forward X-Forwarded-*), not invalid credentials.
+        // Match this before the branch below to avoid incorrectly requesting a new instance and another pairing.
         StatusCode::MISDIRECTED_REQUEST => Err(SendError::Transient(format!(
-            "{message}（这是部署配置问题，不是凭据失效：请检查反向代理是否透传 \
-             X-Forwarded-Proto 与 X-Forwarded-For）"
+            "{message} (this is a deployment configuration problem, not invalid credentials: check whether the reverse proxy forwards \
+             X-Forwarded-Proto and X-Forwarded-For)"
         ))),
         StatusCode::UNAUTHORIZED => match envelope.as_ref() {
             Some(error) if error.code.as_str() == "unauthorized" && !error.retryable => {

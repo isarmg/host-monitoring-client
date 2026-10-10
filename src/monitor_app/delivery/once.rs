@@ -1,11 +1,11 @@
-/// 一次性投递是正常完成，还是在保证当前报文可重试后响应关停。
+/// Whether one-shot delivery completed normally or stopped after preserving retryability of the current report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RunOnceOutcome {
     Delivered,
     Shutdown,
 }
 
-/// 采样一次，并保证之前由 `once`/`run` 留下的积压得到补传。
+/// Sample once and flush backlog left by previous `once`/`run` commands.
 pub(super) async fn run_once(
     config: &ClientConfig,
     host: xsoc::HostIdentity,
@@ -16,8 +16,8 @@ pub(super) async fn run_once(
 ) -> anyhow::Result<RunOnceOutcome> {
     let pending = spool.pending_count()?;
     let report = sampler.collect(host.clone(), config.slow_interval_seconds, pending);
-    // `flush_spool` 单轮最多发 32 份；once 是显式的一次性投递命令，因此循环到队列
-    // 清空。若网络仍不可用，当前采样也入队后退出，下一次 once 可以继续恢复。
+    // `flush_spool` sends at most 32 reports per pass. The explicit once command loops until the queue
+    // is empty. If the network is still unavailable, enqueue the current sample and exit so a later once can resume.
     while spool.pending_count()? > 0 {
         let Some(flush) =
             finish_before_shutdown(shutdown, flush_spool(spool, &reporter, None)).await

@@ -24,18 +24,18 @@ overrides:
       - systemd
       - util-linux
       - smartmontools
-# ⚠ 必须从**工作区根**执行：
+# Run from the repository root:
 #   cargo build --release -p xsoc
 #   NFPM_ARCH=amd64 packaging/linux/build-packages.sh
-# build-packages.sh 从 Cargo 读取唯一当前版本，并在调用 nFPM 前静态核对下面这个
-# 固定 payload 的 ELF 架构、专用版本段与 xsoc.json.example；不要执行交叉架构
-# payload，也不要用 CLIENT_BINARY/任意 VERSION 把校验对象和实际入包对象拆开。
-# 合并为 Cargo workspace 后产物在根 target/，路径因此全部根相对。
+# build-packages.sh reads the current version from Cargo and statically checks the fixed payload below
+# against its ELF architecture, dedicated version section and xsoc.json.example before invoking nFPM.
+# Do not execute foreign-architecture payloads or use CLIENT_BINARY/arbitrary VERSION to package a different input.
+# Cargo workspace output is under root target/; all paths are repository-root relative.
 #
-# ⚠⚠ 不要在 `contents[].src` 里写 `${VAR}`——nfpm 不对该字段做环境变量展开。
-# 产物路径必须是已经静态校验的固定 workspace-relative 路径。
+# Do not use `${VAR}` in `contents[].src`; nFPM does not expand environment variables in that field.
+# Artifact paths must be fixed workspace-relative paths that have passed static validation.
 #
-# 交叉编译的产物请先落到 target/release/ 再打包，例如：
+# Place cross-compiled artifacts in target/release/ before packaging, for example:
 #   cargo build --release -p xsoc --target aarch64-unknown-linux-gnu
 #   install -Dm755 target/aarch64-unknown-linux-gnu/release/xsoc target/release/xsoc
 contents:
@@ -50,10 +50,10 @@ contents:
       mode: 0600
   - src: ./packaging/linux/xsoc.service
     dst: /usr/lib/systemd/system/xsoc.service
-  # GPU drop-in：默认构建启用 nvidia feature，但 unit 里 PrivateDevices=yes 会挡住
-  # NVML 需要的 /dev/nvidia*，装了包却读不到 GPU。该文件必须**随包分发**——只留在
-  # 源码树里的话，装 deb/rpm 的用户根本拿不到，表现为"GPU 采集静默不可用"。
-  # 启用方式在 postinstall 中说明。
+  # GPU drop-in: default builds enable the nvidia feature, but PrivateDevices=yes hides
+  # /dev/nvidia*, which NVML requires. This file must be bundled with the package; leaving it only
+  # in the source tree leaves deb/rpm users unable to enable GPU collection.
+  # postinstall explains how to enable it.
   - src: ./packaging/linux/xsoc-gpu.conf
     dst: /usr/share/xsoc/xsoc-gpu.conf
   - src: ./packaging/linux/purge-local-state.sh

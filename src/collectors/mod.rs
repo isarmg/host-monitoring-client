@@ -48,7 +48,7 @@ mod hardware;
 mod inventory;
 pub mod smart;
 
-/// 长期复用 sysinfo 对象，避免反复枚举系统并确保差值指标有正确采样基线。
+/// Reuse sysinfo objects to avoid repeated enumeration and preserve the baseline for delta metrics.
 pub struct SystemSampler {
     system: System,
     networks: Networks,
@@ -656,13 +656,13 @@ fn platform_gpu_capabilities(source: &str) -> Vec<Capability> {
     ]
 }
 
-/// 把实测经过时间收敛到服务端契约区间之内。
+/// Clamp measured elapsed time to the server contract interval.
 ///
-/// 抽成独立函数是为了可测：`collect()` 需要一个真实的 `SystemSampler` 和两次相隔
-/// 足够久的采样，无法用它验证边界行为，而这里守的恰恰是边界。
+/// Keep this function independently testable: `collect()` requires a real `SystemSampler` and two samples
+/// separated by enough time, which cannot reliably exercise these boundary conditions.
 fn contract_interval_seconds(elapsed_seconds: f64) -> f64 {
-    // NaN 不会被 clamp 修正（`f64::clamp` 在 NaN 上返回 NaN），而服务端的
-    // `is_finite()` 检查会把它判成 400。回退到下限而不是原样传出去。
+    // Clamping does not repair NaN (`f64::clamp` returns NaN); the server
+    // `is_finite()` check rejects it with 400. Fall back to the lower bound rather than sending it.
     if !elapsed_seconds.is_finite() {
         return crate::config::MIN_REPORT_INTERVAL_SECONDS;
     }
@@ -906,10 +906,10 @@ mod tests {
         );
     }
 
-    /// 报文里的 `interval_seconds` 必须**始终**落在服务端契约区间内。
+    /// The report `interval_seconds` must always remain within the server contract interval.
     ///
-    /// 即使 ticker 调度延迟或休眠恢复，报文中的周期也须保持在契约范围内，
-    /// 以便服务端接受并持久化采样。
+    /// Even after ticker delays or resume from sleep, keep the reported interval within the contract
+    /// so the server accepts and persists the sample.
     #[test]
     fn the_reported_interval_always_satisfies_the_server_contract() {
         use crate::config::{MAX_REPORT_INTERVAL_SECONDS, MIN_REPORT_INTERVAL_SECONDS};
@@ -918,24 +918,24 @@ mod tests {
         for elapsed in [
             0.0,
             0.001,
-            0.05,        // jitter 把周期压得过短
-            10.0,        // 常规
-            max,         // 恰好在上限
-            max + 0.001, // ticker 调度延迟把周期略微推出上限
-            5_400.0,     // interval=3600 配 50% jitter
-            86_400.0,    // 休眠一天后唤醒
+            0.05,        // jitter shortens the cycle too far
+            10.0,        // ordinary cycle
+            max,         // exactly at the upper bound
+            max + 0.001, // ticker delay exceeds the upper bound slightly
+            5_400.0,     // interval=3600 with 50% jitter
+            86_400.0,    // resume after a day asleep
             f64::INFINITY,
             f64::NAN,
         ] {
             let reported = contract_interval_seconds(elapsed);
             assert!(
                 reported.is_finite() && (MIN_REPORT_INTERVAL_SECONDS..=max).contains(&reported),
-                "elapsed={elapsed} 产出了越界的 interval_seconds={reported}，\
-                 服务端会以 400 拒绝并丢弃该报文"
+                "elapsed={elapsed} produced out-of-range interval_seconds={reported},\
+                 which the server would reject with 400 and discard"
             );
         }
 
-        // 区间之内的值必须原样透传，clamp 不该改动正常读数。
+        // Values within the interval must pass through unchanged; clamping must preserve normal readings.
         assert_eq!(contract_interval_seconds(10.0), 10.0);
     }
 }

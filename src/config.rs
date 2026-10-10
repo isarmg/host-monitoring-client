@@ -59,25 +59,25 @@ fn client_version_output() -> &'static str {
     CLIENT_VERSION_OUTPUT
 }
 
-/// 上报报文中“实测间隔”的**服务端契约上限**。
+/// Server contract upper bound for the measured interval in reports.
 ///
-/// `xsos-protocol` 是 HTTP 契约边界的唯一常量来源；Client 配置与 Server 校验都引用它。
-/// SQLite 只用 `0 < interval_seconds <= 3600` 做粗粒度存储防线；Client 的配置值则是
-/// 整数秒（最小 1），并按 jitter 后最坏实测周期校验，因此三层边界相关但并不完全相同。
+/// `xsos-protocol` is the sole source of HTTP contract bounds, used by client configuration and server validation.
+/// SQLite uses `0 < interval_seconds <= 3600` as a coarse storage constraint; client configuration uses
+/// integer seconds (at least 1) and validates the worst jitter-adjusted cycle, so these bounds are related but distinct.
 ///
-/// 报文中的 `interval_seconds` 是实测经过时间，因此落到区间之外会让**每一次**上报
-/// 都被服务端以 400 永久拒绝；投递 worker 会把这类必失败报文从 spool 确认丢弃。
-/// 在启动时拒绝，好过让用户只在日志里追查周期性数据缺口。
+/// The report `interval_seconds` is actual elapsed time. Out-of-range values cause every report
+/// to be permanently rejected with 400; the delivery worker acknowledges and discards these reports from spool.
+/// Reject invalid configuration at startup rather than leaving users to trace recurring data gaps in logs.
 pub const MAX_REPORT_INTERVAL_SECONDS: u64 = xsos_protocol::CLIENT_REPORT_MAX_INTERVAL_SECONDS;
 
-/// 共享协议契约下限的 Client 配置别名。
+/// Client configuration alias for the shared protocol lower bound.
 ///
-/// 采集侧按此下限约束实测间隔，配置校验与报告编码均使用共享协议的有效区间。
-/// 服务端会永久拒绝区间之外的报告，因此采样调度不能只依赖当前 sleep 长度。
+/// Collection bounds the measured interval by this lower limit; configuration validation and report encoding use the shared protocol interval.
+/// The server permanently rejects out-of-range reports, so sampling cannot rely solely on the current sleep duration.
 pub const MIN_REPORT_INTERVAL_SECONDS: f64 = xsos_protocol::CLIENT_REPORT_MIN_INTERVAL_SECONDS;
 
-/// 编译期守卫：契约区间必须自洽。写成 `const _` 而非测试，是因为这两个常量的关系
-/// 属于"不可能为真就不该编译"的性质，没有必要等到跑测试才发现。
+/// Compile-time guard: the contract interval must be coherent. Use `const _` because this relationship
+/// must hold for compilation to succeed rather than being discovered only when tests run.
 const _: () = assert!(MIN_REPORT_INTERVAL_SECONDS > 0.0);
 const _: () = assert!(MIN_REPORT_INTERVAL_SECONDS < MAX_REPORT_INTERVAL_SECONDS as f64);
 
@@ -457,9 +457,9 @@ impl ClientConfig {
         if self.jitter_percent > 50 {
             bail!("jitter_percent must not exceed 50");
         }
-        // 正常采样周期由 ticker 的 jitter 决定，网络投递由独立 worker 执行。
-        // 按最大 jitter 校验服务端允许的上报间隔：3600 秒加 10% jitter 可达
-        // 3960 秒。超限配置在启动时拒绝，并报告当前 jitter 对应的可用上限。
+        // Ticker jitter determines the normal sampling cycle; a separate worker performs network delivery.
+        // Validate the server reporting bound against maximum jitter: 3600 seconds with 10% jitter can reach
+        // 3960 seconds. Reject excessive settings at startup and report the usable upper bound for the current jitter.
         let worst_case_cycle = self.worst_case_cycle_seconds();
         if worst_case_cycle > MAX_REPORT_INTERVAL_SECONDS as f64 {
             bail!(
@@ -570,17 +570,17 @@ impl ClientConfig {
         self.validate(ClientCommand::Run)
     }
 
-    /// jitter 能把一个采集周期拉长到的最大秒数。
+    /// Maximum duration in seconds to which jitter can extend a sampling cycle.
     ///
-    /// 与 `main.rs` 的 `jitter()` 共用同一个上界公式：`base * (1 + percent/100)`。
-    /// 两处若各写一遍就会漂移，因此校验侧引用本函数，而不是重新推导一遍系数。
+    /// Use the same upper-bound formula as `jitter()` in `main.rs`: `base * (1 + percent/100)`.
+    /// Validation calls this function to prevent the two implementations from drifting.
     pub fn worst_case_cycle_seconds(&self) -> f64 {
         self.interval_seconds as f64 * (1.0 + self.jitter_percent as f64 / 100.0)
     }
 
-    /// 当前 jitter 设置下，仍能满足服务端契约的最大 `interval_seconds`。
+    /// Maximum `interval_seconds` that satisfies the server contract with the current jitter.
     ///
-    /// 向下取整：取整后的值代入 `worst_case_cycle_seconds()` 必定 <= 契约上限。
+    /// Round down so `worst_case_cycle_seconds()` for the resulting value never exceeds the contract upper bound.
     pub fn max_interval_seconds_at_current_jitter(&self) -> u64 {
         (MAX_REPORT_INTERVAL_SECONDS as f64 / (1.0 + self.jitter_percent as f64 / 100.0)) as u64
     }
@@ -758,9 +758,9 @@ fn persist_private_config(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 fn publish_private_config(path: &Path, content: &[u8]) -> anyhow::Result<()> {
-    // pair 通常由 root 执行，而长期服务使用 xsoc/_xsoc。原配置若
-    // 已由安装包设置好属主与权限，原子替换必须把它们复制到新 inode；仅保留 mode
-    // 会留下 root:root 0640，服务账户仍然读不到。
+    // Pairing usually runs as root, while the resident service uses xsoc/_xsoc. If the original configuration
+    // already has package-assigned ownership and permissions, atomic replacement must copy them to the new inode.
+    // Preserving only mode would leave root:root 0640, unreadable by the service account.
     #[cfg(unix)]
     {
         use xcsc::fs_safety::{ConfigurationDirectory, EntryName};
@@ -1317,31 +1317,34 @@ mod tests {
     fn config_with_interval(interval_seconds: u64) -> ClientConfig {
         ClientConfig {
             interval_seconds,
-            // slow_interval 必须 >= interval，否则会先撞上另一条校验。
+            // slow_interval must be >= interval or another validation rule will fail first.
             slow_interval_seconds: interval_seconds,
             ..ClientConfig::default()
         }
     }
 
-    /// 契约上限是对**实测周期**的约束；投递已经解耦，因此正常运行时该周期只由
-    /// ticker jitter 决定。默认 jitter 非零时，恰好等于上限仍必然越界。
+    /// The contract upper bound constrains the measured cycle. Delivery is decoupled, so the normal cycle depends only on
+    /// ticker jitter. With nonzero default jitter, a base interval equal to the upper bound necessarily exceeds it.
     ///
-    /// 启动校验须拒绝等于上限且带 jitter 的配置，使每份运行时报文仍满足契约。
+    /// Startup validation must reject upper-bound intervals with jitter so every runtime report satisfies the contract.
     #[test]
     fn rejects_interval_at_the_contract_limit_because_jitter_pushes_it_over() {
         let config = config_with_interval(MAX_REPORT_INTERVAL_SECONDS);
-        assert!(config.jitter_percent > 0, "本用例依赖默认 jitter 非零");
+        assert!(
+            config.jitter_percent > 0,
+            "this case requires nonzero default jitter"
+        );
         let error = config
             .validate(ClientCommand::Run)
-            .expect_err("配置值等于上限时，加上 jitter 必然越界，必须拒绝");
+            .expect_err("an upper-bound interval with jitter necessarily exceeds the contract and must be rejected");
         let message = error.to_string();
         assert!(
             message.contains("3600") && message.contains("400"),
-            "错误信息应说明上限与后果，实际为：{message}"
+            "the error must explain the bound and consequences; received: {message}"
         );
     }
 
-    /// 拒绝之外还要给出**可直接采用**的替代值，否则用户只能靠试。
+    /// Rejection must suggest a usable alternative value instead of requiring trial and error.
     #[test]
     fn the_reported_maximum_interval_is_actually_accepted() {
         let rejected = config_with_interval(MAX_REPORT_INTERVAL_SECONDS);
@@ -1349,16 +1352,16 @@ mod tests {
         let config = config_with_interval(suggested);
         assert!(
             config.validate(ClientCommand::Run).is_ok(),
-            "错误信息里建议的 interval_seconds={suggested} 必须真的能通过校验"
+            "the suggested interval_seconds={suggested} in the error must pass validation"
         );
         assert!(
             config.worst_case_cycle_seconds() <= MAX_REPORT_INTERVAL_SECONDS as f64,
-            "建议值的最坏周期不得越过契约上限"
+            "the suggested value must keep the worst-case cycle within the contract"
         );
     }
 
-    /// 零 jitter 时 ticker cadence 就是配置值，因此配置值本身仍可取到上限；机器
-    /// 休眠或进程暂停造成的异常越界由采集侧 clamp 兜住。
+    /// With zero jitter, ticker cadence equals the configured interval, which may reach the upper bound.
+    /// Collection-side clamping handles abnormal elapsed time after sleep or process suspension.
     #[test]
     fn zero_jitter_allows_the_full_contract_range() {
         let config = ClientConfig {
@@ -1412,21 +1415,21 @@ mod tests {
         assert!(config.validate(ClientCommand::Run).is_ok());
     }
 
-    /// 采集侧对实测间隔的兜底必须落在服务端契约内。
+    /// Collection-side safeguards must keep measured intervals within the server contract.
     ///
-    /// 低于下限的报文会被服务端判为 400（永久拒绝）并从 spool 确认丢弃。这里用
-    /// 配置能取到的最极端组合来验证：
-    /// 最小合法间隔（1 秒）配合最大 jitter，得到的最短周期仍须高于契约下限。
+    /// The server permanently rejects reports below the lower bound with 400 and acknowledges their removal from spool. Use
+    /// the most extreme permitted configuration to verify this boundary:
+    /// the smallest valid interval (1 second) with maximum jitter must still yield a cycle above the contract lower bound.
     #[test]
     fn the_shortest_possible_cycle_stays_inside_the_server_contract() {
-        let smallest_interval = 1.0_f64; // validate() 要求 interval_seconds >= 1
-        let largest_jitter = 50.0_f64 / 100.0; // validate() 要求 jitter_percent <= 50
+        let smallest_interval = 1.0_f64; // validate() requires interval_seconds >= 1
+        let largest_jitter = 50.0_f64 / 100.0; // validate() requires jitter_percent <= 50
         let shortest_cycle = smallest_interval * (1.0 - largest_jitter);
 
         assert!(
             shortest_cycle > MIN_REPORT_INTERVAL_SECONDS,
-            "最短可能周期 {shortest_cycle}s 已逼近契约下限 {MIN_REPORT_INTERVAL_SECONDS}s；\
-             调整 jitter 上限或间隔下限时必须重新评估这条边界"
+            "the shortest possible cycle {shortest_cycle}s approaches the contract lower bound {MIN_REPORT_INTERVAL_SECONDS}s;\
+             reassess this boundary when changing maximum jitter or the minimum interval"
         );
     }
 }
